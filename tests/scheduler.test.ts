@@ -882,19 +882,25 @@ describe("delivery scheduler", () => {
     );
     const canceled: string[] = [],
       adapter = new FakeRuntimeAdapter();
-    adapter.deliver = async () => ({
-      outcome: "accepted",
-      acceptedAt: new Date().toISOString(),
-      execution: { opaqueId: "owned-turn", relationship: "started" },
-      evidence: { scheme: "fake", value: "owned-turn" },
-    });
+    const started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    adapter.deliver = async () => {
+      started.resolve();
+      await release.promise;
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "owned-turn", relationship: "started" },
+        evidence: { scheme: "fake", value: "owned-turn" },
+      };
+    };
     adapter.cancel = async (request) => {
       canceled.push(request.execution.opaqueId);
       return { outcome: "accepted", acceptedAt: new Date().toISOString() };
     };
     const scheduler = new DeliveryScheduler(store, adapter, "test-cancel");
     await scheduler.start();
-    await Bun.sleep(400);
+    await started.promise;
     store.requestCancellation(accepted.task.id, requester.id);
     store.requestCancellation(accepted.task.id, requester.id);
     expect(
@@ -904,6 +910,7 @@ describe("delivery scheduler", () => {
         )
         .get(accepted.task.id)?.count,
     ).toBe(1);
+    release.resolve();
     await Bun.sleep(400);
     expect(canceled).toEqual(["owned-turn"]);
     expect(
@@ -1135,9 +1142,19 @@ describe("delivery scheduler", () => {
     expect(
       store.db.query<{ count: number }, []>("SELECT count(*) count FROM runtime_executions").get(),
     ).toEqual({ count: 1 });
+    store.db
+      .query(
+        "UPDATE delivery_intents SET state='acceptance-unknown' WHERE task_id=? AND kind='task-event-notification'",
+      )
+      .run(accepted.task.id);
     store.requestCancellation(accepted.task.id, senderBinding.principalId);
     await Bun.sleep(400);
     expect(canceled).toEqual([]);
+    expect(
+      store.db
+        .query<{ state: string }, [string]>("SELECT state FROM a2a_tasks WHERE id=?")
+        .get(accepted.task.id)?.state,
+    ).toBe("canceled");
     releaseCompletion.resolve();
     await Bun.sleep(25);
     await scheduler.stop();

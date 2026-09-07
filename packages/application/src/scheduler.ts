@@ -305,7 +305,7 @@ export class DeliveryScheduler {
         },
         []
       >(
-        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
+        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
       )
       .get();
     if (!task) return false;
@@ -364,7 +364,7 @@ export class DeliveryScheduler {
     }
     const ambiguous = this.store
       .query<{ value: number }, [`tsk_${string}`]>(
-        "SELECT exists(SELECT 1 FROM delivery_intents WHERE task_id=? AND state='acceptance-unknown') value",
+        "SELECT exists(SELECT 1 FROM delivery_intents WHERE task_id=? AND kind='a2a-message' AND state='acceptance-unknown') value",
       )
       .get(task.task_id)?.value;
     if (!ambiguous) {
@@ -663,6 +663,14 @@ export class DeliveryScheduler {
             );
       });
     }
+    if (
+      result.outcome === "accepted" &&
+      !notification &&
+      result.execution?.relationship === "started" &&
+      this.capabilities.cancelOwnedExecution &&
+      interruptOnCancel(binding.delivery_policy_json)
+    )
+      return;
     this.finishRequestedCancellation(intent.task_id);
   }
   private finishRequestedCancellation(taskId: `tsk_${string}`) {
@@ -676,7 +684,7 @@ export class DeliveryScheduler {
         },
         [`tsk_${string}`]
       >(
-        "SELECT t.requester_principal_id,t.state,t.cancellation_requested,exists(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.state IN ('leased','attempting','acceptance-unknown')) ambiguous FROM a2a_tasks t WHERE t.id=?",
+        "SELECT t.requester_principal_id,t.state,t.cancellation_requested,exists(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) ambiguous FROM a2a_tasks t WHERE t.id=?",
       )
       .get(taskId);
     if (
