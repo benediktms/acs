@@ -119,6 +119,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private events: RuntimeEvent[] = [];
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
+  private completedExecutions = new Set<string>();
 
   constructor(
     readonly socketPath: string,
@@ -456,8 +457,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           reason: "Codex history does not contain the exact direct-delivery marker",
           operatorActionRequired: true,
         };
-      this.trackExecution(marker.turnId, request);
-      await this.observeAcceptedExecution(request, marker.turnId, signal);
+      if (
+        !this.completedExecutions.has(executionKey(request.target.session.opaqueId, marker.turnId))
+      ) {
+        this.trackExecution(marker.turnId, request);
+        await this.observeAcceptedExecution(request, marker.turnId, signal);
+      }
       return {
         outcome: "accepted",
         execution: { opaqueId: marker.turnId, relationship: "unknown" },
@@ -642,7 +647,14 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           outcome,
           finalParts: execution.finalParts,
         });
-        this.executions.delete(executionKey(event.threadId, event.turn.id));
+        const key = executionKey(event.threadId, event.turn.id);
+        this.completedExecutions.add(key);
+        // ponytail: bound in-process dedupe; use durable completion keys if 1,024 recent turns is insufficient.
+        if (this.completedExecutions.size > 1024) {
+          const oldest = this.completedExecutions.values().next().value;
+          if (oldest) this.completedExecutions.delete(oldest);
+        }
+        this.executions.delete(key);
       }
     }
   }
