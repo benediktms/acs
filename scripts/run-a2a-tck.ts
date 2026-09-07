@@ -262,6 +262,7 @@ function codexResponse(method: string, turnId?: string) {
         cwd: "/tmp",
         cliVersion: "tck",
         source: "test",
+        canAcceptDirectInput: true,
         status: { type: "idle" },
       },
     };
