@@ -21,7 +21,7 @@ Codex loads trusted repository hooks from `.codex/hooks.json`. A `SessionStart` 
 - Use a command hook that prints static developer context requiring `acs_identity` on the first model turn before the user request is handled. The model calls it after MCP initialization instead of relying on a `SessionStart` MCP tool call that can race server startup.
 - Add `acs_register` as a single MCP operation. It accepts an optional valid agent slug, derives the caller only from Codex-owned metadata, returns the existing binding when the session is already registered, and otherwise creates the agent and binding in one storage transaction.
 - Keep the database's case-insensitive active-agent slug index as the uniqueness authority. A chosen-name collision returns `AGENT_ALREADY_EXISTS`; omitting the slug uses a deterministic session-derived fallback.
-- Authorize self-registration only for the local MCP bridge's attestation scope and require the same supported caller-attestation and live-session inspection used by claims. No model-supplied session or binding identifier is accepted.
+- Authorize self-registration only for the local MCP bridge's attestation scope. Runtime reachability governs delivery, not caller identity; no model-supplied session or binding identifier is accepted.
 - Tell an unbound agent to choose a short logical-agent slug and call `acs_register` without asking the operator for a claim code.
 - Keep the hook text independent of repository paths so the same entry can later move to the global Codex hook layer.
 

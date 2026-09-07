@@ -14,6 +14,11 @@ ACS SHALL allow a supported, host-attested, unbound Codex session to create a ne
 - **WHEN** an already-bound session retries self-registration
 - **THEN** ACS returns its existing agent and binding without creating another agent
 
+#### Scenario: Standalone session registers while runtime delivery is unavailable
+
+- **WHEN** a supported standalone Codex session calls self-registration with host-owned MCP metadata while its thread is not loaded on the connected app-server
+- **THEN** ACS creates its identity and binding while evaluating runtime reachability separately for delivery
+
 #### Scenario: Chosen name is already active
 
 - **WHEN** an unbound session requests a case-insensitive agent slug that belongs to another active logical agent

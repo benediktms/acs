@@ -54,3 +54,8 @@ without resuming another copy of the session.
 
 - **WHEN** the recipient is authenticated but is not loaded on the connected app-server
 - **THEN** polling remains available and automatic context delivery stays deferred
+
+#### Scenario: Independently launched unbound recipient
+
+- **WHEN** a supported standalone Codex session supplies host-owned MCP metadata but is not loaded on the connected app-server
+- **THEN** self-registration succeeds without requiring runtime reachability

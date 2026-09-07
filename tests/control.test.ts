@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe("control protocol", () => {
-  test("requires protocol version and verifies a runtime session before binding", async () => {
+  test("requires protocol version and authenticates standalone bindings", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-"));
     roots.push(root);
     const paths: Paths = {
@@ -362,9 +362,6 @@ describe("control protocol", () => {
       observedAt: new Date().toISOString(),
       attributes: {},
     });
-    expect(
-      await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
-    ).toMatchObject({ result: { kind: "attested", bindingId: backendBinding.id } });
     store.db
       .query("UPDATE runtime_bindings SET last_observed_at_ms=? WHERE id=?")
       .run(Date.now() - 30_001, backendBinding.id);
@@ -383,17 +380,6 @@ describe("control protocol", () => {
       await (
         await call(
           "bindings.register",
-          { slug: "unsupported-runtime", evidence: evidence("unsupported-runtime-thread") },
-          "1",
-          bridgeToken,
-        )
-      ).json(),
-    ).toMatchObject({ error: { data: { code: "RUNTIME_INCOMPATIBLE" } } });
-    adapter.probe = originalProbe;
-    expect(
-      await (
-        await call(
-          "bindings.register",
           { slug: "self-service", evidence: evidence("self-service-thread") },
           "1",
           bridgeToken,
@@ -406,6 +392,7 @@ describe("control protocol", () => {
         idempotent: false,
       },
     });
+    adapter.probe = originalProbe;
     expect(
       await (
         await call(
@@ -753,8 +740,6 @@ describe("control protocol", () => {
         "expired-thread",
         "invalid-thread",
         "new-claimed-thread",
-        "self-service-thread",
-        "name-collision-thread",
       ]),
     );
     expect(inspected.length).toBeGreaterThan(1);

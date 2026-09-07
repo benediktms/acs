@@ -406,18 +406,10 @@ export function controlHandler(
           }
         }
         case "bindings.register": {
-          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
-          const probe = await adapter.probe();
-          if (probe.state === "incompatible") throw new Error("RUNTIME_INCOMPATIBLE");
-          if (probe.state !== "ready") throw new Error("RUNTIME_UNAVAILABLE");
-          if (!probe.capabilities.directDelivery) throw new Error("UNSUPPORTED_CAPABILITY");
           const evidence = hostInvocationEvidence(p.evidence);
           if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
           const proof = await callerAttestor.attest(evidence);
           if (proof.kind !== "attested") throw new Error(`UNATTESTED_CALLER: ${proof.reason}`);
-          const snapshot = await adapter.inspectSession(proof.session);
-          if (snapshot.availability === "offline")
-            throw new Error("RUNTIME_UNAVAILABLE: session not found");
           const registered = store.write(() => {
             const current = store.attestSession(
               proof.session,
@@ -442,7 +434,6 @@ export function controlHandler(
               });
             return { agent, binding, idempotent: false };
           });
-          store.observeSession(snapshot.session, snapshot.availability);
           if (!registered.idempotent) {
             audit("agent.create", "agent", registered.agent.id, { source: "self-registration" });
             audit("binding.register", "binding", registered.binding.id);
