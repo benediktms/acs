@@ -21,11 +21,12 @@ acs agents create backend --claim
 ```
 
 Inside the intended Codex session, call `acs_claim` with the returned `claimCode`.
-The MCP input may also set `continuityPolicy`, `allowNonAtomicWake`, and
-`revokeExisting`; it never accepts a thread, binding, principal, or sender ID.
+The MCP input may also set `continuityPolicy` and `revokeExisting`; it never
+accepts a thread, binding, principal, or sender ID.
 ACS derives the runtime session exclusively from Codex-owned MCP metadata.
 After a successful claim, `acs_identity` immediately reports the logical agent
-and active binding epoch.
+and active binding epoch. Supported live Codex sessions then receive peer messages
+through direct named tool output; blocked or incapable sessions remain deferred.
 
 Claim codes contain 128 random bits, are stored only as keyed hashes, and are
 consumed in the same SQLite transaction that creates the binding. Retrying a
