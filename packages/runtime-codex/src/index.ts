@@ -70,7 +70,7 @@ const capabilities: RuntimeCapabilities = {
   listSessions: true,
   observeSessionState: true,
   observeExecutions: true,
-  directDelivery: false,
+  directDelivery: true,
   // A shared app-server attachment does not establish isolated execution ownership.
   cancelOwnedExecution: false,
   reconcileDelivery: true,

@@ -404,7 +404,7 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
 
 runtimeAdapterConformance("Codex", () => codexFixture());
 
-test("Codex runtime adapter keeps direct delivery disabled until release gates pass", async () => {
+test("Codex runtime adapter enables direct delivery for supported runtimes", async () => {
   for (const version of SUPPORTED_CODEX_VERSIONS) {
     const fixture = await codexFixture(`codex-cli ${version}`),
       { adapter, context, methods } = fixture;
@@ -412,7 +412,7 @@ test("Codex runtime adapter keeps direct delivery disabled until release gates p
     expect(await adapter.probe()).toMatchObject({
       state: "ready",
       runtimeVersion: version,
-      capabilities: { directDelivery: false },
+      capabilities: { directDelivery: true },
     });
     expect(await adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
     expect(mutations(methods)).toEqual(["turn/start"]);
