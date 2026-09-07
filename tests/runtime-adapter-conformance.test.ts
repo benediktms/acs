@@ -37,6 +37,7 @@ type Fixture = {
   disconnect(): void;
   request(method: string, params: unknown): void;
   setFence(valid: boolean): void;
+  setDirectInput(available: boolean): void;
   setHistoryDelivery(deliveryId: string): void;
   setLoadedOnly(): void;
   setSessionPages(): void;
@@ -205,6 +206,13 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
           reason,
         });
       }
+      fixture.setStatus("idle");
+      fixture.setDirectInput(false);
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({
+        outcome: "deferred",
+        reason: "unsupported-active-state",
+      });
+      fixture.setDirectInput(true);
       const request = delivery();
       expect(
         await fixture.adapter.deliver({
@@ -247,6 +255,9 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
     test("reconciles exact markers and leaves missing or conflicting evidence inconclusive", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
+      const abort = new AbortController(),
+        iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toMatchObject({ state: "online" });
       const request: RuntimeReconcileRequest = {
         deliveryId: "int_conformance",
         target: delivery().target,
@@ -262,6 +273,11 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         outcome: "accepted",
         execution: { opaqueId: "turn-history", relationship: "unknown" },
       });
+      expect((await iterator.next()).value).toMatchObject({
+        type: "execution.completed",
+        execution: { opaqueId: "turn-history" },
+        outcome: "completed",
+      });
       expect(
         await fixture.adapter.reconcile({ ...request, payloadHash: "conflict" }),
       ).toMatchObject({ outcome: "inconclusive" });
@@ -271,6 +287,7 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         operatorActionRequired: true,
       });
       expect(mutations(fixture.methods)).toEqual([]);
+      abort.abort();
       await fixture.adapter.stop({ reason: "shutdown" });
       fixture.close();
     });
@@ -448,6 +465,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     buffers = new WeakMap<object, Buffer>(),
     failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed">();
   let fence = true,
+    canAcceptDirectInput = true,
     historyDelivery: string | undefined,
     loadedOnly = false,
     sessionPages = false,
@@ -522,6 +540,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
                           request.params,
                           sessionPages,
                           loadedOnly,
+                          canAcceptDirectInput,
                         ),
                 }),
               ),
@@ -556,6 +575,9 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     },
     setFence(value) {
       fence = value;
+    },
+    setDirectInput(value) {
+      canAcceptDirectInput = value;
     },
     setHistoryDelivery(deliveryId) {
       historyDelivery = deliveryId;
@@ -614,6 +636,7 @@ function response(
   params?: unknown,
   sessionPages = false,
   loadedOnly = false,
+  canAcceptDirectInput = true,
 ) {
   if (method === "initialize") return { userAgent };
   if (method === "thread/loaded/list")
@@ -621,8 +644,14 @@ function response(
   if (method === "thread/list") {
     if (!sessionPages) return { data: [], nextCursor: null };
     return record(params).cursor === "page-2"
-      ? { data: [thread("thread-1", status, source, historyDelivery)], nextCursor: null }
-      : { data: [thread("thread-2", status, source)], nextCursor: "page-2" };
+      ? {
+          data: [thread("thread-1", status, source, historyDelivery, canAcceptDirectInput)],
+          nextCursor: null,
+        }
+      : {
+          data: [thread("thread-2", status, source, undefined, canAcceptDirectInput)],
+          nextCursor: "page-2",
+        };
   }
   if (method === "thread/read") {
     const threadId = record(params).threadId;
@@ -632,6 +661,7 @@ function response(
         status,
         source,
         historyDelivery,
+        canAcceptDirectInput,
       ),
     };
   }
@@ -639,7 +669,13 @@ function response(
   return {};
 }
 
-function thread(id: string, status: string, source: unknown, historyDelivery?: string) {
+function thread(
+  id: string,
+  status: string,
+  source: unknown,
+  historyDelivery?: string,
+  canAcceptDirectInput = true,
+) {
   return {
     id,
     preview: "test",
@@ -648,6 +684,7 @@ function thread(id: string, status: string, source: unknown, historyDelivery?: s
     cwd: "/tmp",
     cliVersion: "test",
     source,
+    canAcceptDirectInput,
     status: status.startsWith("waitingOn")
       ? { type: "active", activeFlags: [status] }
       : { type: status },
@@ -655,6 +692,7 @@ function thread(id: string, status: string, source: unknown, historyDelivery?: s
       ? [
           {
             id: "turn-history",
+            status: "completed",
             items: [
               {
                 type: "functionCallOutput",

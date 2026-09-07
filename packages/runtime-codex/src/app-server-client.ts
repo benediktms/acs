@@ -406,9 +406,12 @@ function stringArray(value: unknown) {
 function decodeThread(value: unknown): CodexThreadDto {
   const thread = record(value),
     name = thread.name,
+    canAcceptDirectInput = thread.canAcceptDirectInput,
     updatedAt = thread.updatedAt,
     status = record(thread.status);
   if (name !== null && typeof name !== "string") throw new Error("invalid app-server thread name");
+  if (canAcceptDirectInput !== null && typeof canAcceptDirectInput !== "boolean")
+    throw new Error("invalid app-server direct-input capability");
   if (typeof updatedAt !== "number") throw new Error("invalid app-server thread timestamp");
   return {
     id: stringField(thread, "id"),
@@ -418,6 +421,7 @@ function decodeThread(value: unknown): CodexThreadDto {
     cwd: stringField(thread, "cwd"),
     cliVersion: stringField(thread, "cliVersion"),
     source: thread.source,
+    canAcceptDirectInput,
     status: {
       type: stringField(status, "type"),
       activeFlags: status.activeFlags === undefined ? undefined : stringArray(status.activeFlags),

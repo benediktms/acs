@@ -102,6 +102,7 @@ type TrackedExecution = {
   deliveries: Map<DeliveryId, string>;
   finalParts: NeutralPart[];
 };
+type DeliveryReference = Pick<RuntimeDeliveryRequest, "deliveryId" | "payloadHash" | "target">;
 
 export class CodexRuntimeAdapter implements RuntimeAdapter {
   readonly descriptor: RuntimeAdapterDescriptor = {
@@ -363,6 +364,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return { outcome: "deferred", reason: "local-input" };
     if (snapshot.availability === "degraded" || snapshot.availability === "unknown")
       return { outcome: "deferred", reason: "unsupported-active-state" };
+    if (snapshot.attributes.canAcceptDirectInput !== true)
+      return { outcome: "deferred", reason: "unsupported-active-state" };
     try {
       // readThread already established a live owner on this endpoint. Resuming
       // here is unnecessary and fails for fresh threads without a rollout.
@@ -447,20 +450,22 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         signal,
         request.payloadHash,
       );
-      return marker
-        ? {
-            outcome: "accepted",
-            execution: { opaqueId: marker.turnId, relationship: "unknown" },
-            evidence: {
-              scheme: "codex.function-call-output.v1",
-              value: request.deliveryId,
-            },
-          }
-        : {
-            outcome: "inconclusive",
-            reason: "Codex history does not contain the exact direct-delivery marker",
-            operatorActionRequired: true,
-          };
+      if (!marker)
+        return {
+          outcome: "inconclusive",
+          reason: "Codex history does not contain the exact direct-delivery marker",
+          operatorActionRequired: true,
+        };
+      this.trackExecution(marker.turnId, request);
+      await this.observeAcceptedExecution(request, marker.turnId, signal);
+      return {
+        outcome: "accepted",
+        execution: { opaqueId: marker.turnId, relationship: "unknown" },
+        evidence: {
+          scheme: "codex.function-call-output.v1",
+          value: request.deliveryId,
+        },
+      };
     } catch (error: unknown) {
       if (signal?.aborted) throw error;
       const failure = appServerFailure(error);
@@ -479,7 +484,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return { outcome: "rejected", reason: "not-owned", retryable: false };
   }
   private async observeAcceptedExecution(
-    request: RuntimeDeliveryRequest,
+    request: DeliveryReference,
     turnId: string,
     signal?: AbortSignal,
   ) {
@@ -518,7 +523,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         setTimeout(() => void this.observeAcceptedExecution(request, turnId), 1_000).unref();
     }
   }
-  private trackExecution(turnId: string, request: RuntimeDeliveryRequest) {
+  private trackExecution(turnId: string, request: DeliveryReference) {
     const existing = this.executions.get(executionKey(request.target.session.opaqueId, turnId));
     if (existing) {
       existing.deliveries.set(request.deliveryId, request.payloadHash);
@@ -542,6 +547,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         displayTitle: thread.name ?? thread.preview,
         cwdHint: thread.cwd,
         sourceKind: runtimeSourceKind(thread.source),
+        canAcceptDirectInput: thread.canAcceptDirectInput,
       },
     };
   }

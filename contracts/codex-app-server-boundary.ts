@@ -54,6 +54,7 @@ export interface CodexThreadDto {
   readonly cwd: string;
   readonly cliVersion: string;
   readonly source: unknown;
+  readonly canAcceptDirectInput: boolean | null;
   readonly status: { readonly type: string; readonly activeFlags?: readonly string[] };
 }
 
