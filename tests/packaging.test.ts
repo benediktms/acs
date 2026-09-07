@@ -369,6 +369,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     runningVersion: "0.153.2",
     compatibility: "tested",
   });
+  expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
   const streamingTask = record(
       record(
@@ -541,6 +542,7 @@ function codexThread(id: string) {
     cwd: "/tmp",
     cliVersion: "0.153.2",
     source: "test",
+    canAcceptDirectInput: true,
     status: { type: "idle" },
     turns: [],
   };

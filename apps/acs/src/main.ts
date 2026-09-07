@@ -433,7 +433,9 @@ async function doctor() {
   const installedCodex = codex.success ? codex.stdout.toString().trim() : undefined,
     call = (method: string, params: unknown = {}) =>
       controlCall(config.runtime, config.token, method, params);
-  let sharedAppServer: string, runningCodexVersion: string | undefined;
+  let sharedAppServer: string,
+    runningCodexVersion: string | undefined,
+    directDelivery = false;
   try {
     await call("system.initialize", {
       protocolVersion: "1.0",
@@ -446,6 +448,7 @@ async function doctor() {
       sessions = sessionsResult.sessions;
     runningCodexVersion =
       typeof probe.runtimeVersion === "string" ? probe.runtimeVersion : undefined;
+    directDelivery = recordValue(probe.capabilities).directDelivery === true;
     sharedAppServer = `ready (${Array.isArray(sessions) ? sessions.length : 0} thread sampled)`;
   } catch (error) {
     sharedAppServer = `unavailable (${error instanceof Error ? error.message : String(error)})`;
@@ -475,7 +478,8 @@ async function doctor() {
     mutatingDeliveryEnabled: Boolean(
       runningCodexVersion &&
       SUPPORTED_CODEX_VERSIONS.includes(runningCodexVersion) &&
-      sharedAppServer.startsWith("ready"),
+      sharedAppServer.startsWith("ready") &&
+      directDelivery,
     ),
   });
 }
