@@ -51,10 +51,9 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
         {
           env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: root },
           stdout: "ignore",
-          stderr: "pipe",
+          stderr: "ignore",
         },
       ),
-      stderr = new Response(child.stderr).text(),
       owner = new CodexAppServerClient(socket),
       adapter = new CodexRuntimeAdapter(socket),
       abort = new AbortController();
@@ -179,7 +178,6 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       owner.close();
       child.kill();
       await child.exited;
-      await stderr;
       await model.stop(true);
       rmSync(root, { recursive: true, force: true });
     }
@@ -204,10 +202,9 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
         ],
         {
           stdout: "ignore",
-          stderr: "pipe",
+          stderr: "ignore",
         },
       ),
-      stderr = new Response(child.stderr).text(),
       client = new CodexAppServerClient(socket),
       adapter = new CodexRuntimeAdapter(socket),
       abort = new AbortController();
@@ -270,7 +267,6 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
       client.close();
       child.kill();
       await child.exited;
-      await stderr;
       rmSync(root, { recursive: true, force: true });
     }
   },
