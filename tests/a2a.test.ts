@@ -53,7 +53,7 @@ describe("A2A JSON-RPC", () => {
           body,
         }),
         7432,
-        4,
+        { maxRequestBytes: 4 },
       );
     expect(response.status).toBe(413);
     expect(canceled).toBe(true);
@@ -67,7 +67,7 @@ describe("A2A JSON-RPC", () => {
             body: "12345",
           }),
           7432,
-          4,
+          { maxRequestBytes: 4 },
         )
       ).status,
     ).toBe(413);
@@ -149,9 +149,11 @@ describe("A2A JSON-RPC", () => {
     const store = fixture(),
       agent = store.createAgent("storage-error"),
       { token } = store.createToken(),
-      accept = store.accept;
+      accept = store.accept,
+      failure = new Error("SQLITE_IOERR: /private/secret/acs.db");
+    let reported: { error: unknown; correlationId: string } | undefined;
     store.accept = () => {
-      throw new Error("SQLITE_IOERR: /private/secret/acs.db");
+      throw failure;
     };
     const response = await handleA2A(
         store,
@@ -168,11 +170,20 @@ describe("A2A JSON-RPC", () => {
           }),
         }),
         7432,
+        {
+          reportInternalError: (details) => {
+            reported = details;
+          },
+        },
       ),
-      body = await response.text();
+      body = record(await response.json()),
+      context = errorContext(record(body.error).data);
     store.accept = accept;
-    expect(body).toContain("ACS_STORAGE_UNAVAILABLE");
-    expect(body).not.toContain("/private/secret");
+    expect(body).toMatchObject({ error: { message: "ACS_STORAGE_UNAVAILABLE" } });
+    expect(JSON.stringify(body)).not.toContain("/private/secret");
+    expect(context).toMatchObject({ code: "ACS_STORAGE_UNAVAILABLE", retryable: true });
+    expect(reported?.error).toBe(failure);
+    expect(reported?.correlationId).toBe(context?.correlationId);
     expect(store.agent(agent.id)?.slug).toBe("storage-error");
     store.close();
   });
@@ -268,9 +279,7 @@ describe("A2A JSON-RPC", () => {
       store,
       new Request("http://localhost/agents/backend/.well-known/agent-card.json"),
       7432,
-      524288,
-      () => {},
-      "::1",
+      { hostname: "::1" },
     );
     expect(AgentCard.fromJSON(await ipv6Card.json()).supportedInterfaces.at(0)?.url).toBe(
       "http://[::1]:7432/agents/backend/a2a",
@@ -289,8 +298,7 @@ describe("A2A JSON-RPC", () => {
           body: JSON.stringify({ jsonrpc: "2.0", id: method, method, params }),
         }),
         7432,
-        524288,
-        () => deliverySignals++,
+        { signalDelivery: () => deliverySignals++ },
       );
       const result: {
         result?: {
