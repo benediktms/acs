@@ -373,6 +373,23 @@ describe("control protocol", () => {
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
     adapter.inspectSession = inspectSession;
     const bridgeToken = readFileSync(paths.bridgeToken, "utf8");
+    const originalProbe = adapter.probe.bind(adapter);
+    adapter.probe = async () => ({
+      ...(await originalProbe()),
+      state: "incompatible",
+      capabilities: { ...adapter.descriptor.capabilities, directDelivery: false },
+    });
+    expect(
+      await (
+        await call(
+          "bindings.register",
+          { slug: "unsupported-runtime", evidence: evidence("unsupported-runtime-thread") },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_INCOMPATIBLE" } } });
+    adapter.probe = originalProbe;
     expect(
       await (
         await call(
@@ -686,7 +703,6 @@ describe("control protocol", () => {
       probe: { state: "ready", capabilities: { directDelivery: true }, diagnostics: [] },
     });
     expect(listedRuntime.state).toBeUndefined();
-    const originalProbe = adapter.probe.bind(adapter);
     adapter.probe = async () => ({
       ...(await originalProbe()),
       capabilities: { ...adapter.descriptor.capabilities, directDelivery: false },

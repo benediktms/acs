@@ -407,6 +407,10 @@ export function controlHandler(
         }
         case "bindings.register": {
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
+          const probe = await adapter.probe();
+          if (probe.state === "incompatible") throw new Error("RUNTIME_INCOMPATIBLE");
+          if (probe.state !== "ready") throw new Error("RUNTIME_UNAVAILABLE");
+          if (!probe.capabilities.directDelivery) throw new Error("UNSUPPORTED_CAPABILITY");
           const evidence = hostInvocationEvidence(p.evidence);
           if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
           const proof = await callerAttestor.attest(evidence);
