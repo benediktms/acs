@@ -22,5 +22,6 @@ install:
     bun run release -- --target "$target"
     mkdir -p "$bin_dir"
     ln -sfn "{{ justfile_directory() }}/dist/release/$target/acs" "$bin_dir/acs"
+    "$bin_dir/acs" init
     "$bin_dir/acs" --help >/dev/null
     echo "Installed acs -> $bin_dir/acs"
