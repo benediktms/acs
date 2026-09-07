@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type {
   AgentRow,
   BindingRow,
@@ -75,10 +76,7 @@ const partSchema = z.discriminatedUnion("kind", [
     deliveryIds: z.array(z.string()).optional(),
     description: z.string().optional(),
     deliveryPolicy: z
-      .object({
-        wakeStrategy: z.enum(["atomic-only", "non-atomic-idle-check", "disabled"]).optional(),
-        allowActiveTurnSteering: z.boolean().optional(),
-        autoResumeDormantThread: z.boolean().optional(),
+      .strictObject({
         interruptOnCancel: z.boolean().optional(),
       })
       .optional(),
@@ -245,10 +243,7 @@ export function controlHandler(
               listSessions: false,
               observeSessionState: false,
               observeExecutions: false,
-              appendContext: false,
-              wakeWhenIdle: false,
-              atomicDeferredWake: false,
-              steerActiveExecution: false,
+              directDelivery: false,
               cancelOwnedExecution: false,
               reconcileDelivery: false,
               callerAttestationSchemes: [],
@@ -409,6 +404,54 @@ export function controlHandler(
             });
             throw error;
           }
+        }
+        case "bindings.register": {
+          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
+          const probe = await adapter.probe();
+          if (probe.state === "incompatible") throw new Error("RUNTIME_INCOMPATIBLE");
+          if (probe.state !== "ready") throw new Error("RUNTIME_UNAVAILABLE");
+          if (!probe.capabilities.directDelivery) throw new Error("UNSUPPORTED_CAPABILITY");
+          const evidence = hostInvocationEvidence(p.evidence);
+          if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
+          const proof = await callerAttestor.attest(evidence);
+          if (proof.kind !== "attested") throw new Error(`UNATTESTED_CALLER: ${proof.reason}`);
+          const snapshot = await adapter.inspectSession(proof.session);
+          if (snapshot.availability === "offline")
+            throw new Error("RUNTIME_UNAVAILABLE: session not found");
+          const registered = store.write(() => {
+            const current = store.attestSession(
+              proof.session,
+              proof.scheme,
+              proof.evidenceFingerprint,
+            );
+            if (current.kind === "attested")
+              return {
+                agent: required(store.agent(current.agentId), "agent"),
+                binding: required(store.binding(current.bindingId), "binding"),
+                idempotent: true,
+              };
+            const slug =
+                p.slug ??
+                `agent-${createHash("sha256")
+                  .update(`${proof.session.installationId}\0${proof.session.opaqueId}`)
+                  .digest("hex")
+                  .slice(0, 12)}`,
+              agent = store.createAgent(slug, p.displayName),
+              binding = store.bind(agent.id, proof.session.opaqueId, {
+                installationId: proof.session.installationId,
+              });
+            return { agent, binding, idempotent: false };
+          });
+          store.observeSession(snapshot.session, snapshot.availability);
+          if (!registered.idempotent) {
+            audit("agent.create", "agent", registered.agent.id, { source: "self-registration" });
+            audit("binding.register", "binding", registered.binding.id);
+          }
+          return ok(rpc.id, {
+            agent: agentDto(store, registered.agent),
+            binding: bindingDto(registered.binding, store),
+            idempotent: registered.idempotent,
+          });
         }
         case "bindings.get": {
           const binding = store.binding(required(p.bindingId, "bindingId"));
@@ -944,7 +987,7 @@ function authorize(principal: { kind: string; scopes: string[] }, method: string
   if (principal.scopes.includes("*")) return;
   const scope = method.startsWith("bridge.issueA2AToken")
     ? "bridge:token"
-    : method.startsWith("bridge.") || method === "bindings.claim"
+    : method.startsWith("bridge.") || method === "bindings.claim" || method === "bindings.register"
       ? "bridge:attest"
       : method.startsWith("executor.")
         ? "executor"
@@ -1124,6 +1167,7 @@ function controlErrorCode(raw: string): ControlErrorData["code"] {
     case "NOT_AUTHENTICATED":
     case "NOT_AUTHORIZED":
     case "AGENT_NOT_FOUND":
+    case "AGENT_ALREADY_EXISTS":
     case "AGENT_DISABLED":
     case "BINDING_NOT_FOUND":
     case "BINDING_CONFLICT":

@@ -186,6 +186,24 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   mcp.stdin.write(
     `${JSON.stringify({
       jsonrpc: "2.0",
+      id: 98,
+      method: "tools/call",
+      params: {
+        name: "acs_register",
+        arguments: { slug: "self-registered" },
+        _meta: { threadId: "thread-self-registered" },
+      },
+    })}\n`,
+  );
+  const registerCall = jsonRpcResponse(await readUntil(mcp.stdout, '"id":98'), 98);
+  expect(record(record(record(registerCall.result).structuredContent).data)).toMatchObject({
+    agent: { slug: "self-registered" },
+    binding: { status: "active", epoch: 1 },
+    idempotent: false,
+  });
+  mcp.stdin.write(
+    `${JSON.stringify({
+      jsonrpc: "2.0",
       id: 99,
       method: "tools/call",
       params: {
@@ -225,6 +243,11 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     binding: { status: "active", epoch: 1 },
     idempotent: true,
   });
+  mcp.stdin.write(
+    `${JSON.stringify({ jsonrpc: "2.0", id: 101, method: "tools/call", params: { name: "acs_send", arguments: { to: "receiver", text: "must reject", delivery: "append_context" }, _meta: { threadId: "thread-sender" } } })}\n`,
+  );
+  const invalidMode = jsonRpcResponse(await readUntil(mcp.stdout, '"id":101'), 101);
+  expect(invalidMode.error ?? record(invalidMode.result).isError).toBeTruthy();
   mcp.stdin.write(
     `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n${JSON.stringify({
       jsonrpc: "2.0",
@@ -287,6 +310,12 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   );
   expect(record(assignedGetData.task).id).toBe(mcpTaskId);
   const receivedDeliveryId = string(assignedGetData.deliveryId, JSON.stringify(assignedGetData));
+  await waitFor(() => {
+    const inspection = Bun.spawnSync([binary, "deliveries", "get", receivedDeliveryId], { env });
+    if (inspection.exitCode !== 0) return false;
+    const delivery = record(record(JSON.parse(inspection.stdout.toString())).delivery);
+    return delivery.state === "accepted";
+  });
   mcp.stdin.write(
     `${JSON.stringify({
       jsonrpc: "2.0",
@@ -324,7 +353,6 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   );
   expect(cancelData).toMatchObject({
     taskId: mcpTaskId,
-    state: "canceled",
     cancellationRequested: true,
   });
 
@@ -341,6 +369,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     runningVersion: "0.153.2",
     compatibility: "tested",
   });
+  expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
   const streamingTask = record(
       record(
@@ -494,6 +523,13 @@ function codexResponse(method: string, params: Record<string, unknown>) {
   if (method === "thread/list" || method === "thread/loaded/list")
     return { data: [], nextCursor: null };
   if (method === "thread/read") return { thread: codexThread(string(params.threadId)) };
+  if (method === "turn/start") {
+    expect(params.input).toEqual([]);
+    expect(params.toolOutput).toMatchObject({ namespace: "acs", name: "receive_agent_message" });
+    return { turn: { id: `turn-${string(params.threadId)}` } };
+  }
+  if (method === "thread/inject_items" || method === "turn/interrupt")
+    throw new Error(`unexpected unsafe runtime mutation: ${method}`);
   return {};
 }
 
@@ -506,6 +542,7 @@ function codexThread(id: string) {
     cwd: "/tmp",
     cliVersion: "0.153.2",
     source: "test",
+    canAcceptDirectInput: true,
     status: { type: "idle" },
     turns: [],
   };

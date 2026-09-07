@@ -231,20 +231,16 @@ export async function runMcp(port = 7432) {
       inputSchema: {
         claimCode: z.string().min(1).max(64),
         continuityPolicy: z.enum(["follow-pending", "strict"]).optional(),
-        allowNonAtomicWake: z.boolean().optional(),
         revokeExisting: z.boolean().optional(),
       },
     },
-    async ({ claimCode, continuityPolicy, allowNonAtomicWake, revokeExisting }, extra) =>
+    async ({ claimCode, continuityPolicy, revokeExisting }, extra) =>
       execute(async () => {
         const claimed = await typedCall(
           "bindings.claim",
           {
             claimCode,
             continuityPolicy,
-            deliveryPolicy: {
-              wakeStrategy: allowNonAtomicWake ? "non-atomic-idle-check" : "atomic-only",
-            },
             revokeExisting,
             evidence: evidence(extra),
           },
@@ -258,6 +254,35 @@ export async function runMcp(port = 7432) {
           },
           binding: claimed.binding,
           idempotent: claimed.idempotent,
+        };
+      }),
+  );
+  server.registerTool(
+    "acs_register",
+    {
+      description: "Create a logical ACS agent and bind this attested Codex thread",
+      inputSchema: {
+        slug: z
+          .string()
+          .regex(/^[a-z][a-z0-9-]{0,62}$/)
+          .optional(),
+      },
+    },
+    async ({ slug }, extra) =>
+      execute(async () => {
+        const registered = await typedCall(
+          "bindings.register",
+          { slug, evidence: evidence(extra) },
+          claimResultSchema,
+        );
+        return {
+          agent: {
+            id: registered.agent.id,
+            slug: registered.agent.slug,
+            displayName: registered.agent.displayName,
+          },
+          binding: registered.binding,
+          idempotent: registered.idempotent,
         };
       }),
   );
@@ -304,12 +329,11 @@ export async function runMcp(port = 7432) {
     "acs_send",
     {
       description: "Durably send an A2A task to another logical agent",
-      inputSchema: {
+      inputSchema: z.strictObject({
         to: z.string(),
         text: z.string().min(1).max(65536),
         taskId: z.string().optional(),
         contextId: z.string().optional(),
-        delivery: z.enum(["wake_when_idle", "append_context"]).optional(),
         priority: z.enum(["low", "normal", "high"]).optional(),
         replyExpected: z.boolean().optional(),
         notifyOn: z
@@ -327,7 +351,7 @@ export async function runMcp(port = 7432) {
           .optional(),
         attachments: z.array(attachment).optional(),
         clientRequestId: z.string().optional(),
-      },
+      }),
     },
     async (args, extra) =>
       execute(async () => {
@@ -347,7 +371,6 @@ export async function runMcp(port = 7432) {
             configuration: { returnImmediately: true },
             metadata: {
               "urn:agent-communications:delivery:v1": {
-                mode: args.delivery,
                 priority: args.priority,
                 replyExpected: args.replyExpected,
                 notifyOn: args.notifyOn,

@@ -37,7 +37,7 @@ For a reachable bound Codex thread, the adapter submits `turn/start` with:
 - `toolOutput.namespace = "acs"`;
 - `toolOutput.output = <canonical delivery envelope>`.
 
-The canonical envelope contains the durable delivery/message identity, authenticated sender identity, optional task correlation, reply contract, and peer-agent provenance.
+The canonical envelope contains a prominent `AGENT MESSAGE` or `AGENT REPLY` notice, the durable delivery/message identity, authenticated sender identity, optional task correlation, reply contract, and peer-agent provenance.
 
 This is a **session-addressed** delivery guarantee rather than an exact previously-observed-turn precondition. If the recipient is idle, Codex starts a new turn. If Codex accepts the submission into an already-active supported turn, ACS records that existing turn. If the runtime cannot accept the input in the current state, ACS defers the delivery rather than appending it to history or fabricating a local-user message.
 
@@ -126,6 +126,8 @@ The service SHALL NOT collapse these milestones.
 A successful app-server response establishes runtime acceptance only to the extent proven by its turn identifier and subsequent runtime evidence. It does not prove that the receiving model has acted on the content.
 
 Replies SHALL correlate to the specific task/message contract rather than relying on the latest runtime turn or forwarding an arbitrary final assistant response.
+
+When the requester is an attested bound agent and subscribes to the resulting task events, an explicit recipient reply SHALL create a durable direct-delivery intent pinned to the requester's originating binding. The scheduler delivers that event through the same native input path; mailbox/task reads remain inspection and recovery tools rather than the normal reply path.
 
 ## Ambiguous writes
 

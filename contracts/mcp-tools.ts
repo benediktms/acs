@@ -64,8 +64,26 @@ export interface AcsMcpToolMap {
     readonly input: {
       readonly claimCode: string;
       readonly continuityPolicy?: "follow-pending" | "strict";
-      readonly allowNonAtomicWake?: boolean;
       readonly revokeExisting?: boolean;
+    };
+    readonly output: McpToolResult<{
+      readonly agent: {
+        readonly id: string;
+        readonly slug: string;
+        readonly displayName: string;
+      };
+      readonly binding: {
+        readonly id: string;
+        readonly epoch: number;
+        readonly status: "active";
+      };
+      readonly idempotent: boolean;
+    }>;
+  };
+
+  acs_register: {
+    readonly input: {
+      readonly slug?: string;
     };
     readonly output: McpToolResult<{
       readonly agent: {
@@ -127,7 +145,6 @@ export interface AcsMcpToolMap {
       readonly text: string;
       readonly taskId?: string;
       readonly contextId?: string;
-      readonly delivery?: "wake_when_idle" | "append_context";
       readonly priority?: "low" | "normal" | "high";
       readonly replyExpected?: boolean;
       readonly notifyOn?: readonly (

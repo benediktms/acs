@@ -33,6 +33,7 @@ export interface ControlErrorData {
     | "NOT_AUTHENTICATED"
     | "NOT_AUTHORIZED"
     | "AGENT_NOT_FOUND"
+    | "AGENT_ALREADY_EXISTS"
     | "AGENT_DISABLED"
     | "BINDING_NOT_FOUND"
     | "BINDING_CONFLICT"
@@ -92,9 +93,6 @@ export interface RuntimeBindingDto {
   readonly status: "pending" | "active" | "stale" | "revoked";
   readonly continuityPolicy: "follow-pending" | "strict";
   readonly deliveryPolicy: {
-    readonly wakeStrategy: "atomic-only" | "non-atomic-idle-check" | "disabled";
-    readonly allowActiveTurnSteering: boolean;
-    readonly autoResumeDormantThread: boolean;
     readonly interruptOnCancel: boolean;
   };
   readonly createdAt: string;
@@ -304,6 +302,24 @@ export interface ControlMethodMap {
       readonly continuityPolicy?: "follow-pending" | "strict";
       readonly deliveryPolicy?: Partial<RuntimeBindingDto["deliveryPolicy"]>;
       readonly revokeExisting?: boolean;
+      readonly evidence: {
+        readonly harnessId: "codex";
+        readonly bridge: "mcp";
+        readonly metadata?: JsonObject;
+        readonly bridgeInstanceId: string;
+      };
+    };
+    readonly result: {
+      readonly agent: LogicalAgentDto;
+      readonly binding: RuntimeBindingDto;
+      readonly idempotent: boolean;
+    };
+  };
+
+  "bindings.register": {
+    readonly params: {
+      readonly slug?: string;
+      readonly displayName?: string;
       readonly evidence: {
         readonly harnessId: "codex";
         readonly bridge: "mcp";
