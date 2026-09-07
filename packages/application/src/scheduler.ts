@@ -323,7 +323,7 @@ export class DeliveryScheduler {
         },
         [`tsk_${string}`]
       >(
-        "SELECT e.id,e.runtime_execution_opaque_id,e.binding_id,e.binding_epoch,e.state,b.installation_id,b.session_opaque_id,b.delivery_policy_json FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=? AND e.relationship='started' AND e.state IN ('accepted','started','awaiting-local-input') AND NOT EXISTS(SELECT 1 FROM runtime_executions e2 WHERE e2.binding_id=e.binding_id AND e2.runtime_execution_opaque_id=e.runtime_execution_opaque_id AND e2.id<>e.id AND e2.state IN ('accepted','started','awaiting-local-input')) LIMIT 1",
+        "SELECT e.id,e.runtime_execution_opaque_id,e.binding_id,e.binding_epoch,e.state,b.installation_id,b.session_opaque_id,b.delivery_policy_json FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=? AND i.kind='a2a-message' AND e.relationship='started' AND e.state IN ('accepted','started','awaiting-local-input') AND NOT EXISTS(SELECT 1 FROM runtime_executions e2 WHERE e2.binding_id=e.binding_id AND e2.runtime_execution_opaque_id=e.runtime_execution_opaque_id AND e2.id<>e.id AND e2.state IN ('accepted','started','awaiting-local-input')) LIMIT 1",
       )
       .get(task.task_id);
     if (
@@ -1040,7 +1040,7 @@ export class DeliveryScheduler {
     availability: RuntimeAvailability,
   ) {
     this.store.observeSession(session, availability);
-    if (availability === "offline" || availability === "dormant") return;
+    if (availability !== "idle" && availability !== "busy") return;
     const now = Date.now();
     this.store
       .query(

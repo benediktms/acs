@@ -1094,6 +1094,8 @@ describe("delivery scheduler", () => {
         installationId: `ins_${string}`;
         opaqueId: string;
       }>(),
+      releaseCompletion = Promise.withResolvers<void>(),
+      canceled: string[] = [],
       adapter = new FakeRuntimeAdapter();
     adapter.deliver = async (request) => {
       delivered.resolve(request.target.session);
@@ -1104,9 +1106,14 @@ describe("delivery scheduler", () => {
         evidence: { scheme: "fake", value: "notification-turn" },
       };
     };
+    adapter.cancel = async (request) => {
+      canceled.push(request.execution.opaqueId);
+      return { outcome: "accepted", acceptedAt: new Date().toISOString() };
+    };
     adapter.observe = async function* (signal) {
       yield { type: "adapter.connection", state: "online" };
       const session = await delivered.promise;
+      await releaseCompletion.promise;
       yield {
         type: "execution.completed",
         execution: { opaqueId: "notification-turn", session },
@@ -1128,6 +1135,11 @@ describe("delivery scheduler", () => {
     expect(
       store.db.query<{ count: number }, []>("SELECT count(*) count FROM runtime_executions").get(),
     ).toEqual({ count: 1 });
+    store.requestCancellation(accepted.task.id, senderBinding.principalId);
+    await Bun.sleep(400);
+    expect(canceled).toEqual([]);
+    releaseCompletion.resolve();
+    await Bun.sleep(25);
     await scheduler.stop();
     store.close();
   });
@@ -1395,6 +1407,24 @@ describe("delivery scheduler", () => {
       };
       await secondDelivery.promise;
       await Bun.sleep(25);
+      yield {
+        type: "session.observed",
+        session: {
+          installationId: bindingRow.installation_id,
+          opaqueId: bindingRow.session_opaque_id,
+        },
+        snapshot: {
+          session: {
+            installationId: bindingRow.installation_id,
+            opaqueId: bindingRow.session_opaque_id,
+          },
+          availability: "awaiting-local-input",
+          observedAt: new Date().toISOString(),
+          attributes: {},
+        },
+      };
+      await Bun.sleep(150);
+      expect(deliveries).toBe(2);
       yield {
         type: "session.observed",
         session: {
