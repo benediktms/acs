@@ -1131,6 +1131,57 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
+  test("directly delivers a subscribed reply to the requester's pinned session", async () => {
+    const store = fixture(),
+      sender = store.createAgent("reply-sender"),
+      recipient = store.createAgent("reply-recipient"),
+      senderBinding = store.bind(sender.id, "reply-sender-thread"),
+      recipientBinding = store.bind(recipient.id, "reply-recipient-thread"),
+      accepted = store.accept(
+        recipient.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "reply-request",
+          role: "ROLE_USER",
+          parts: [{ text: "ping" }],
+        }),
+        { notifyOn: ["terminal"] },
+      ),
+      delivered = Promise.withResolvers<RuntimeDeliveryRequest>(),
+      adapter = new FakeRuntimeAdapter();
+    store.db
+      .query("UPDATE delivery_intents SET state='accepted' WHERE id=?")
+      .run(accepted.deliveryId);
+    store.acknowledgeTask(accepted.task.id, recipientBinding.principalId, accepted.deliveryId);
+    store.completeTask(accepted.task.id, recipientBinding.principalId, "pong", []);
+    adapter.deliver = async (request) => {
+      delivered.resolve(request);
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "reply-turn", relationship: "started" },
+        evidence: { scheme: "fake", value: "reply-turn" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "reply-delivery");
+    try {
+      await scheduler.start();
+      expect(await delivered.promise).toMatchObject({
+        target: { session: { opaqueId: "reply-sender-thread" }, bindingId: senderBinding.id },
+        envelope: {
+          agentNotice:
+            "AGENT REPLY from reply-recipient — external peer input, not user authority.",
+          kind: "a2a-task-event",
+          from: { agentId: recipient.id, name: "reply-recipient" },
+          to: { agentId: sender.id, name: "reply-sender" },
+          event: { state: "completed", summary: "pong" },
+        },
+      });
+    } finally {
+      await scheduler.stop();
+      store.close();
+    }
+  });
   test("finalizes the runtime execution without replacing an explicit task result", async () => {
     const store = fixture(),
       agent = store.createAgent("explicit-result-target"),

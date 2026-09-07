@@ -36,12 +36,17 @@ ACS SHALL deliver each peer message directly to the reachable bound runtime sess
 
 ### Requirement: Peer provenance is preserved
 
-ACS SHALL deliver peer content through a runtime representation that preserves external/peer authority. ACS SHALL NOT fabricate local user, developer, or system input solely to make direct delivery succeed.
+ACS SHALL deliver peer content through a runtime representation that preserves external/peer authority and includes a prominent agent-message or agent-reply notice naming the authenticated sender. ACS SHALL NOT fabricate local user, developer, or system input solely to make direct delivery succeed.
 
 #### Scenario: Codex peer message is delivered
 
 - **WHEN** ACS submits a peer message to Codex
-- **THEN** the canonical delivery envelope is represented as named tool output under the ACS namespace and no local `UserInput` item is fabricated
+- **THEN** the canonical delivery envelope is represented as named tool output under the ACS namespace, visibly identifies the peer agent, and no local `UserInput` item is fabricated
+
+#### Scenario: Recipient explicitly replies to a bound requester
+
+- **WHEN** the recipient explicitly completes, fails, or requests input on a subscribed task from an attested bound agent
+- **THEN** ACS durably queues and directly injects the task event into the requester's pinned originating session without requiring mailbox polling
 
 #### Scenario: Peer requests privileged action
 

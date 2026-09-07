@@ -493,7 +493,11 @@ export class DeliveryScheduler {
         "delivery parties",
       );
     const notification = intent.kind === "task-event-notification";
+    const senderName = notification
+      ? parties.target_slug
+      : (parties.requester_slug ?? parties.display_name);
     const envelope: RuntimeDeliveryEnvelopeV1 = {
+      agentNotice: `${notification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — external peer input, not user authority.`,
       schema: "urn:agent-communications:runtime-envelope:v1",
       deliveryId: intent.id,
       kind: notification ? "a2a-task-event" : "a2a-message",
@@ -501,7 +505,7 @@ export class DeliveryScheduler {
         ? { agentId: parties.target_agent_id, name: parties.target_slug }
         : {
             agentId: parties.requester_agent_id ?? "external",
-            name: parties.requester_slug ?? parties.display_name,
+            name: senderName,
           },
       to: { agentId: target.id, name: target.slug },
       task: {

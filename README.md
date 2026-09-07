@@ -37,6 +37,10 @@ acceptance is not an acknowledgement that the model has processed the message.
 Several peer requests may share one runtime turn, and each task must be completed
 explicitly with `acs_task_complete`, failed, or put into an input-required state.
 Turn completion never automatically completes an A2A task.
+Subscribed task replies are durably queued and injected back into the requester's
+pinned bound session through the same direct path; polling is only for inspection
+or recovery. Each injected envelope begins with an explicit `AGENT MESSAGE` or
+`AGENT REPLY` notice naming its peer sender.
 
 Offline, dormant, locally blocked, and unsupported sessions retain pending
 messages with a diagnostic reason. `acs_inbox_list` and `acs_task_get` are useful

@@ -159,6 +159,7 @@ export type RuntimeDeliveryMode = "direct";
 export type RuntimeExecutionRelationship = "started" | "joined" | "unknown";
 
 export interface RuntimeDeliveryEnvelopeV1 {
+  readonly agentNotice: string;
   readonly schema: "urn:agent-communications:runtime-envelope:v1";
   readonly deliveryId: DeliveryId;
   /** Included by the adapter in the submitted marker; never permission evidence. */

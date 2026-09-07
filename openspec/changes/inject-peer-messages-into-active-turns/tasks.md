@@ -27,6 +27,7 @@
 - [x] 4.3 Add a real-Codex test for several peer messages delivered to one active turn and verify their task/reply correlations remain independent.
 - [ ] 4.4 Add a real-Codex ambiguous-write test where feasible; verify a lost response after write leads to authoritative reconciliation or `acceptance-unknown`, never blind retry.
 - [x] 4.5 Update OpenSpec, threat model, README, conformance report, and two-agent workflow to describe direct session delivery, explicit task completion, and route requirements; verify stale history-append/polling-as-delivery claims are absent with a targeted text search.
+- [x] 4.8 Prove a subscribed reply is automatically delivered to the requester's pinned bound session without polling, and make the named tool-output envelope visibly identify agent messages and replies.
 - [ ] 4.6 Reconcile the implementation with https://github.com/benediktms/acs/pull/14, https://github.com/benediktms/acs/pull/15, https://github.com/benediktms/acs/pull/16, https://github.com/benediktms/acs/pull/19, and https://github.com/benediktms/acs/pull/35; verify each remaining PR either targets the direct-delivery contract or is explicitly superseded.
 - [ ] 4.7 Run strict OpenSpec validation plus affected test files, typecheck, lint, formatting, import-boundary, enum, and generated-protocol checks; leave the full suite to CI.
 

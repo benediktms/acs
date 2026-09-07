@@ -4,8 +4,13 @@
   "title": "ACS Runtime Delivery Envelope v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "deliveryId", "kind", "from", "to", "provenance"],
+  "required": ["agentNotice", "schema", "deliveryId", "kind", "from", "to", "provenance"],
   "properties": {
+    "agentNotice": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
     "schema": {
       "const": "urn:agent-communications:runtime-envelope:v1"
     },
