@@ -186,6 +186,24 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   mcp.stdin.write(
     `${JSON.stringify({
       jsonrpc: "2.0",
+      id: 98,
+      method: "tools/call",
+      params: {
+        name: "acs_register",
+        arguments: { slug: "self-registered" },
+        _meta: { threadId: "thread-self-registered" },
+      },
+    })}\n`,
+  );
+  const registerCall = jsonRpcResponse(await readUntil(mcp.stdout, '"id":98'), 98);
+  expect(record(record(record(registerCall.result).structuredContent).data)).toMatchObject({
+    agent: { slug: "self-registered" },
+    binding: { status: "active", epoch: 1 },
+    idempotent: false,
+  });
+  mcp.stdin.write(
+    `${JSON.stringify({
+      jsonrpc: "2.0",
       id: 99,
       method: "tools/call",
       params: {
