@@ -46,6 +46,13 @@ import { telemetry } from "../../observability/src/index";
 
 const extension = "urn:agent-communications:delivery:v1",
   deliveryStatus = "urn:agent-communications:delivery-status:v1";
+export type A2AInternalErrorReporter = (details: { error: unknown; correlationId: string }) => void;
+export interface A2AOptions {
+  maxRequestBytes?: number;
+  signalDelivery?: () => void;
+  hostname?: string;
+  reportInternalError?: A2AInternalErrorReporter;
+}
 class PrincipalUser {
   constructor(readonly userName: string) {}
   get isAuthenticated() {
@@ -118,6 +125,7 @@ export function card(row: AgentRow, port: number, hostname = "127.0.0.1"): Agent
 }
 
 class Handler implements A2ARequestHandler {
+  private internalErrorCorrelationId?: string;
   constructor(
     private application: A2AApplicationPort,
     private principal: AuthenticatedPrincipal,
@@ -126,6 +134,7 @@ class Handler implements A2ARequestHandler {
     private signalDelivery: () => void,
     private hostname: string,
     private traceContext?: RuntimeTraceContext,
+    private reportInternalError: A2AInternalErrorReporter = () => {},
   ) {}
   async getAgentCard() {
     return card(this.agent, this.port, this.hostname);
@@ -184,7 +193,7 @@ class Handler implements A2ARequestHandler {
         },
       });
     } catch (error) {
-      throw applicationError(error);
+      throw this.applicationError(error);
     }
   }
   async *sendMessageStream(
@@ -202,7 +211,7 @@ class Handler implements A2ARequestHandler {
         await this.application.getTask(this.query(params.id, params.historyLength)),
       );
     } catch (error) {
-      throw applicationError(error);
+      throw this.applicationError(error);
     }
   }
   async listTasks(params: ListTasksRequest, _context: ServerCallContext) {
@@ -228,7 +237,7 @@ class Handler implements A2ARequestHandler {
         totalSize: page.totalSize,
       };
     } catch (error) {
-      throw applicationError(error);
+      throw this.applicationError(error);
     }
   }
   async cancelTask(params: CancelTaskRequest, _context: ServerCallContext) {
@@ -256,7 +265,7 @@ class Handler implements A2ARequestHandler {
         }),
       );
     } catch (error) {
-      throw applicationError(error);
+      throw this.applicationError(error);
     }
   }
   async *resubscribe(
@@ -291,6 +300,15 @@ class Handler implements A2ARequestHandler {
       taskId,
       historyLength,
     };
+  }
+  applicationError(error: unknown) {
+    return applicationError(error, (details) => {
+      this.internalErrorCorrelationId = details.correlationId;
+      this.reportInternalError(details);
+    });
+  }
+  get errorCorrelationId() {
+    return this.internalErrorCorrelationId;
   }
   private async *updates(subscription: TaskEventSubscription): AsyncGenerator<StreamResponse> {
     try {
@@ -367,7 +385,7 @@ function isNotifyState(value: unknown): value is DeliveryPreference["notifyOn"][
     ].includes(value)
   );
 }
-function applicationError(error: unknown) {
+function applicationError(error: unknown, reportInternalError: A2AInternalErrorReporter) {
   if (error instanceof JsonRpcTransportError) return error;
   const message = error instanceof Error ? error.message : String(error),
     raw = message.split(":").at(0) ?? "UNKNOWN";
@@ -383,6 +401,12 @@ function applicationError(error: unknown) {
         ? "ACS_VALIDATION_FAILED"
         : "ACS_STORAGE_UNAVAILABLE";
   const publicMessage = code === "ACS_STORAGE_UNAVAILABLE" ? code : message;
+  const correlationId = crypto.randomUUID();
+  if (code === "ACS_STORAGE_UNAVAILABLE") {
+    try {
+      reportInternalError({ error, correlationId });
+    } catch {}
+  }
   return new JsonRpcTransportError({
     jsonrpc: "2.0",
     id: null,
@@ -392,7 +416,7 @@ function applicationError(error: unknown) {
       data: {
         code,
         retryable: code === "ACS_STORAGE_UNAVAILABLE" || code === "ACS_OVERLOADED",
-        correlationId: crypto.randomUUID(),
+        correlationId,
       },
     },
   });
@@ -439,15 +463,27 @@ export async function handleA2A(
   store: A2AStoragePort,
   request: Request,
   port: number,
-  maxRequestBytes = 524288,
-  signalDelivery: () => void = () => {},
-  hostname = "127.0.0.1",
+  options: A2AOptions = {},
 ): Promise<Response> {
+  const {
+    maxRequestBytes = 524288,
+    signalDelivery = () => {},
+    hostname = "127.0.0.1",
+    reportInternalError = () => {},
+  } = options;
   const started = performance.now();
   telemetry.increment("acs_a2a_requests_total");
   try {
     return await telemetry.trace("a2a.receive", () =>
-      handleA2ARoute(store, request, port, maxRequestBytes, signalDelivery, hostname),
+      handleA2ARoute(
+        store,
+        request,
+        port,
+        maxRequestBytes,
+        signalDelivery,
+        hostname,
+        reportInternalError,
+      ),
     );
   } finally {
     telemetry.observe("acs_a2a_request_duration_ms", performance.now() - started);
@@ -461,6 +497,7 @@ async function handleA2ARoute(
   maxRequestBytes: number,
   signalDelivery: () => void,
   hostname: string,
+  reportInternalError: A2AInternalErrorReporter,
 ): Promise<Response> {
   const url = new URL(request.url),
     match = url.pathname.match(/^\/agents\/([^/]+)\/(?:\.well-known\/agent-card\.json|a2a)$/);
@@ -540,18 +577,18 @@ async function handleA2ARoute(
       user: new PrincipalUser(principal.id),
       requestedVersion: requestedVersion ?? "1.0",
     }),
-    result = await new JsonRpcTransportHandler(
-      new Handler(
-        new A2AApplication(store),
-        authenticatedPrincipal(principal),
-        agent,
-        port,
-        signalDelivery,
-        hostname,
-        incomingTraceContext(request.headers),
-      ),
-    ).handle(body, context);
-  addErrorContext(result);
+    handler = new Handler(
+      new A2AApplication(store),
+      authenticatedPrincipal(principal),
+      agent,
+      port,
+      signalDelivery,
+      hostname,
+      incomingTraceContext(request.headers),
+      reportInternalError,
+    ),
+    result = await new JsonRpcTransportHandler(handler).handle(body, context);
+  addErrorContext(result, handler.errorCorrelationId);
   if (isAsyncIterable(result)) {
     const iterator = result[Symbol.asyncIterator](),
       encoder = new TextEncoder();
@@ -675,15 +712,20 @@ function errorResponse(id: string | number | null, error: Error) {
   addErrorContext(result);
   return Response.json(result);
 }
-function addErrorContext(value: unknown) {
+function addErrorContext(value: unknown, correlationId?: string) {
   if (!isJsonRpcErrorResponse(value)) return;
   const existing = value.error.data;
+  const existingContext = Array.isArray(existing)
+    ? existing.find(isRecord)
+    : isRecord(existing)
+      ? existing
+      : undefined;
   if (
-    isRecord(existing) &&
-    typeof existing.retryable === "boolean" &&
-    typeof existing.correlationId === "string"
+    existingContext &&
+    typeof existingContext.retryable === "boolean" &&
+    typeof existingContext.correlationId === "string"
   ) {
-    value.error.data = [existing];
+    value.error.data = Array.isArray(existing) ? existing : [existing];
     return;
   }
   const rawCode = value.error.message.split(":").at(0) ?? "UNKNOWN",
@@ -691,7 +733,7 @@ function addErrorContext(value: unknown) {
     context = {
       code,
       retryable: code === "ACS_STORAGE_UNAVAILABLE" || code === "ACS_OVERLOADED",
-      correlationId: crypto.randomUUID(),
+      correlationId: correlationId ?? crypto.randomUUID(),
     };
   value.error.data = Array.isArray(existing)
     ? [...existing, context]

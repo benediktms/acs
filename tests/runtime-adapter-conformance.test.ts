@@ -33,7 +33,10 @@ type Fixture = {
   adapter: RuntimeAdapter;
   context: RuntimeAdapterContext;
   methods: string[];
-  failNext(method: string, failure: "overload" | "disconnect" | "hang" | "malformed"): void;
+  failNext(
+    method: string,
+    failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
+  ): void;
   disconnect(): void;
   request(method: string, params: unknown): void;
   setFence(valid: boolean): void;
@@ -393,6 +396,11 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
     test("distinguishes overload from lost acceptance and preserves shutdown ambiguity", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
+      fixture.failNext("turn/start", "unloaded");
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({
+        outcome: "deferred",
+        reason: "offline",
+      });
       fixture.failNext("turn/start", "overload");
       expect(await fixture.adapter.deliver(delivery())).toMatchObject({
         outcome: "deferred",
@@ -463,7 +471,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
   const path = join(root, "codex.sock"),
     methods: string[] = [],
     buffers = new WeakMap<object, Buffer>(),
-    failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed">();
+    failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">();
   let fence = true,
     canAcceptDirectInput = true,
     historyDelivery: string | undefined,
@@ -520,6 +528,15 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
                 JSON.stringify({
                   id: request.id,
                   error: { code: -32000, message: "ingress overloaded" },
+                }),
+              ),
+            );
+          else if (typeof request.id === "number" && failure === "unloaded")
+            socket.write(
+              serverFrame(
+                JSON.stringify({
+                  id: request.id,
+                  error: { code: -32600, message: "thread not loaded: thread-1" },
                 }),
               ),
             );

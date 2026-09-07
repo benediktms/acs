@@ -243,14 +243,17 @@ async function daemon() {
     hostname: listen.hostname,
     port,
     fetch: (request) =>
-      handleA2A(
-        store,
-        request,
-        port,
-        settings.security.maxRequestBytes,
-        () => scheduler?.signal(),
-        listen.hostname,
-      ),
+      handleA2A(store, request, port, {
+        maxRequestBytes: settings.security.maxRequestBytes,
+        signalDelivery: () => scheduler?.signal(),
+        hostname: listen.hostname,
+        reportInternalError: ({ error, correlationId }) =>
+          log("error", "a2a.internal_error", String(process.pid), {
+            correlationId,
+            code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN",
+            message: error instanceof Error ? error.message : String(error),
+          }),
+      }),
     error: (error) => sanitizedError(error, String(process.pid)),
   });
   if (existsSync(config.runtime)) unlinkSync(config.runtime);

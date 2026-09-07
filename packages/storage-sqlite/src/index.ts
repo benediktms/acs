@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import migration from "../../../storage/001_initial.sql" with { type: "text" };
+import directDeliveryMigration from "../../../storage/002_direct_delivery.sql" with { type: "text" };
+import runtimeExecutionRelationshipMigration from "../../../storage/003_runtime_execution_relationship.sql" with { type: "text" };
 import {
   agentSlug,
   BindingState,
@@ -40,6 +42,32 @@ import type {
 import { z } from "zod";
 
 const a2aAgentRole = 2;
+const migrations = [
+  {
+    version: 1,
+    name: "initial",
+    sql: migration,
+    rebuildsForeignKeys: false,
+    required: () => true,
+  },
+  {
+    version: 2,
+    name: "direct-delivery",
+    sql: directDeliveryMigration,
+    rebuildsForeignKeys: true,
+    required: () => true,
+  },
+  {
+    version: 3,
+    name: "runtime-execution-relationship",
+    sql: runtimeExecutionRelationshipMigration,
+    rebuildsForeignKeys: false,
+    required: (db: Database) =>
+      !db
+        .query("SELECT 1 FROM pragma_table_info('runtime_executions') WHERE name='relationship'")
+        .get(),
+  },
+];
 export type {
   AgentRow,
   BindingRow,
@@ -175,16 +203,53 @@ export class Store {
     this.db.exec(
       `PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=${this.limits.busyTimeoutMs}; PRAGMA synchronous=${this.limits.durability === "strict" ? "FULL" : "NORMAL"};`,
     );
-    if (!this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'").get()) {
-      this.db.exec(migration);
-      this.db
-        .query(
-          "INSERT INTO schema_migrations(version,name,checksum,applied_at_ms) VALUES(1,'initial',?,?)",
-        )
-        .run(createHash("sha256").update(migration).digest("hex"), Date.now());
-    }
+    this.migrate();
     this.secret = readFileSync(config.secret);
     this.bootstrap();
+  }
+  private migrate() {
+    const versioned = this.db
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'")
+      .get();
+    if (!versioned) {
+      const existing = this.db
+        .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'")
+        .get();
+      if (existing) throw new Error("STORAGE_SCHEMA_UNVERSIONED");
+    }
+    const applied = new Set(
+      versioned
+        ? this.db
+            .query<{ version: number }, []>("SELECT version FROM schema_migrations")
+            .all()
+            .map((row) => row.version)
+        : [],
+    );
+    for (const step of migrations) {
+      if (applied.has(step.version)) continue;
+      if (step.rebuildsForeignKeys) this.db.exec("PRAGMA foreign_keys=OFF");
+      try {
+        this.db
+          .transaction(() => {
+            if (step.required(this.db)) this.db.exec(step.sql);
+            if (this.db.query("PRAGMA foreign_key_check").get())
+              throw new Error("STORAGE_CORRUPT: foreign key check failed");
+            this.db
+              .query(
+                "INSERT INTO schema_migrations(version,name,checksum,applied_at_ms) VALUES(?,?,?,?)",
+              )
+              .run(
+                step.version,
+                step.name,
+                createHash("sha256").update(step.sql).digest("hex"),
+                Date.now(),
+              );
+          })
+          .immediate();
+      } finally {
+        if (step.rebuildsForeignKeys) this.db.exec("PRAGMA foreign_keys=ON");
+      }
+    }
   }
   close() {
     this.db.close();

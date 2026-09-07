@@ -10,7 +10,8 @@ returns `AGENT_ALREADY_EXISTS`.
 
 Self-registration never accepts a thread, binding, principal, or sender ID. ACS
 derives the runtime session exclusively from Codex-owned MCP metadata and commits
-the agent and binding together. It cannot replace an existing agent binding.
+the agent and binding together. It does not require the standalone session to be
+loaded on ACS's connected app-server and cannot replace an existing agent binding.
 
 ## Operator-directed registration
 

@@ -363,7 +363,8 @@ function remoteFailureKind(message: string) {
     /not running|cannot steer|not steerable|non-steerable|does not support steering/i.test(message)
   )
     return CodexAppServerFailureKind.NotRunning;
-  if (/not found|invalid thread/i.test(message)) return CodexAppServerFailureKind.SessionNotFound;
+  if (/not found|invalid thread|thread not loaded/i.test(message))
+    return CodexAppServerFailureKind.SessionNotFound;
   if (/method not found|unsupported method/i.test(message))
     return CodexAppServerFailureKind.UnsupportedMethod;
   if (/invalid (?:payload|params|request)/i.test(message))

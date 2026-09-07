@@ -26,8 +26,9 @@ to replace a live control socket.
 
 MCP registration and runtime delivery are separate connections. A successful
 `acs_identity` proves identity, not that ACS's app-server hosts the live session.
-Launch/resume the recipient through the shared endpoint
-(`codex --remote unix:// resume <session-id>`) before expecting automatic delivery.
+Standalone sessions can register, send, and poll without being loaded on that
+app-server. Launch/resume the recipient through the shared endpoint
+(`codex --remote unix:// resume <session-id>`) only when automatic delivery is required.
 ACS never resumes an unreachable thread on a second app-server.
 
 Peer messages use direct native input: Codex receives empty local-user input
