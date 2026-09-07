@@ -405,11 +405,17 @@ export class Store {
     const slug = agentSlug(slugValue),
       agentId = id("agt"),
       now = Date.now();
-    this.db
-      .query(
-        "INSERT INTO agents(id,slug,display_name,description,skills_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?)",
-      )
-      .run(agentId, slug, displayName ?? slug, description, JSON.stringify(skills), now, now);
+    try {
+      this.db
+        .query(
+          "INSERT INTO agents(id,slug,display_name,description,skills_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?)",
+        )
+        .run(agentId, slug, displayName ?? slug, description, JSON.stringify(skills), now, now);
+    } catch (error) {
+      if (error instanceof Error && /agents\.slug|agents_slug_active_uq/.test(error.message))
+        throw new Error("AGENT_ALREADY_EXISTS", { cause: error });
+      throw error;
+    }
     return must(this.agent(slug), "AGENT_NOT_FOUND");
   }
   updateAgent(

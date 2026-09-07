@@ -372,8 +372,44 @@ describe("control protocol", () => {
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
     adapter.inspectSession = inspectSession;
-    const bridgeToken = readFileSync(paths.bridgeToken, "utf8"),
-      issued = record(
+    const bridgeToken = readFileSync(paths.bridgeToken, "utf8");
+    expect(
+      await (
+        await call(
+          "bindings.register",
+          { slug: "self-service", evidence: evidence("self-service-thread") },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({
+      result: {
+        agent: { slug: "self-service" },
+        binding: { session: { opaqueId: "self-service-thread" }, epoch: 1 },
+        idempotent: false,
+      },
+    });
+    expect(
+      await (
+        await call(
+          "bindings.register",
+          { slug: "ignored-on-retry", evidence: evidence("self-service-thread") },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ result: { agent: { slug: "self-service" }, idempotent: true } });
+    expect(
+      await (
+        await call(
+          "bindings.register",
+          { slug: "self-service", evidence: evidence("name-collision-thread") },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "AGENT_ALREADY_EXISTS" } } });
+    const issued = record(
         record(
           await (
             await call(
@@ -701,6 +737,8 @@ describe("control protocol", () => {
         "expired-thread",
         "invalid-thread",
         "new-claimed-thread",
+        "self-service-thread",
+        "name-collision-thread",
       ]),
     );
     expect(inspected.length).toBeGreaterThan(1);
@@ -711,7 +749,7 @@ describe("control protocol", () => {
           "SELECT count(*) n FROM audit_events WHERE action IN ('agent.create','binding.bind')",
         )
         .get()?.n,
-    ).toBe(4);
+    ).toBe(5);
     expect(await (await call("agents.delete", { agent: "backend" })).json()).toMatchObject({
       result: { deleted: true },
     });

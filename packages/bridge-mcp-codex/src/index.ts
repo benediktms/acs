@@ -258,6 +258,35 @@ export async function runMcp(port = 7432) {
       }),
   );
   server.registerTool(
+    "acs_register",
+    {
+      description: "Create a logical ACS agent and bind this attested Codex thread",
+      inputSchema: {
+        slug: z
+          .string()
+          .regex(/^[a-z][a-z0-9-]{0,62}$/)
+          .optional(),
+      },
+    },
+    async ({ slug }, extra) =>
+      execute(async () => {
+        const registered = await typedCall(
+          "bindings.register",
+          { slug, evidence: evidence(extra) },
+          claimResultSchema,
+        );
+        return {
+          agent: {
+            id: registered.agent.id,
+            slug: registered.agent.slug,
+            displayName: registered.agent.displayName,
+          },
+          binding: registered.binding,
+          idempotent: registered.idempotent,
+        };
+      }),
+  );
+  server.registerTool(
     "acs_agents_list",
     {
       description: "List logical ACS agents",

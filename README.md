@@ -49,6 +49,12 @@ append fallback or wake-policy flag. Canceling a task never confers ownership of
 a shared turn; the shared-endpoint Codex adapter does not advertise interruption.
 Urgency/preemption remains a separate OpenSpec change, not an implemented feature.
 
+This repository currently trials automatic ACS registration through its local
+Codex `SessionStart` hook. Before testing a fresh or resumed session, open
+`/hooks` and trust the repository hook. On its first turn, the agent checks
+`acs_identity` and, when unbound, chooses a name and calls `acs_register`.
+This does not install the hook globally.
+
 The daemon listens on `127.0.0.1:7432`. Run `acs --help` for administration,
 binding, diagnostics, and MCP bridge commands.
 
@@ -59,6 +65,9 @@ ID:
 acs agents create backend --claim
 # In the intended Codex session, call acs_claim with the returned claimCode.
 ```
+
+An attested unbound session can instead call `acs_register` to create and bind a
+new logical identity without transferring a claim code.
 
 For operator-driven binding, `acs codex bind backend` opens a discovered-session
 picker; automation can use `acs codex bind backend --session <opaque-thread-id>`.
