@@ -1,12 +1,20 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import { Store, type Paths, type StoredPart } from "../packages/storage-sqlite/src/index";
 import { BindingState, TaskState } from "../packages/domain/src/index";
+import directDeliveryMigration from "../storage/002_direct_delivery.sql" with { type: "text" };
 
 const roots: string[] = [];
+const legacyDeliveryMigration = directDeliveryMigration
+  .replace(
+    "mode TEXT NOT NULL DEFAULT 'direct' CHECK (mode = 'direct')",
+    "mode TEXT NOT NULL CHECK (mode IN ('wake_when_idle', 'append_context', 'join_active'))",
+  )
+  .replace("  'direct', priority", "  'wake_when_idle', priority");
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true });
 });
@@ -31,6 +39,203 @@ function authenticated(store: Store) {
   if (!principal) throw new Error("missing test principal");
   return principal;
 }
+
+describe("schema migrations", () => {
+  test("upgrades legacy delivery intents without losing durable state", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("legacy-worker"),
+      binding = store.bind(agent.id, "legacy-session"),
+      principal = authenticated(store),
+      accepted = ["wake_when_idle", "append_context", "join_active"].map((messageId) =>
+        store.accept(agent.id, principal.id, requestMessage(messageId), {}),
+      );
+    const first = accepted[0];
+    if (!first) throw new Error("missing legacy delivery");
+    store.db
+      .query(
+        "INSERT INTO delivery_attempts(id,intent_id,attempt_number,adapter_id,binding_id,binding_epoch,started_at_ms) VALUES('att_legacy',?,1,'codex.app-server',?,?,1)",
+      )
+      .run(first.deliveryId, binding.id, binding.epoch);
+    store.db
+      .query(
+        "INSERT INTO runtime_executions(id,intent_id,binding_id,binding_epoch,runtime_execution_opaque_id,relationship,state,accepted_at_ms,updated_at_ms) VALUES('exe_legacy',?,?,?,'turn-legacy','started','accepted',1,1)",
+      )
+      .run(first.deliveryId, binding.id, binding.epoch);
+    expect(store.db.query("SELECT count(*) count FROM delivery_intents").get()).toEqual({
+      count: 3,
+    });
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy.exec("PRAGMA foreign_keys=OFF");
+    expect(legacy.query("SELECT count(*) count FROM delivery_intents").get()).toEqual({ count: 3 });
+    legacy
+      .transaction(() => {
+        legacy.exec(legacyDeliveryMigration);
+        for (const [index, mode] of ["wake_when_idle", "append_context", "join_active"].entries()) {
+          const delivery = accepted[index];
+          if (!delivery) throw new Error("missing legacy delivery");
+          legacy
+            .query("UPDATE delivery_intents SET mode=? WHERE id=?")
+            .run(mode, delivery.deliveryId);
+        }
+        legacy.query("DELETE FROM schema_migrations WHERE version=2").run();
+      })
+      .immediate();
+    legacy.exec("PRAGMA foreign_keys=ON");
+    expect(legacy.query("SELECT mode FROM delivery_intents ORDER BY created_at_ms").all()).toEqual([
+      { mode: "wake_when_idle" },
+      { mode: "append_context" },
+      { mode: "join_active" },
+    ]);
+    legacy.close();
+
+    const upgraded = new Store(config);
+    expect(upgraded.task(first.task.id, principal.id)?.id).toBe(first.task.id);
+    expect(upgraded.binding(binding.id)?.id).toBe(binding.id);
+    expect(
+      upgraded.db.query("SELECT mode FROM delivery_intents ORDER BY created_at_ms").all(),
+    ).toEqual([{ mode: "direct" }, { mode: "direct" }, { mode: "direct" }]);
+    expect(
+      upgraded.db.query("SELECT version FROM schema_migrations ORDER BY version").all(),
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    expect(
+      upgraded.db
+        .query("SELECT intent_id,binding_id FROM delivery_attempts WHERE id='att_legacy'")
+        .get(),
+    ).toEqual({ intent_id: first.deliveryId, binding_id: binding.id });
+    expect(
+      upgraded.db
+        .query(
+          "SELECT intent_id,binding_id,relationship FROM runtime_executions WHERE id='exe_legacy'",
+        )
+        .get(),
+    ).toEqual({ intent_id: first.deliveryId, binding_id: binding.id, relationship: "started" });
+    upgraded.accept(agent.id, principal.id, requestMessage("current-send"), {});
+    upgraded.close();
+
+    const reopened = new Store(config);
+    expect(reopened.db.query("SELECT count(*) count FROM delivery_intents").get()).toEqual({
+      count: 4,
+    });
+    expect(
+      reopened.db.query("SELECT count(*) count FROM schema_migrations WHERE version=2").get(),
+    ).toEqual({
+      count: 1,
+    });
+    reopened.close();
+  });
+
+  test("rolls back a failed legacy migration without recording version 2", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("corrupt-legacy-worker"),
+      principal = authenticated(store),
+      accepted = store.accept(agent.id, principal.id, requestMessage("corrupt-legacy"), {});
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy.exec("PRAGMA foreign_keys=OFF");
+    legacy
+      .transaction(() => {
+        legacy.exec(legacyDeliveryMigration);
+        legacy
+          .query("UPDATE delivery_intents SET target_agent_id='agt_missing' WHERE id=?")
+          .run(accepted.deliveryId);
+        legacy.query("DELETE FROM schema_migrations WHERE version=2").run();
+      })
+      .immediate();
+    legacy.exec("PRAGMA foreign_keys=ON");
+    legacy.close();
+
+    expect(() => new Store(config)).toThrow("foreign key check failed");
+
+    const inspected = new Database(config.data, { strict: true });
+    expect(
+      inspected.query("SELECT count(*) count FROM schema_migrations WHERE version=2").get(),
+    ).toEqual({
+      count: 0,
+    });
+    expect(
+      inspected
+        .query("SELECT target_agent_id,mode FROM delivery_intents WHERE id=?")
+        .get(accepted.deliveryId),
+    ).toEqual({
+      target_agent_id: "agt_missing",
+      mode: "wake_when_idle",
+    });
+    expect(
+      inspected
+        .query<{ sql: string }, []>(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='delivery_intents'",
+        )
+        .get()?.sql,
+    ).toContain("mode IN ('wake_when_idle', 'append_context', 'join_active')");
+    inspected.close();
+  });
+
+  test("records current migrations once for a fresh database", () => {
+    const store = fixture(),
+      config = store.config;
+    expect(store.db.query("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([
+      { version: 1 },
+      { version: 2 },
+      { version: 3 },
+    ]);
+    store.close();
+    const reopened = new Store(config);
+    expect(reopened.db.query("SELECT count(*) count FROM schema_migrations").get()).toEqual({
+      count: 3,
+    });
+    reopened.close();
+  });
+
+  test("adds the runtime execution relationship to a legacy database", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("legacy-execution-worker"),
+      binding = store.bind(agent.id, "legacy-execution-session"),
+      principal = authenticated(store),
+      accepted = store.accept(agent.id, principal.id, requestMessage("legacy-execution"), {});
+    store.db
+      .query(
+        "INSERT INTO runtime_executions(id,intent_id,binding_id,binding_epoch,runtime_execution_opaque_id,relationship,state,accepted_at_ms,updated_at_ms) VALUES('exe_legacy',?,?,?,?,?,'accepted',1,1)",
+      )
+      .run(accepted.deliveryId, binding.id, binding.epoch, "turn-legacy", "started");
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy.exec("DROP INDEX runtime_executions_runtime_turn_idx");
+    legacy.exec("ALTER TABLE runtime_executions DROP COLUMN relationship");
+    legacy.query("DELETE FROM schema_migrations WHERE version=3").run();
+    legacy.close();
+
+    const upgraded = new Store(config);
+    expect(
+      upgraded.db
+        .query(
+          "SELECT intent_id,binding_id,runtime_execution_opaque_id,relationship,state FROM runtime_executions WHERE id='exe_legacy'",
+        )
+        .get(),
+    ).toEqual({
+      intent_id: accepted.deliveryId,
+      binding_id: binding.id,
+      runtime_execution_opaque_id: "turn-legacy",
+      relationship: "unknown",
+      state: "accepted",
+    });
+    expect(
+      upgraded.db
+        .query("SELECT 1 value FROM sqlite_master WHERE type='index' AND name=?")
+        .get("runtime_executions_runtime_turn_idx"),
+    ).toEqual({ value: 1 });
+    expect(
+      upgraded.db.query("SELECT count(*) count FROM schema_migrations WHERE version=3").get(),
+    ).toEqual({ count: 1 });
+    upgraded.close();
+  });
+});
 
 describe("durable acceptance", () => {
   test("repairs permissions on existing runtime credentials", () => {
