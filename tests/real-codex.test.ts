@@ -176,7 +176,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       await adapter.stop({ reason: "shutdown" });
       await observed;
       owner.close();
-      child.kill();
+      child.kill("SIGKILL");
       await child.exited;
       await model.stop(true);
       rmSync(root, { recursive: true, force: true });
@@ -265,7 +265,7 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
       await completed?.catch(() => {});
       if (threadId) await client.deleteThread(threadId).catch(() => {});
       client.close();
-      child.kill();
+      child.kill("SIGKILL");
       await child.exited;
       rmSync(root, { recursive: true, force: true });
     }
