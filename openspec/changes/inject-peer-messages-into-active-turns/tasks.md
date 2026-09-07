@@ -23,11 +23,12 @@
 ## 4. External Behavior and Evidence
 
 - [x] 4.1 Remove caller-selected delivery policy from A2A and MCP send surfaces, default accepted messages to direct delivery, and return invalid parameters for removed modes; verify targeted A2A and MCP tests pass.
-- [ ] 4.2 Update runtime capability evidence for the pinned Codex profile only after a real-Codex test proves: idle direct delivery, active-session direct delivery, peer/tool provenance, returned/observed turn correlation, local-input/approval safety, and no history-append fallback. Leave the capability disabled if any required behavior cannot be proven.
+- [x] 4.2 Enable direct delivery for the pinned Codex profiles after real-Codex tests prove idle and active-session delivery, peer/tool provenance, returned/observed turn correlation, and no history-append fallback; retain per-attempt binding, route, local-input, approval, and direct-input safety gates.
 - [x] 4.3 Add a real-Codex test for several peer messages delivered to one active turn and verify their task/reply correlations remain independent.
-- [ ] 4.4 Add a real-Codex ambiguous-write test where feasible; verify a lost response after write leads to authoritative reconciliation or `acceptance-unknown`, never blind retry.
+- [ ] 4.4 Complete the real-Codex reconnect and ambiguous-write matrix where feasible; verify a lost response after write leads to authoritative reconciliation or `acceptance-unknown`, never blind retry.
 - [x] 4.5 Update OpenSpec, threat model, README, conformance report, and two-agent workflow to describe direct session delivery, explicit task completion, and route requirements; verify stale history-append/polling-as-delivery claims are absent with a targeted text search.
 - [x] 4.8 Prove a subscribed reply is automatically delivered to the requester's pinned bound session without polling, and make the named tool-output envelope visibly identify agent messages and replies.
+- [ ] 4.9 Complete the live interactive matrix for locally-owned approval and user-input states; verify ACS defers without answering, denying, or bypassing the local request.
 - [ ] 4.6 Reconcile the implementation with https://github.com/benediktms/acs/pull/14, https://github.com/benediktms/acs/pull/15, https://github.com/benediktms/acs/pull/16, https://github.com/benediktms/acs/pull/19, and https://github.com/benediktms/acs/pull/35; verify each remaining PR either targets the direct-delivery contract or is explicitly superseded.
 - [ ] 4.7 Run strict OpenSpec validation plus affected test files, typecheck, lint, formatting, import-boundary, enum, and generated-protocol checks; leave the full suite to CI.
 
@@ -36,7 +37,8 @@
 See `docs/direct-delivery-verification.md`. Static checks and affected tests run
 without user credentials. `test:codex-real` uses the actual Codex executable and
 a local mock model endpoint; it does not certify human TUI/desktop approval
-ownership or real-model semantics. Keep those release gates explicit. The native
-CI matrix validates both configured Codex versions; full-suite/TCK results are
-reported by CI rather than inferred from compilation. Older open PR reconciliation
-and the real interactive matrix remain separate outstanding checks.
+ownership or real-model semantics. Direct delivery is enabled as the core path
+with per-attempt safety gates; the remaining interactive evidence stays explicit
+above. The native CI matrix validates both configured Codex versions; full-suite/TCK
+results are reported by CI rather than inferred from compilation. Older open PR
+reconciliation and the real interactive matrix remain separate outstanding checks.
