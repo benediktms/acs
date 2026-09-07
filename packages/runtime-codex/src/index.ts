@@ -414,7 +414,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (failure.kind === CodexAppServerFailureKind.Backpressure)
         return { outcome: "deferred", reason: "backpressure", retryAfterMs: 1000 };
       if (failure.kind === CodexAppServerFailureKind.SessionNotFound)
-        return { outcome: "rejected", reason: "session-not-found", retryable: false };
+        return { outcome: "deferred", reason: "offline" };
       if (sessionUnavailable(failure.kind)) return { outcome: "deferred", reason: "offline" };
       if (failure.kind === CodexAppServerFailureKind.NotRunning)
         return { outcome: "deferred", reason: "unsupported-active-state" };

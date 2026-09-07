@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CodexAppServerClient } from "../packages/runtime-codex/src/app-server-client";
+import {
+  CodexAppServerError,
+  CodexAppServerFailureKind,
+} from "../contracts/codex-app-server-boundary";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -24,7 +28,8 @@ describe("Codex app-server transport", () => {
     const path = join(root, "app.sock");
     let received = "",
       respond = true,
-      batchTurn = false;
+      batchTurn = false,
+      threadNotLoaded = false;
     const server = Bun.listen({
       unix: path,
       socket: {
@@ -68,6 +73,15 @@ describe("Codex app-server transport", () => {
             );
             return;
           }
+          if (threadNotLoaded && request.method === "thread/read") {
+            socket.write(
+              serverFrame({
+                id: request.id,
+                error: { code: -32600, message: "thread not loaded: thread-1" },
+              }),
+            );
+            return;
+          }
           socket.write(
             serverFrame({
               id: request.id,
@@ -98,6 +112,15 @@ describe("Codex app-server transport", () => {
     await Bun.sleep(0);
     expect(order).toEqual(["registered:turn-batched", "turn/started"]);
     batchTurn = false;
+    threadNotLoaded = true;
+    try {
+      await client.readThread({ threadId: "thread-1", includeTurns: false });
+      throw new Error("expected unloaded thread rejection");
+    } catch (error) {
+      if (!(error instanceof CodexAppServerError)) throw error;
+      expect(error.failure.kind).toBe(CodexAppServerFailureKind.SessionNotFound);
+    }
+    threadNotLoaded = false;
     respond = false;
     const abort = new AbortController(),
       pending = client.request("thread/list", {}, undefined, abort.signal);
