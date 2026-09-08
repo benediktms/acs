@@ -75,10 +75,11 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
-  const integration = codexZshIntegration("/Applications/acs");
+  const integration = codexZshIntegration(["/Applications/acs", "/work/acs/main.ts"]);
   expect(integration).toContain("--acs-standalone");
   expect(integration).toContain("--remote requires --acs-standalone");
   expect(integration).toContain("codex socket");
+  expect(integration).toContain('"${acs_bin[@]}"');
 });
 
 test("restarts only the selected Codex account service", () => {

@@ -72,14 +72,24 @@ describe("control protocol", () => {
       result: {
         status: "ok",
         adapters: [
-          { adapterId: first.id, status: "ready" },
-          { adapterId: second, status: "ready" },
+          { installationId: first.id, adapterId: "codex.app-server", status: "ready" },
+          { installationId: second, adapterId: "codex.app-server", status: "ready" },
         ],
       },
     });
     expect(await (await call("system.capabilities", {})).json()).toMatchObject({
       result: { codex: { directDelivery: true } },
     });
+    store.db.query("DELETE FROM runtime_installations WHERE id=?").run(second);
+    store.db.query("UPDATE runtime_installations SET state='offline' WHERE id=?").run(first.id);
+    expect(await (await call("runtimes.sessions.list", {})).json()).toMatchObject({
+      result: { sessions: [] },
+    });
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','work','{}','{}','unknown',?,?)",
+      )
+      .run(second, Date.now(), Date.now());
     const emptyHandler = controlHandler(store, new Date().toISOString(), () => {}, new Map());
     expect(
       await (

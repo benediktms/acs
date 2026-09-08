@@ -119,11 +119,11 @@ export function restartCodexAppServer(options: {
   );
 }
 
-export function codexZshIntegration(command: string) {
-  return `# acs-codex-routing\ncodex() {\n  local acs_bin=${shellQuote(command)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}"\n  if [[ " $* " == *" --acs-standalone "* ]]; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command codex "\${(@)@:#--acs-standalone}"; return\n  fi\n  if [[ " $* " == *" --remote "* ]]; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$1" in ""|agents|resume|fork|queue|archive|delete|unarchive)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "$acs_bin" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command codex --app-server-url "unix://$socket" "$@";;\n  *) command codex "$@";; esac\n}\n`;
+export function codexZshIntegration(command: readonly string[]) {
+  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")})\n  local acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}"\n  if [[ " $* " == *" --acs-standalone "* ]]; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command codex "\${(@)@:#--acs-standalone}"; return\n  fi\n  if [[ " $* " == *" --remote "* ]]; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$1" in ""|agents|resume|fork|queue|archive|delete|unarchive)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command codex --app-server-url "unix://$socket" "$@";;\n  *) command codex "$@";; esac\n}\n`;
 }
 
-export function installCodexZshIntegration(home: string, command: string) {
+export function installCodexZshIntegration(home: string, command: readonly string[]) {
   const directory = `${home}/.zshrc.d`,
     path = `${directory}/acs-codex.zsh`,
     zshrc = `${home}/.zshrc`,

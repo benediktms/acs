@@ -258,7 +258,14 @@ export function controlHandler(
                 ? "ok"
                 : "degraded",
             database: "ok",
-            adapters: probes.map(([adapterId, probe]) => ({ adapterId, status: probe.state })),
+            adapters: probes.map(([installationId, probe]) => ({
+              installationId,
+              adapterId:
+                (isAdapterMap(adapters)
+                  ? [...adapters].find(([id]) => id === installationId)?.[1].descriptor.adapterId
+                  : undefined) ?? installationId,
+              status: probe.state,
+            })),
             startedAt,
             metrics: store.metrics(),
             traces: telemetry.traceSnapshot(),
@@ -1025,7 +1032,7 @@ function runtimeInstallation(store: ControlStoragePort, requestedId?: string) {
     const count =
       store
         .query<{ count: number }, []>(
-          "SELECT count(*) count FROM runtime_installations WHERE harness_id='codex' AND state<>'offline'",
+          "SELECT count(*) count FROM runtime_installations WHERE harness_id='codex'",
         )
         .get()?.count ?? 0;
     if (count !== 1) throw new Error("RUNTIME_AMBIGUOUS: specify an installationId");

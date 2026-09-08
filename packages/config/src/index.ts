@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 export interface AcsConfig {
   daemon: {
@@ -126,8 +126,11 @@ export function migrateCodexAccounts(
 ) {
   if (!existsSync(path)) return;
   const source = readFileSync(path, "utf8");
-  if (source.includes("[[runtimes.codex.accounts]]")) return;
-  const home = canonicalPath(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
+  const root = object(Bun.TOML.parse(source), "config"),
+    runtimes = root.runtimes;
+  if (isObject(runtimes) && isObject(runtimes.codex) && Object.hasOwn(runtimes.codex, "accounts"))
+    return;
+  const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
   writeFileSync(
     path,
     `${source.trimEnd()}\n\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = ${JSON.stringify(home)}\n`,
@@ -290,8 +293,8 @@ function codexAccounts(
       throw new Error(`VALIDATION_FAILED: missing runtimes.codex.accounts[${index}].codex_home`);
     const home =
       rawHome === "auto"
-        ? resolve(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`)
-        : canonicalPath(rawHome);
+        ? canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`)
+        : canonicalCodexHome(rawHome);
     return { label, home, socket: codexSocket(home, temporary, uid) };
   });
   if (new Set(accounts.map((account) => account.label)).size !== accounts.length)
@@ -301,7 +304,9 @@ function codexAccounts(
   return accounts;
 }
 
-function canonicalPath(path: string) {
+export function canonicalCodexHome(path: string) {
+  if (!isAbsolute(path))
+    throw new Error("VALIDATION_FAILED: runtimes.codex.accounts[].codex_home must be absolute");
   const absolute = resolve(path);
   return existsSync(absolute) ? realpathSync(absolute) : absolute;
 }

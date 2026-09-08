@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { codexSocket as accountSocket } from "../packages/config/src/index";
+import { codexSocket as accountSocket, defaultLocations } from "../packages/config/src/index";
 import { Store } from "../packages/storage-sqlite/src/index";
 
 const tck = process.env.A2A_TCK_DIR;
@@ -19,7 +19,7 @@ if (actualRevision !== expectedRevision)
 const root = mkdtempSync(join(tmpdir(), "acs-tck-")),
   binary = join(root, "acs"),
   codexHome = join(root, "codex"),
-  codexSocket = accountSocket(codexHome),
+  codexSocket = accountSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
   servicePort = reservePort(),
   proxyPort = reservePort(),
   env = {
@@ -190,7 +190,7 @@ function verifyExpectedFailures(tckPath: string, sutUrl: string) {
   console.log(`A2A TCK passed with ${actual.length} reviewed expected-failure groups`);
 }
 
-function startCodexEmulator(path: string, codexHome: string) {
+function startCodexEmulator(path: string, expectedCodexHome: string) {
   const buffers = new WeakMap<object, Buffer>();
   let turn = 0;
   return Bun.listen({
@@ -221,7 +221,11 @@ function startCodexEmulator(path: string, codexHome: string) {
             id = request.id;
           if (typeof id !== "number") continue;
           const turnId = method === "turn/start" ? `turn-${++turn}` : undefined;
-          socket.write(serverFrame(JSON.stringify({ id, result: codexResponse(method, turnId) })));
+          socket.write(
+            serverFrame(
+              JSON.stringify({ id, result: codexResponse(method, expectedCodexHome, turnId) }),
+            ),
+          );
           if (turnId)
             setTimeout(() => {
               socket.write(
@@ -253,8 +257,9 @@ function startCodexEmulator(path: string, codexHome: string) {
   });
 }
 
-function codexResponse(method: string, turnId?: string) {
-  if (method === "initialize") return { userAgent: "acs-tck-emulator", codexHome };
+function codexResponse(method: string, expectedCodexHome: string, turnId?: string) {
+  if (method === "initialize")
+    return { userAgent: "acs-tck-emulator", codexHome: expectedCodexHome };
   if (method === "thread/read")
     return {
       thread: {

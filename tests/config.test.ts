@@ -88,6 +88,11 @@ describe("configuration", () => {
       `[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${personal}"\n[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${work}"\n`,
     );
     expect(() => loadConfig(path)).toThrow("duplicate");
+    writeFileSync(
+      path,
+      '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "relative"\n',
+    );
+    expect(() => loadConfig(path)).toThrow("codex_home must be absolute");
   });
   test("migrates an account-less configuration once", () => {
     const root = mkdtempSync(join(tmpdir(), "acs-config-"));
@@ -99,5 +104,8 @@ describe("configuration", () => {
     expect(migrated).toContain('label = "local"');
     migrateCodexAccounts(path, { HOME: root });
     expect(readFileSync(path, "utf8")).toBe(migrated);
+    writeFileSync(path, "[ runtimes . codex ]\naccounts = []\n");
+    migrateCodexAccounts(path, { HOME: root });
+    expect(readFileSync(path, "utf8")).toBe("[ runtimes . codex ]\naccounts = []\n");
   });
 });

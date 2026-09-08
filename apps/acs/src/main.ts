@@ -14,6 +14,7 @@ import {
 } from "../../../packages/runtime-codex/src/index";
 import { DeliveryScheduler } from "../../../packages/application/src/scheduler";
 import {
+  canonicalCodexHome,
   loadConfig,
   migrateCodexAccounts,
   parseListen,
@@ -50,27 +51,29 @@ async function main() {
         uid: required(process.getuid?.(), "user ID"),
         stopUnmanagedDaemon,
       });
-      removeCodexAppServers({
-        labels: settings.codex.accounts.map((account) => account.label),
-        userHome: required(process.env.HOME, "HOME"),
-        uid: required(process.getuid?.(), "user ID"),
-      });
-      for (const account of settings.codex.accounts) {
-        await installCodexAppServer({
-          binary: required(
-            Bun.which(settings.codex.binary) ?? settings.codex.binary,
-            "Codex binary",
-          ),
-          home: account.home,
-          socket: account.socket,
-          label: account.label,
+      if (settings.codex.enabled) {
+        removeCodexAppServers({
+          labels: settings.codex.accounts.map((account) => account.label),
           userHome: required(process.env.HOME, "HOME"),
           uid: required(process.getuid?.(), "user ID"),
-          socketOccupied: () => socketListening(account.socket),
         });
-        installMcp(account.home);
+        for (const account of settings.codex.accounts) {
+          await installCodexAppServer({
+            binary: required(
+              Bun.which(settings.codex.binary) ?? settings.codex.binary,
+              "Codex binary",
+            ),
+            home: account.home,
+            socket: account.socket,
+            label: account.label,
+            userHome: required(process.env.HOME, "HOME"),
+            uid: required(process.getuid?.(), "user ID"),
+            socketOccupied: () => socketListening(account.socket),
+          });
+          installMcp(account.home);
+        }
+        installCodexZshIntegration(required(process.env.HOME, "HOME"), selfCommand());
       }
-      installCodexZshIntegration(required(process.env.HOME, "HOME"), selfCommand().join(" "));
       await waitForDaemon();
       console.log("ACS login service and global Codex MCP are ready");
     }
@@ -92,7 +95,9 @@ async function main() {
   }
   if (args[0] === "codex" && args[1] === "doctor") return doctor();
   if (args[0] === "codex" && args[1] === "socket") {
-    const home = process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+    const home = canonicalCodexHome(
+        process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+      ),
       account = settings.codex.accounts.find((candidate) => candidate.home === home);
     if (!account) throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
     console.log(account.socket);
@@ -229,8 +234,8 @@ function serviceEnvironment() {
   return persistentEnvironment(environment);
 }
 
-function installMcp(codexHome = process.env.CODEX_HOME) {
-  const environment = { ...serviceEnvironment(), ...(codexHome ? { CODEX_HOME: codexHome } : {}) },
+function installMcp(codexHome = configuredCodexHome()) {
+  const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
     installed = Bun.spawnSync([
       settings.codex.binary,
       "mcp",
@@ -245,6 +250,16 @@ function installMcp(codexHome = process.env.CODEX_HOME) {
   if (!installed.success)
     throw new Error(installed.stderr.toString().trim() || "Codex MCP installation failed");
   process.stdout.write(installed.stdout);
+}
+
+function configuredCodexHome() {
+  const home = process.env.CODEX_HOME;
+  if (home) return canonicalCodexHome(home);
+  return (
+    settings.codex.accounts.find((account) => account.label === "local")?.home ??
+    (settings.codex.accounts.length === 1 ? settings.codex.accounts[0]?.home : undefined) ??
+    required(undefined, "CODEX_HOME or a local Codex account")
+  );
 }
 
 async function waitForDaemon() {

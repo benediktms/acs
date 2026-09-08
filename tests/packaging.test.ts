@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Store } from "../packages/storage-sqlite/src/index";
-import { codexSocket as derivedCodexSocket } from "../packages/config/src/index";
+import { codexSocket as derivedCodexSocket, defaultLocations } from "../packages/config/src/index";
 
 const roots: string[] = [],
   processes: Bun.Subprocess[] = [],
@@ -44,7 +44,10 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexSocket = derivedCodexSocket("/tmp/codex"),
+  const codexSocket = derivedCodexSocket(
+      "/tmp/codex",
+      dirname(dirname(defaultLocations().runtimeSocket)),
+    ),
     bin = join(root, "bin"),
     codex = join(bin, "codex");
   mkdirSync(dirname(codexSocket), { recursive: true });
