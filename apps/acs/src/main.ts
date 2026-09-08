@@ -18,6 +18,7 @@ import {
 } from "../../../packages/application/src/scheduler";
 import {
   canonicalCodexHome,
+  configPath,
   loadConfig,
   migrateCodexAccounts,
   parseListen,
@@ -36,7 +37,9 @@ import {
 } from "./service";
 
 const args = Bun.argv.slice(2),
-  config = paths(),
+  configFile = configPath();
+migrateCodexAccounts(configFile);
+const config = paths(),
   settings = loadConfig(),
   listen = parseListen(settings.daemon.a2aListen),
   port = listen.port;
@@ -582,7 +585,8 @@ async function accountInstallationId(call: (method: string, params?: unknown) =>
   do {
     const runtimes = recordValue(await call("runtimes.list", { limit: 100, cursor })),
       runtime = arrayValue(runtimes.runtimes).find(
-        (item) => recordValue(item).label === account.label,
+        (item) =>
+          recordValue(item).harnessId === "codex" && recordValue(item).label === account.label,
       );
     installationId = runtime ? recordValue(runtime).installationId : undefined;
     cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;

@@ -118,7 +118,10 @@ export function configPath() {
 export function writeDefaultConfig(path = configPath()) {
   if (existsSync(path)) return;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, text, { mode: 0o600 });
+  const home = canonicalCodexHome(process.env.CODEX_HOME ?? `${process.env.HOME ?? ""}/.codex`);
+  writeFileSync(path, text.replace('codex_home = "auto"', `codex_home = ${JSON.stringify(home)}`), {
+    mode: 0o600,
+  });
 }
 export function migrateCodexAccounts(
   path = configPath(),
@@ -128,8 +131,21 @@ export function migrateCodexAccounts(
   const source = readFileSync(path, "utf8");
   const root = object(Bun.TOML.parse(source), "config"),
     runtimes = root.runtimes;
-  if (isObject(runtimes) && isObject(runtimes.codex) && Object.hasOwn(runtimes.codex, "accounts"))
+  if (isObject(runtimes) && isObject(runtimes.codex) && Object.hasOwn(runtimes.codex, "accounts")) {
+    const accounts = array(runtimes.codex.accounts, "runtimes.codex.accounts");
+    if (
+      accounts.length !== 1 ||
+      object(accounts[0], "runtimes.codex.accounts[0]").codex_home !== "auto"
+    )
+      return;
+    const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
+    writeFileSync(
+      path,
+      source.replace(/codex_home\s*=\s*["']auto["']/, `codex_home = ${JSON.stringify(home)}`),
+      { mode: 0o600 },
+    );
     return;
+  }
   const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
   writeFileSync(
     path,
@@ -291,10 +307,11 @@ function codexAccounts(
       throw new Error(`VALIDATION_FAILED: invalid runtimes.codex.accounts[${index}].label`);
     if (!rawHome)
       throw new Error(`VALIDATION_FAILED: missing runtimes.codex.accounts[${index}].codex_home`);
-    const home =
-      rawHome === "auto"
-        ? canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`)
-        : canonicalCodexHome(rawHome);
+    if (rawHome === "auto")
+      throw new Error(
+        `VALIDATION_FAILED: runtimes.codex.accounts[${index}].codex_home must be absolute`,
+      );
+    const home = canonicalCodexHome(rawHome);
     return {
       label,
       home,

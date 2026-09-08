@@ -862,7 +862,17 @@ describe("delivery scheduler", () => {
   });
   test("follows eligible rebinds and terminates unsafe delivery conditions", async () => {
     const store = fixture(),
-      requester = authenticated(store),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!primary) throw new Error("missing runtime installation");
+    const work: `ins_${string}` = "ins_continuity_work";
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','continuity-work','{}','{}','unknown',?,?)",
+      )
+      .run(work, Date.now(), Date.now());
+    const requester = authenticated(store),
       follow = store.createAgent("follow-rebind"),
       strict = store.createAgent("strict-rebind"),
       expired = store.createAgent("expired-target"),
@@ -900,8 +910,8 @@ describe("delivery scheduler", () => {
     );
     pin.run(Date.now() + 60_000, followOld.id, followOld.epoch, followDelivery.deliveryId);
     pin.run(Date.now() + 60_000, strictOld.id, strictOld.epoch, strictDelivery.deliveryId);
-    store.bind(follow.id, "follow-new", { revokeExisting: true });
-    store.bind(strict.id, "strict-new", { revokeExisting: true });
+    store.bind(follow.id, "follow-new", { revokeExisting: true, installationId: work });
+    store.bind(strict.id, "strict-new", { revokeExisting: true, installationId: work });
     store.updateAgent(disabled.id, { enabled: false });
     const sessions: string[] = [],
       adapter = new FakeRuntimeAdapter();
@@ -914,8 +924,15 @@ describe("delivery scheduler", () => {
         evidence: { scheme: "fake", value: "accepted" },
       };
     };
-    const scheduler = new DeliveryScheduler(store, adapter, "continuity");
-    await scheduler.start();
+    const primaryScheduler = new DeliveryScheduler(
+        store,
+        new FakeRuntimeAdapter(),
+        "continuity-primary",
+        undefined,
+        primary.id,
+      ),
+      workScheduler = new DeliveryScheduler(store, adapter, "continuity-work", undefined, work);
+    await Promise.all([primaryScheduler.start(), workScheduler.start()]);
     await Bun.sleep(400);
     expect(sessions).toEqual(["follow-new"]);
     expect(deliveryState(store, followDelivery.deliveryId)).toEqual({
@@ -934,7 +951,7 @@ describe("delivery scheduler", () => {
       state: "failed-terminal",
       state_reason: "target-disabled",
     });
-    await scheduler.stop();
+    await Promise.all([primaryScheduler.stop(), workScheduler.stop()]);
     store.close();
   });
   test("interrupts only the correlated ACS execution on cancellation", async () => {
