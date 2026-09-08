@@ -34,6 +34,12 @@ ACS SHALL deliver each peer message directly to the reachable bound runtime sess
 - **WHEN** ACS cannot reach the app-server/runtime control plane that owns the recipient session
 - **THEN** ACS keeps the delivery pending and does not append it to history or require inbox polling as successful delivery
 
+#### Scenario: Owning app-server disconnects
+
+- **WHEN** an app-server disconnects after reporting a bound session available
+- **THEN** ACS atomically marks the app-server's persisted runtime installation record and its active bindings offline
+- **AND** ACS preserves the logical agents and refreshes binding availability from the sessions owned by the app-server after reconnect
+
 ### Requirement: Peer provenance is preserved
 
 ACS SHALL deliver peer content through a runtime representation that preserves external/peer authority and includes a prominent agent-message or agent-reply notice naming the authenticated sender. ACS SHALL NOT fabricate local user, developer, or system input solely to make direct delivery succeed.

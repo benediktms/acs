@@ -730,9 +730,16 @@ export class Store {
   }
   markRuntimeOffline(installationId: RuntimeInstallationId) {
     const now = Date.now();
-    this.db
-      .query("UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE id=?")
-      .run(now, installationId);
+    this.write(() => {
+      this.db
+        .query("UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE id=?")
+        .run(now, installationId);
+      this.db
+        .query(
+          "UPDATE runtime_bindings SET last_observed_availability='offline',last_observed_at_ms=? WHERE installation_id=? AND status='active'",
+        )
+        .run(now, installationId);
+    });
   }
   revokeBinding(bindingId: string, reason = "revoked") {
     const binding = this.binding(bindingId);

@@ -876,9 +876,17 @@ describe("delivery scheduler", () => {
     });
     store.close();
   });
-  test("stops the adapter after its connection drops", async () => {
+  test("marks active bindings offline without reaping agents after the runtime disconnects", async () => {
     const store = fixture(),
+      agent = store.createAgent("disconnected-agent"),
+      binding = store.bind(agent.id, "disconnected-thread"),
       adapter = new FakeRuntimeAdapter();
+    adapter.inspectSession = async (session) => ({
+      session,
+      availability: "idle",
+      observedAt: new Date().toISOString(),
+      attributes: { canAcceptDirectInput: true },
+    });
     let stopped = false;
     adapter.observe = async function* () {
       yield { type: "adapter.connection", state: "offline" };
@@ -891,6 +899,14 @@ describe("delivery scheduler", () => {
     await Bun.sleep(10);
     await scheduler.stop();
     expect(stopped).toBe(true);
+    expect(
+      store.db
+        .query<{ runtime_state: string; availability: string; binding_status: string }, [string]>(
+          "SELECT i.state runtime_state,b.last_observed_availability availability,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
+        )
+        .get(binding.id),
+    ).toEqual({ runtime_state: "offline", availability: "offline", binding_status: "active" });
+    expect(store.agent(agent.id)?.id).toBe(agent.id);
     store.close();
   });
   test("follows eligible rebinds and terminates unsafe delivery conditions", async () => {

@@ -67,6 +67,8 @@ The adapter MUST NOT mark `joined` as `started` merely because it issued `turn/s
 
 Dormant, unloaded, offline, locally-blocked, stale, and unsupported targets remain pending with a precise reason. The scheduler retries from fresh runtime state. It never downgrades to history append.
 
+When an app-server disconnects, ACS atomically marks its persisted runtime installation record and active bindings offline without revoking bindings or deleting logical agents. This record represents the configured account-scoped app-server route; it does not represent installing or uninstalling Codex or ACS. After reconnect, the existing bound-session inspection refreshes availability only from sessions the app-server currently owns.
+
 A target binding must resolve to an app-server route that can mutate the bound live thread; shared-endpoint setup or ACS-owned runtime creation supplies that route. Automatically resuming an unreachable thread on another app-server is rejected because ACS cannot prove that a separate live owner is absent.
 
 ### Model many deliveries to one runtime turn

@@ -12,6 +12,7 @@
 - [x] 2.4 Map dormant, unloaded, offline, locally-blocked, stale-binding, unsupported-active-state, and route-unavailable outcomes to deferred delivery without `thread/inject_items`; verify targeted adapter mutation assertions observe no history append.
 - [x] 2.5 Add exact delivery-marker reconciliation for direct requests and retain `acceptance-unknown` when runtime evidence is inconclusive; verify ambiguous-write adapter tests do not blindly resend.
 - [x] 2.6 Add an upstream-evidence regression test/documentation note that empty-input `turn/steer` with only `additionalContext` is rejected by the pinned Codex profile; do not fabricate user input as a workaround.
+- [x] 2.7 Atomically mark an app-server's runtime installation record and active bindings offline when it disconnects, preserve logical agents, and refresh availability from bound sessions after reconnect; verify with a targeted scheduler regression test.
 
 ## 3. Shared Turn Correlation and Task Semantics
 
