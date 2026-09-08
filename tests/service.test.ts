@@ -124,7 +124,7 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(managed.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        "--app-server-url\nunix:///tmp/acs.sock\nfix --remote tests\n",
+        "--remote\nunix:///tmp/acs.sock\nfix --remote tests\n",
       );
       const direct = Bun.spawnSync(
         ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex exec test`],
@@ -178,7 +178,7 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(optionValue.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        "--app-server-url\nunix:///tmp/acs.sock\n-c\n--acs-standalone\nresume\n",
+        "--remote\nunix:///tmp/acs.sock\n-c\n--acs-standalone\nresume\n",
       );
       for (const option of ["-c", "-p", "-s", "-a"]) {
         const shortOption = Bun.spawnSync(
