@@ -762,15 +762,10 @@ export function controlHandler(
           if (rpc.method.endsWith("complete"))
             store.completeTask(taskId, a.principalId, summary, (p.artifacts ?? []).map(toArtifact));
           else if (rpc.method.endsWith("acknowledge"))
-            store.acknowledgeTask(taskId, a.principalId, p.deliveryId);
+            store.acknowledgeTask(taskId, a.principalId, required(p.deliveryId, "deliveryId"));
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
-              const acknowledged = store
-                .query<{ value: number }, [string, string]>(
-                  "SELECT 1 value FROM task_events WHERE task_id=? AND event_type='task-working' AND actor_principal_id=? LIMIT 1",
-                )
-                .get(taskId, a.principalId);
-              if (!acknowledged) throw new Error("TASK_STATE_CONFLICT");
+              store.requireTaskAcknowledged(taskId, a.principalId);
               store.setTaskState(taskId, a.principalId, state, summary, details);
             });
           else store.setTaskState(taskId, a.principalId, state, summary, details);

@@ -654,6 +654,7 @@ describe("control protocol", () => {
         }),
         {},
       ),
+      executorPrincipal = required(store.authenticate(issuedToken), "executor principal").id,
       mutation = (method: string, parameters: Record<string, unknown> = {}) =>
         call(
           method,
@@ -661,16 +662,40 @@ describe("control protocol", () => {
           "1",
           bridgeToken,
         );
+    store.publishMessage(acknowledgementRequired.task.id, executorPrincipal, [
+      { content: { $case: "text", value: "working" }, filename: "", mediaType: "text/plain" },
+    ]);
+    expect(store.task(acknowledgementRequired.task.id, principal.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_WORKING,
+    );
     expect(
       await (await mutation("executor.task.fail", { summary: "failed" })).json(),
     ).toMatchObject({ error: { data: { code: "TASK_STATE_CONFLICT" } } });
     expect(
       await (await mutation("executor.task.requestInput", { question: "need input" })).json(),
     ).toMatchObject({ error: { data: { code: "TASK_STATE_CONFLICT" } } });
+    expect(
+      await (await mutation("executor.task.complete", { summary: "completed" })).json(),
+    ).toMatchObject({ error: { data: { code: "TASK_STATE_CONFLICT" } } });
     expect(store.task(acknowledgementRequired.task.id, principal.id)?.status?.state).toBe(
-      A2ATaskState.TASK_STATE_SUBMITTED,
+      A2ATaskState.TASK_STATE_WORKING,
     );
+    expect(
+      store.db
+        .query<{ count: number }, [string]>(
+          "SELECT count(*) count FROM task_events WHERE task_id=? AND event_type='task-acknowledged'",
+        )
+        .get(acknowledgementRequired.task.id),
+    ).toEqual({ count: 0 });
     await mutation("executor.task.acknowledge", { deliveryId: acknowledgementRequired.deliveryId });
+    await mutation("executor.task.acknowledge", { deliveryId: acknowledgementRequired.deliveryId });
+    expect(
+      store.db
+        .query<{ count: number; delivery_id: string }, [string]>(
+          "SELECT count(*) count,json_extract(payload_json,'$.deliveryId') delivery_id FROM task_events WHERE task_id=? AND event_type='task-acknowledged'",
+        )
+        .get(acknowledgementRequired.task.id),
+    ).toEqual({ count: 1, delivery_id: acknowledgementRequired.deliveryId });
     expect(
       await (await mutation("executor.task.requestInput", { question: "need input" })).json(),
     ).toMatchObject({ result: { task: { state: "input-required" } } });
@@ -713,7 +738,7 @@ describe("control protocol", () => {
     ]);
     expect(() =>
       store.completeTask(firstMessage.task.id, backendPrincipal, "premature", []),
-    ).toThrow("UNACKNOWLEDGED_MESSAGES");
+    ).toThrow("TASK_STATE_CONFLICT");
     store.acknowledgeTask(firstMessage.task.id, backendPrincipal, followup.deliveryId);
     expect(
       store.completeTask(firstMessage.task.id, backendPrincipal, "both handled", []).status?.state,
