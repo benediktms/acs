@@ -42,16 +42,13 @@
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["principalKind", "workAuthority", "trustedForPermissions"],
+      "required": ["principalKind", "workAuthority"],
       "properties": {
         "principalKind": {
           "enum": ["bound-agent", "external-a2a-client", "service"]
         },
         "workAuthority": {
           "enum": ["delegated", "untrusted"]
-        },
-        "trustedForPermissions": {
-          "const": false
         }
       }
     },

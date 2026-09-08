@@ -366,7 +366,6 @@ describe("delivery scheduler", () => {
         provenance: {
           principalKind: "external-a2a-client",
           workAuthority: "untrusted",
-          trustedForPermissions: false,
         },
         reply: {
           acknowledgeTool: "acs_task_acknowledge",
@@ -460,7 +459,6 @@ describe("delivery scheduler", () => {
       expect(request.envelope.provenance).toEqual({
         principalKind: "bound-agent",
         workAuthority: "delegated",
-        trustedForPermissions: false,
       });
       delivered.resolve();
       return {
@@ -1579,7 +1577,6 @@ describe("delivery scheduler", () => {
           provenance: {
             principalKind: "bound-agent",
             workAuthority: "delegated",
-            trustedForPermissions: false,
           },
         },
       });

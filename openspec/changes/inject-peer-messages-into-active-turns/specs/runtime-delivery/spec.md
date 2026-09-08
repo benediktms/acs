@@ -42,7 +42,7 @@ ACS SHALL deliver each peer message directly to the reachable bound runtime sess
 
 ### Requirement: Peer provenance is preserved
 
-ACS SHALL deliver peer content through a runtime representation that names the authenticated sender and carries principal-derived provenance. `bound-agent` requesters SHALL have `workAuthority: "delegated"`; `external-a2a-client` and `service` requesters SHALL have `workAuthority: "untrusted"`. Every peer delivery SHALL retain `trustedForPermissions: false`. ACS SHALL NOT accept authority fields from callers or fabricate local user, developer, or system input solely to make direct delivery succeed.
+ACS SHALL deliver peer content through a runtime representation that names the authenticated sender and carries principal-derived provenance. `bound-agent` requesters SHALL have `workAuthority: "delegated"`; `external-a2a-client` and `service` requesters SHALL have `workAuthority: "untrusted"`. ACS SHALL NOT accept authority fields from callers or fabricate local user, developer, or system input solely to make direct delivery succeed.
 
 #### Scenario: Codex peer message is delivered
 

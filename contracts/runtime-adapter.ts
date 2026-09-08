@@ -211,12 +211,10 @@ export interface RuntimeDeliveryEnvelopeV1 {
     | {
         readonly principalKind: "bound-agent";
         readonly workAuthority: "delegated";
-        readonly trustedForPermissions: false;
       }
     | {
         readonly principalKind: "external-a2a-client" | "service";
         readonly workAuthority: "untrusted";
-        readonly trustedForPermissions: false;
       };
 }
 

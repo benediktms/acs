@@ -1097,10 +1097,9 @@ export class DeliveryScheduler {
 function deliveryProvenance(
   principalKind: string | null,
 ): RuntimeDeliveryEnvelopeV1["provenance"] | undefined {
-  if (principalKind === "bound-agent")
-    return { principalKind, workAuthority: "delegated", trustedForPermissions: false };
+  if (principalKind === "bound-agent") return { principalKind, workAuthority: "delegated" };
   if (principalKind === "external-a2a-client" || principalKind === "service")
-    return { principalKind, workAuthority: "untrusted", trustedForPermissions: false };
+    return { principalKind, workAuthority: "untrusted" };
 }
 
 function interruptOnCancel(json: string) {

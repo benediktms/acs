@@ -650,7 +650,6 @@ function delivery(mode: RuntimeDeliveryRequest["mode"] = "direct"): RuntimeDeliv
       provenance: {
         principalKind: "bound-agent",
         workAuthority: "delegated",
-        trustedForPermissions: false,
       },
     },
     payloadHash: "payload-hash",

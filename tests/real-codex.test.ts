@@ -294,7 +294,6 @@ function delivery(threadId: string, id: DeliveryId): RuntimeDeliveryRequest {
       provenance: {
         principalKind: "bound-agent",
         workAuthority: "delegated",
-        trustedForPermissions: false,
       },
     },
   };
@@ -342,7 +341,6 @@ function envelopes(request: Record<string, unknown> | undefined) {
       expect(envelope.provenance).toEqual({
         principalKind: "bound-agent",
         workAuthority: "delegated",
-        trustedForPermissions: false,
       });
       return envelope;
     });
