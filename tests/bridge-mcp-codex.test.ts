@@ -5,7 +5,7 @@ test("selects only the configured Codex runtime", () => {
   const home = "/tmp/acs-personal";
   expect(
     isConfiguredCodexRuntime(
-      { harnessId: "codex", label: "personal", endpoint: { home } },
+      { harnessId: "codex", label: "personal", endpoint: { home: "/tmp/./acs-personal" } },
       "personal",
       home,
     ),
