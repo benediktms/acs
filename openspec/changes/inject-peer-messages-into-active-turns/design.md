@@ -45,9 +45,15 @@ This behavior is preferred over `turn/steer` because the pinned Codex implementa
 
 ### Preserve peer provenance
 
-A peer message is external agent input, not local-user authority. ACS SHALL NOT represent peer content as user, developer, or system input.
+A peer message is external agent input, not local-user authority. ACS SHALL NOT represent peer content as user, developer, or system input. That boundary prevents permission laundering; it does not make authenticated agent-to-agent delegation unusable.
 
 Named tool output provides the initial Codex representation. Runtime adapters for other harnesses may use different native message/input primitives, but they MUST preserve an equivalent trust boundary and MUST NOT upgrade peer content into permission-granting authority.
+
+Requester principal kind is established only by ACS-owned authentication paths. `Store.bind` creates `bound-agent`; administrative token creation creates `external-a2a-client` or `service`; `acs_send` attests host-owned thread metadata and obtains a short-lived A2A token for the active binding principal; and A2A resolves that bearer token back to the persisted principal. The message role is not identity. `local-user` remains control-plane-only and is rejected by A2A.
+
+The scheduler joins the persisted requester principal when building an envelope. A valid `bound-agent` maps to `workAuthority: "delegated"`; `external-a2a-client` and `service` map to `workAuthority: "untrusted"`; anything else fails closed. Callers cannot supply this field. `trustedForPermissions` remains false in every case.
+
+Delegated work authorizes task execution and ACS coordination only within the recipient's existing sandbox, approval policy, credentials, network access, collaboration mode, and other local constraints. It never answers an app-server permission/authentication prompt or expands policy. Static MCP initialization instructions state this cross-tool policy and require acknowledgement plus explicit completion, failure, or input-request calls using the envelope's task and delivery IDs.
 
 ### Record the actual execution relationship
 

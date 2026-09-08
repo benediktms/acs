@@ -33,6 +33,13 @@
 - [ ] 4.6 Reconcile the implementation with https://github.com/benediktms/acs/pull/14, https://github.com/benediktms/acs/pull/15, https://github.com/benediktms/acs/pull/16, https://github.com/benediktms/acs/pull/19, and https://github.com/benediktms/acs/pull/35; verify each remaining PR either targets the direct-delivery contract or is explicitly superseded.
 - [ ] 4.7 Run strict OpenSpec validation plus affected test files, typecheck, lint, formatting, import-boundary, enum, and generated-protocol checks; leave the full suite to CI.
 
+## 5. Autonomous Bound-Agent Delegation
+
+- [x] 5.1 Specify principal creation and resolution, A2A rejection of `local-user`, role/identity separation, assigned-executor authorization, principal-derived work authority, and the permission-escalation boundary.
+- [ ] 5.2 Add principal-derived `delegated | untrusted` work authority and the complete task reply contract to runtime envelopes; fail closed for unsupported requester principal kinds.
+- [ ] 5.3 Publish trusted MCP initialization instructions that permit delegated work and ACS lifecycle/coordination calls under existing local policy while forbidding permission escalation and approval replies.
+- [ ] 5.4 Update security/operator documentation and add the smallest targeted storage, A2A, scheduler, MCP, contract, and adapter regression coverage.
+
 ## Verification record
 
 See `docs/direct-delivery-verification.md`. Static checks and affected tests run

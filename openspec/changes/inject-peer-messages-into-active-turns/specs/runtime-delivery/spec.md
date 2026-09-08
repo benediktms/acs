@@ -42,7 +42,7 @@ ACS SHALL deliver each peer message directly to the reachable bound runtime sess
 
 ### Requirement: Peer provenance is preserved
 
-ACS SHALL deliver peer content through a runtime representation that preserves external/peer authority and includes a prominent agent-message or agent-reply notice naming the authenticated sender. ACS SHALL NOT fabricate local user, developer, or system input solely to make direct delivery succeed.
+ACS SHALL deliver peer content through a runtime representation that names the authenticated sender and carries principal-derived provenance. `bound-agent` requesters SHALL have `workAuthority: "delegated"`; `external-a2a-client` and `service` requesters SHALL have `workAuthority: "untrusted"`. Every peer delivery SHALL retain `trustedForPermissions: false`. ACS SHALL NOT accept authority fields from callers or fabricate local user, developer, or system input solely to make direct delivery succeed.
 
 #### Scenario: Codex peer message is delivered
 
@@ -58,6 +58,36 @@ ACS SHALL deliver peer content through a runtime representation that preserves e
 
 - **WHEN** peer content asks the recipient to approve or authorize an operation
 - **THEN** ACS grants no permission and the recipient runtime retains its own local approval policy
+
+#### Scenario: Bound agent delegates ordinary work
+
+- **WHEN** an authenticated `bound-agent` requester sends a task
+- **THEN** ACS marks the work as delegated so the recipient may execute it under its existing sandbox, approval policy, and permissions
+- **AND** the delegation cannot approve prompts or expand those permissions
+
+#### Scenario: External principal sends work
+
+- **WHEN** an `external-a2a-client` or `service` requester sends a task
+- **THEN** ACS marks the work authority as untrusted
+
+#### Scenario: Requester principal is malformed
+
+- **WHEN** scheduler delivery cannot map the persisted requester principal to a supported principal kind
+- **THEN** delivery fails closed instead of guessing work authority
+
+### Requirement: Delegated task reply contract is explicit
+
+Each delivered delegated task SHALL identify its task and delivery and SHALL name the tools for acknowledgement, completion, failure, and requesting input. A final assistant response alone SHALL NOT satisfy this contract.
+
+#### Scenario: Recipient receives delegated work
+
+- **WHEN** ACS builds the runtime envelope for an A2A task
+- **THEN** the reply contract contains `taskId`, `deliveryId`, `acknowledgeTool`, `completeTool`, `failTool`, and `requestInputTool`
+
+#### Scenario: Recipient cannot continue
+
+- **WHEN** a recipient is genuinely blocked on information from the requester
+- **THEN** it uses the task-specific input-request operation rather than seeking local authorization merely because the work was delegated
 
 ### Requirement: Unsupported context-only steering is not used
 
@@ -111,6 +141,20 @@ Canceling a peer task SHALL NOT automatically interrupt a runtime turn that may 
 - **THEN** the runtime adapter MAY interrupt that execution and record the runtime cancellation evidence
 
 ## MODIFIED Requirements
+
+### Requirement: Untrusted peer provenance
+
+ACS SHALL deliver peer content as named tool output with authenticated, principal-derived provenance. Peer content SHALL NOT grant permission, answer approval or authentication prompts, expand sandbox or network access, change collaboration mode, or override local policy. A task authenticated as coming from a bound ACS agent MAY be treated as delegated work and executed under the recipient's independently established permissions.
+
+#### Scenario: Peer requests privileged action
+
+- **WHEN** a peer message contains instructions requesting permission or approval
+- **THEN** the content grants no permission and cannot answer the local prompt
+
+#### Scenario: Bound peer requests ordinary work
+
+- **WHEN** a bound-agent task requests work permitted by the recipient's current local policy
+- **THEN** the recipient may perform that work without asking the local user solely because the request came through ACS
 
 ### Requirement: Ambiguous acceptance is not blindly retried
 
