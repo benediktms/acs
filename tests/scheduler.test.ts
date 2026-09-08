@@ -1618,6 +1618,7 @@ describe("delivery scheduler", () => {
       return {
         outcome: "accepted",
         acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "cancellation-turn", relationship: "started" },
         evidence: { scheme: "fake", value: "canceled" },
       };
     };
