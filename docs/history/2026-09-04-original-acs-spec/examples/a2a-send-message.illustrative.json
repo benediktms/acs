@@ -1,0 +1,48 @@
+{
+  "_note": "Illustrative JSON-RPC shape. The pinned @a2a-js/sdk serializer and A2A v1 schema are normative for exact enum/part encoding.",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "req-001",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "mcp-item-123",
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Implement token rotation and report the commit."
+          }
+        ]
+      },
+      "metadata": {
+        "urn:agent-communications:delivery:v1": {
+          "mode": "wake_when_idle",
+          "priority": "normal",
+          "notifyOn": [
+            "input-required",
+            "terminal"
+          ],
+          "replyExpected": true
+        }
+      }
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "req-001",
+    "result": {
+      "kind": "task",
+      "id": "tsk_019...",
+      "contextId": "ctx_019...",
+      "status": {
+        "state": "submitted"
+      },
+      "metadata": {
+        "urn:agent-communications:delivery-status:v1": {
+          "state": "queued"
+        }
+      }
+    }
+  }
+}

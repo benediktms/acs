@@ -1,0 +1,31 @@
+sequenceDiagram
+  participant A as Codex @architect
+  participant MA as ACS MCP bridge
+  participant S as ACS/A2A
+  participant DB as SQLite
+  participant CA as Codex adapter
+  participant B as Codex @backend
+
+  A->>MA: acs_send(to=@backend, ...)
+  MA->>S: bridge.attestCaller(_meta)
+  S-->>MA: bound principal for @architect
+  MA->>S: A2A SendMessage to @backend
+  S->>DB: BEGIN IMMEDIATE
+  S->>DB: task + message + event + intent + idempotency
+  S->>DB: COMMIT
+  S-->>MA: Task(state=submitted)
+  MA-->>A: accepted task ID
+
+  S->>DB: lease delivery intent
+  S->>CA: deliver(binding epoch, neutral envelope)
+  CA->>B: app-server turn/start + toolOutput
+  B-->>CA: turn accepted
+  CA-->>S: RuntimeDeliveryResult.accepted
+  S->>DB: delivery accepted; task working
+
+  B->>MA: acs_task_complete(taskId, result)
+  MA->>S: attested executor callback
+  S->>DB: append result + terminal event
+  S->>DB: create origin notification
+  S->>CA: deliver task-event to @architect
+  CA->>A: app-server toolOutput

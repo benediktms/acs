@@ -1,0 +1,20 @@
+{
+  "jsonrpc": "2.0",
+  "id": "req-bind-1",
+  "method": "bindings.bind",
+  "params": {
+    "agent": "@backend",
+    "installationId": "ins_019...",
+    "session": {
+      "installationId": "ins_019...",
+      "opaqueId": "opaque-codex-thread-id"
+    },
+    "continuityPolicy": "follow-pending",
+    "deliveryPolicy": {
+      "wakeStrategy": "atomic-only",
+      "allowActiveTurnSteering": false,
+      "autoResumeDormantThread": false,
+      "interruptOnCancel": true
+    }
+  }
+}
