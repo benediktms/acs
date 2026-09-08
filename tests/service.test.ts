@@ -96,7 +96,7 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(integration).not.toContain('" $* "');
   expect(integration).toContain("codex socket");
   expect(integration).toContain('"${acs_bin[@]}"');
-  expect(integration).toContain("-C|-c|-m|-p|-s|-a|--cd|--model");
+  expect(integration).toContain("-C|--cd) has_cwd=true");
   expect(integration).toContain("routed_argv");
   expect(integration).toContain("session_command");
   expect(integration).toContain("exec|e|review|login|logout");
@@ -124,7 +124,15 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(managed.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        "--remote\nunix:///tmp/acs.sock\nfix --remote tests\n",
+        `--remote\nunix:///tmp/acs.sock\n--cd\n${process.cwd()}\nfix --remote tests\n`,
+      );
+      const explicitCwd = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --cd /explicit task`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(explicitCwd.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(
+        "--remote\nunix:///tmp/acs.sock\n--cd\n/explicit\ntask\n",
       );
       const direct = Bun.spawnSync(
         ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex exec test`],
@@ -178,7 +186,7 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(optionValue.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        "--remote\nunix:///tmp/acs.sock\n-c\n--acs-standalone\nresume\n",
+        `--remote\nunix:///tmp/acs.sock\n--cd\n${process.cwd()}\n-c\n--acs-standalone\nresume\n`,
       );
       for (const option of ["-c", "-p", "-s", "-a"]) {
         const shortOption = Bun.spawnSync(
