@@ -120,8 +120,21 @@ export function restartCodexAppServer(options: {
   );
 }
 
+export function ownedCodexAppServerPid(
+  home: string,
+  socket: string,
+  inspect = { listenerPid, processDetails },
+) {
+  const pid = inspect.listenerPid(socket);
+  if (!pid) return undefined;
+  const details = inspect.processDetails(pid);
+  if (!details.includes("codex") || !details.includes(`CODEX_HOME=${home}`))
+    throw new Error("CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED");
+  return pid;
+}
+
 export function codexZshIntegration(command: readonly string[], codexBinary = "codex") {
-  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@")\n  local codex_bin=${shellQuote(codexBinary)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1 standalone=false remote=false\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      --acs-standalone) standalone=true; (( index += 1 ));;\n      --remote) remote=true; (( index += 2 ));;\n      --remote=*) remote=true; (( index += 1 ));;\n      -C|--cd|-m|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) (( index += 2 ));;\n      -*) (( index += 1 ));;\n      *) session_command="\${argv[index]}"; break;;\n    esac\n  done\n  if $standalone; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command "$codex_bin" "\${(@)@:#--acs-standalone}"; return\n  fi\n  if $remote; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$session_command" in exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|migrate-rollouts|cloud|exec-server|features|help) command "$codex_bin" "$@";;\n  *)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command "$codex_bin" --app-server-url "unix://$socket" "$@";; esac\n}\n`;
+  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@")\n  local codex_bin=${shellQuote(codexBinary)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1 standalone=false remote=false\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      --acs-standalone) standalone=true; (( index += 1 ));;\n      --remote) remote=true; (( index += 2 ));;\n      --remote=*) remote=true; (( index += 1 ));;\n      -C|-c|-m|-p|-s|-a|--cd|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) (( index += 2 ));;\n      -*) (( index += 1 ));;\n      *) session_command="\${argv[index]}"; break;;\n    esac\n  done\n  if $standalone; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command "$codex_bin" "\${(@)@:#--acs-standalone}"; return\n  fi\n  if $remote; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$session_command" in exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|migrate-rollouts|cloud|exec-server|features|help) command "$codex_bin" "$@";;\n  *)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command "$codex_bin" --app-server-url "unix://$socket" "$@";; esac\n}\n`;
 }
 
 export function installCodexZshIntegration(
@@ -148,8 +161,31 @@ export function removeCodexZshIntegration(home: string) {
   if (existsSync(zshrc)) writeFileSync(zshrc, readFileSync(zshrc, "utf8").replace(source, "\n"));
 }
 
+export function syncCodexZshIntegration(options: {
+  enabled: boolean;
+  accountCount: number;
+  home: string;
+  command: readonly string[];
+  codexBinary: string;
+}) {
+  if (options.enabled && options.accountCount)
+    installCodexZshIntegration(options.home, options.command, options.codexBinary);
+  else removeCodexZshIntegration(options.home);
+}
+
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function listenerPid(socket: string) {
+  const value = Bun.spawnSync(["/usr/sbin/lsof", "-nP", "-t", "-U", socket])
+    .stdout.toString()
+    .trim();
+  return /^\d+$/.test(value) ? Number(value) : undefined;
+}
+
+function processDetails(pid: number) {
+  return Bun.spawnSync(["/bin/ps", "eww", "-p", String(pid)]).stdout.toString();
 }
 
 export async function installService(options: {

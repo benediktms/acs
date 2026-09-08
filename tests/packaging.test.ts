@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -376,6 +377,10 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   insertRuntime.run("ins_retired", "codex", "codex.app-server", "retired", Date.now(), Date.now());
   insertRuntime.run("ins_foreign", "foreign", "foreign.adapter", "local", Date.now(), Date.now());
   doctorStore.close();
+  appendFileSync(
+    join(root, "config.toml"),
+    '\n[[runtimes.codex.accounts]]\nlabel = "missing"\ncodex_home = "/tmp/missing-codex"\n',
+  );
   const doctor = Bun.spawn([binary, "codex", "doctor"], {
       env,
       stdout: "pipe",
@@ -386,7 +391,10 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   expect(array(record(diagnosis.codex).accounts)).toContainEqual(
     expect.objectContaining({ label: "local", state: "ready", threadsSampled: 0 }),
   );
-  expect(array(record(diagnosis.codex).accounts)).toHaveLength(1);
+  expect(array(record(diagnosis.codex).accounts)).toContainEqual(
+    expect.objectContaining({ label: "missing", state: "unavailable" }),
+  );
+  expect(array(record(diagnosis.codex).accounts)).toHaveLength(2);
   expect(diagnosis.codex).toMatchObject({
     installed: "codex-cli 0.153.2",
   });

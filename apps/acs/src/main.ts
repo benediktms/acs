@@ -28,12 +28,12 @@ import {
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
   installCodexAppServer,
-  installCodexZshIntegration,
   installService,
+  ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
-  removeCodexZshIntegration,
   restartCodexAppServer,
+  syncCodexZshIntegration,
 } from "./service";
 
 const args = Bun.argv.slice(2),
@@ -65,7 +65,7 @@ async function main() {
         userHome: required(process.env.HOME, "HOME"),
         uid: required(process.getuid?.(), "user ID"),
       });
-      if (settings.codex.enabled) {
+      if (settings.codex.enabled && settings.codex.accounts.length) {
         for (const account of settings.codex.accounts) {
           await installCodexAppServer({
             binary: required(
@@ -81,12 +81,14 @@ async function main() {
           });
           installMcp(account.home);
         }
-        installCodexZshIntegration(
-          required(process.env.HOME, "HOME"),
-          selfCommand(),
-          Bun.which(settings.codex.binary) ?? settings.codex.binary,
-        );
-      } else removeCodexZshIntegration(required(process.env.HOME, "HOME"));
+      }
+      syncCodexZshIntegration({
+        enabled: settings.codex.enabled,
+        accountCount: settings.codex.accounts.length,
+        home: required(process.env.HOME, "HOME"),
+        command: selfCommand(),
+        codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
+      });
       await waitForDaemon();
       console.log("ACS login service and global Codex MCP are ready");
     }
@@ -316,6 +318,9 @@ async function adoptCodexAppServer(label: string, force: boolean) {
     );
   if (!stopped.success) {
     if (!(await stopOwnedCodexAppServer(label, account.home, account.socket, "SIGTERM"))) return;
+  } else if (await socketListening(account.socket)) {
+    const pid = ownedCodexAppServerPid(account.home, account.socket);
+    if (pid) process.kill(pid, "SIGTERM");
   }
   for (let attempt = 0; attempt < 50; attempt++) {
     if (!(await socketListening(account.socket))) {
@@ -351,11 +356,8 @@ async function stopOwnedCodexAppServer(
   socket: string,
   signal: "SIGTERM" | "SIGKILL",
 ) {
-  const pid = listenerPid(socket),
-    details = pid ? processDetails(pid) : "";
+  const pid = ownedCodexAppServerPid(home, socket);
   if (!pid) throw new Error("CODEX_APP_SERVER_NOT_FOUND");
-  if (!details.includes("codex") || !details.includes(`CODEX_HOME=${home}`))
-    throw new Error("CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED");
   if (!process.stdin.isTTY || !process.stdout.isTTY)
     throw new Error("CODEX_APP_SERVER_FORCE_REQUIRES_TERMINAL");
   const terminal = createInterface({ input: process.stdin, output: process.stdout });
@@ -371,16 +373,6 @@ async function stopOwnedCodexAppServer(
   }
   process.kill(pid, signal);
   return true;
-}
-
-function listenerPid(socket: string) {
-  const value = Bun.spawnSync(["/usr/sbin/lsof", "-nP", "-t", "-U", socket])
-    .stdout.toString()
-    .trim();
-  return /^\d+$/.test(value) ? Number(value) : undefined;
-}
-function processDetails(pid: number) {
-  return Bun.spawnSync(["/bin/ps", "eww", "-p", String(pid)]).stdout.toString();
 }
 
 function socketListening(path: string): Promise<boolean> {
@@ -662,44 +654,48 @@ async function doctor() {
       runtimes.push(...arrayValue(page.runtimes));
       cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
     } while (cursor);
-    const configuredLabels = new Set(settings.codex.accounts.map((account) => account.label));
     accountHealth = await Promise.all(
-      runtimes
-        .filter((runtime) => {
-          const value = recordValue(runtime);
-          return value.harnessId === "codex" && configuredLabels.has(String(value.label));
-        })
-        .map(async (runtime) => {
-          const value = recordValue(runtime),
-            installationId = required(value.installationId, "installation ID");
-          try {
-            const probe = recordValue(
-                recordValue(await call("runtimes.probe", { installationId })).probe,
-              ),
-              sessions = recordValue(
-                await call("runtimes.sessions.list", { installationId, limit: 1 }),
-              ).sessions,
-              capabilities = recordValue(probe.capabilities);
-            directDelivery ||= capabilities.directDelivery === true;
-            return {
-              label: value.label,
-              installationId,
-              socket: settings.codex.accounts.find((account) => account.label === value.label)
-                ?.socket,
-              state: probe.state,
-              version: probe.runtimeVersion,
-              directDelivery: capabilities.directDelivery === true,
-              threadsSampled: Array.isArray(sessions) ? sessions.length : 0,
-            };
-          } catch (error) {
-            return {
-              label: value.label,
-              installationId,
-              state: "unavailable",
-              error: String(error),
-            };
-          }
-        }),
+      settings.codex.accounts.map(async (account) => {
+        const runtime = runtimes.find((candidate) => {
+          const value = recordValue(candidate);
+          return value.harnessId === "codex" && value.label === account.label;
+        });
+        if (!runtime)
+          return {
+            label: account.label,
+            socket: account.socket,
+            state: "unavailable",
+            error: "RUNTIME_UNAVAILABLE",
+          };
+        const value = recordValue(runtime),
+          installationId = required(value.installationId, "installation ID");
+        try {
+          const probe = recordValue(
+              recordValue(await call("runtimes.probe", { installationId })).probe,
+            ),
+            sessions = recordValue(
+              await call("runtimes.sessions.list", { installationId, limit: 1 }),
+            ).sessions,
+            capabilities = recordValue(probe.capabilities);
+          directDelivery ||= capabilities.directDelivery === true;
+          return {
+            label: value.label,
+            installationId,
+            socket: account.socket,
+            state: probe.state,
+            version: probe.runtimeVersion,
+            directDelivery: capabilities.directDelivery === true,
+            threadsSampled: Array.isArray(sessions) ? sessions.length : 0,
+          };
+        } catch (error) {
+          return {
+            label: value.label,
+            installationId,
+            state: "unavailable",
+            error: String(error),
+          };
+        }
+      }),
     );
   } catch (error) {
     accountHealth = [{ state: "unavailable", error: String(error) }];

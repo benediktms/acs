@@ -1072,6 +1072,82 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
+  test("task notifications do not select a second cancellation scheduler", async () => {
+    const store = fixture(),
+      primaryRow = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      secondary: `ins_${string}` = "ins_cancel_secondary";
+    if (!primaryRow) throw new Error("missing primary installation");
+    const primary = primaryRow.id;
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','secondary','{}','{}','unknown',?,?)",
+      )
+      .run(secondary, Date.now(), Date.now());
+    const sender = store.createAgent("cancel-notification-sender"),
+      target = store.createAgent("cancel-notification-target"),
+      senderBinding = store.bind(sender.id, "cancel-notification-sender-thread", {
+        installationId: secondary,
+      }),
+      targetBinding = store.bind(target.id, "cancel-notification-target-thread", {
+        installationId: primary,
+      }),
+      accepted = store.accept(
+        target.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "cancel-notification",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { notifyOn: ["input-required"] },
+      );
+    store.db
+      .query("UPDATE delivery_intents SET state='accepted' WHERE id=?")
+      .run(accepted.deliveryId);
+    store.setTaskState(accepted.task.id, targetBinding.principalId, TaskState.Working);
+    store.setTaskState(
+      accepted.task.id,
+      targetBinding.principalId,
+      TaskState.InputRequired,
+      "question",
+    );
+    store.db
+      .query(
+        "UPDATE delivery_intents SET state='acceptance-unknown' WHERE task_id=? AND kind='task-event-notification'",
+      )
+      .run(accepted.task.id);
+    store.requestCancellation(accepted.task.id, senderBinding.principalId);
+    const secondaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-secondary",
+      undefined,
+      secondary,
+    );
+    await secondaryScheduler.start();
+    await Bun.sleep(400);
+    expect(store.task(accepted.task.id, senderBinding.principalId)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_INPUT_REQUIRED,
+    );
+    await secondaryScheduler.stop();
+    const primaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-primary",
+      undefined,
+      primary,
+    );
+    await primaryScheduler.start();
+    await until(
+      () =>
+        store.task(accepted.task.id, senderBinding.principalId)?.status?.state ===
+        A2ATaskState.TASK_STATE_CANCELED,
+    );
+    await primaryScheduler.stop();
+    store.close();
+  });
   test("settles cancellation only after an in-flight write has a definitive outcome", async () => {
     const store = fixture(),
       agent = store.createAgent("cancel-in-flight-target"),

@@ -16,9 +16,11 @@ import {
   installCodexAppServer,
   installService,
   launchAgent,
+  ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
   restartCodexAppServer,
+  syncCodexZshIntegration,
 } from "../apps/acs/src/service";
 
 test("persistent runtime paths are absolute", () => {
@@ -93,7 +95,7 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(integration).not.toContain('" $* "');
   expect(integration).toContain("codex socket");
   expect(integration).toContain('"${acs_bin[@]}"');
-  expect(integration).toContain("-C|--cd|-m|--model");
+  expect(integration).toContain("-C|-c|-m|-p|-s|-a|--cd|--model");
   expect(integration).toContain("session_command");
   expect(integration).toContain("exec|e|review|login|logout");
   expect(integration).toContain(`local codex_bin='/Applications/Codex O'\\''Brien/codex'`);
@@ -128,6 +130,14 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(direct.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
+      for (const option of ["-c", "-p", "-s", "-a"]) {
+        const shortOption = Bun.spawnSync(
+          ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex ${option} value exec test`],
+          { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+        );
+        expect(shortOption.exitCode).toBe(0);
+        expect(readFileSync(output, "utf8")).toBe(`${option}\nvalue\nexec\ntest\n`);
+      }
       const remote = Bun.spawnSync(
         ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other`],
         { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
@@ -148,6 +158,40 @@ test.skipIf(!Bun.which("zsh"))(
     }
   },
 );
+
+test("finds only the Codex listener owned by the configured account", () => {
+  const inspect = {
+    listenerPid: (socket: string) => (socket === "/tmp/account.sock" ? 42 : undefined),
+    processDetails: (pid: number) => `codex app-server CODEX_HOME=/tmp/account pid=${pid}`,
+  };
+  expect(ownedCodexAppServerPid("/tmp/account", "/tmp/account.sock", inspect)).toBe(42);
+  expect(ownedCodexAppServerPid("/tmp/account", "/tmp/other.sock", inspect)).toBeUndefined();
+  expect(() => ownedCodexAppServerPid("/tmp/stale", "/tmp/account.sock", inspect)).toThrow(
+    "CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED",
+  );
+});
+
+test("enabled Codex with no accounts removes the zsh integration", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-zsh-empty-")),
+    integration = join(root, ".zshrc.d", "acs-codex.zsh"),
+    zshrc = join(root, ".zshrc");
+  mkdirSync(join(root, ".zshrc.d"));
+  writeFileSync(integration, "stale");
+  writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
+  try {
+    syncCodexZshIntegration({
+      enabled: true,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: "codex",
+    });
+    expect(existsSync(integration)).toBe(false);
+    expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
 
 test("restarts only the selected Codex account service", () => {
   const calls: string[] = [];
