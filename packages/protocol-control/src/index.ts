@@ -642,7 +642,17 @@ export function controlHandler(
               (typeof inspectSessionInput === "string"
                 ? undefined
                 : inspectSessionInput.installationId),
-            inspectInstallation = runtimeInstallation(
+            inspectSessionInstallation =
+              typeof inspectSessionInput === "string"
+                ? undefined
+                : inspectSessionInput.installationId;
+          if (
+            p.installationId &&
+            inspectSessionInstallation &&
+            p.installationId !== inspectSessionInstallation
+          )
+            throw new Error("BINDING_CONFLICT: runtime installation mismatch");
+          const inspectInstallation = runtimeInstallation(
               store,
               adapters,
               inspectRequestedInstallation,

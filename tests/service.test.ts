@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,10 +86,53 @@ test("Codex account service and zsh integration are account-scoped", () => {
   const integration = codexZshIntegration(["/Applications/acs", "/work/acs/main.ts"]);
   expect(integration).toContain("--acs-standalone");
   expect(integration).toContain("--remote requires --acs-standalone");
+  expect(integration).toContain("--remote=*)");
+  expect(integration).not.toContain('" $* "');
   expect(integration).toContain("codex socket");
   expect(integration).toContain('"${acs_bin[@]}"');
   expect(integration).toContain("-C|--cd|-m|--model");
   expect(integration).toContain("session_command");
+  expect(integration).toContain("exec|e|review|login|logout");
+});
+
+test("Codex zsh integration treats prompt text as a managed session", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-zsh-")),
+    bin = join(root, "bin"),
+    acs = join(bin, "acs"),
+    codex = join(bin, "codex"),
+    output = join(root, "args");
+  mkdirSync(bin);
+  writeFileSync(acs, "#!/bin/sh\nprintf '/tmp/acs.sock\\n'\n");
+  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
+  chmodSync(acs, 0o755);
+  chmodSync(codex, 0o755);
+  try {
+    const managed = Bun.spawnSync(
+      ["zsh", "-fc", `${codexZshIntegration([acs])}\ncodex 'fix --remote tests'`],
+      { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+    );
+    expect(managed.exitCode).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(
+      "--app-server-url\nunix:///tmp/acs.sock\nfix --remote tests\n",
+    );
+    const remote = Bun.spawnSync(
+      ["zsh", "-fc", `${codexZshIntegration([acs])}\ncodex --remote=unix:///tmp/other`],
+      { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+    );
+    expect(remote.exitCode).toBe(2);
+    const standalone = Bun.spawnSync(
+      [
+        "zsh",
+        "-fc",
+        `${codexZshIntegration([acs])}\ncodex --remote=unix:///tmp/other --acs-standalone`,
+      ],
+      { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+    );
+    expect(standalone.exitCode).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("--remote=unix:///tmp/other\n");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
 });
 
 test("restarts only the selected Codex account service", () => {

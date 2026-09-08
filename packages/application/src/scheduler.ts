@@ -68,6 +68,19 @@ type ReconciliationRow = {
   reconciliation_token: string;
 };
 
+export class DeliveryConcurrency {
+  private inFlight = 0;
+  constructor(private limit: number) {}
+  tryAcquire() {
+    if (this.inFlight >= this.limit) return false;
+    this.inFlight++;
+    return true;
+  }
+  release() {
+    this.inFlight--;
+  }
+}
+
 export class DeliveryScheduler {
   private timer?: Timer;
   private scheduling = false;
@@ -93,6 +106,7 @@ export class DeliveryScheduler {
       reconnectMs: 2000,
     },
     private installationId?: RuntimeInstallationId,
+    private sharedConcurrency?: DeliveryConcurrency,
   ) {
     this.capabilities = adapter.descriptor.capabilities;
   }
@@ -148,8 +162,12 @@ export class DeliveryScheduler {
       if (await this.reconcileOne()) return;
       if (await this.cancelOne()) return;
       while (this.inFlight.size < this.options.concurrency) {
+        if (this.sharedConcurrency && !this.sharedConcurrency.tryAcquire()) break;
         const intent = this.lease();
-        if (!intent) break;
+        if (!intent) {
+          this.sharedConcurrency?.release();
+          break;
+        }
         this.lanes.add(intent.target_agent_id);
         const work = this.deliver(intent)
           .catch((error: unknown) => {
@@ -169,6 +187,7 @@ export class DeliveryScheduler {
           .finally(() => {
             this.lanes.delete(intent.target_agent_id);
             this.inFlight.delete(work);
+            this.sharedConcurrency?.release();
           });
         this.inFlight.add(work);
         void work;

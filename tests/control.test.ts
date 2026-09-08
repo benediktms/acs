@@ -798,6 +798,14 @@ describe("control protocol", () => {
     expect(
       await (await call("runtimes.sessions.list", { installationId: "ins_wrong" })).json(),
     ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE" } } });
+    expect(
+      await (
+        await call("runtimes.sessions.inspect", {
+          installationId: installation.id,
+          session: { installationId: "ins_wrong", opaqueId: "thread-1" },
+        })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "BINDING_CONFLICT" } } });
     const runtimes = record(await (await call("runtimes.list", {})).json()),
       runtimeItems = record(runtimes.result).runtimes;
     if (!Array.isArray(runtimeItems)) throw new Error("missing runtimes list");

@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import type { RuntimeDeliveryRequest } from "../contracts/runtime-adapter";
-import { DeliveryScheduler, retryDelay } from "../packages/application/src/scheduler";
+import {
+  DeliveryConcurrency,
+  DeliveryScheduler,
+  retryDelay,
+} from "../packages/application/src/scheduler";
 import { TaskState } from "../packages/domain/src/index";
 import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
@@ -27,6 +31,13 @@ function fixture() {
 }
 
 describe("delivery scheduler", () => {
+  test("shares delivery capacity across schedulers", () => {
+    const capacity = new DeliveryConcurrency(1);
+    expect(capacity.tryAcquire()).toBe(true);
+    expect(capacity.tryAcquire()).toBe(false);
+    capacity.release();
+    expect(capacity.tryAcquire()).toBe(true);
+  });
   test("isolates delivery scheduling by runtime installation", async () => {
     const store = fixture(),
       primary = store.db

@@ -171,9 +171,8 @@ export async function runMcp(port = 7432) {
     const runtimes = await call("runtimes.list", { limit: 100, cursor });
     if (!isRecord(runtimes) || !Array.isArray(runtimes.runtimes))
       throw new Error("RUNTIME_UNAVAILABLE");
-    runtime = runtimes.runtimes.find(
-      (candidate): candidate is Record<string, unknown> =>
-        isRecord(candidate) && candidate.label === account.label,
+    runtime = runtimes.runtimes.find((candidate) =>
+      isConfiguredCodexRuntime(candidate, account.label),
     );
     cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;
   } while (!runtime && cursor);
@@ -609,6 +608,13 @@ export async function runMcp(port = 7432) {
       }),
   );
   await server.connect(new StdioServerTransport());
+}
+
+export function isConfiguredCodexRuntime(
+  candidate: unknown,
+  label: string,
+): candidate is Record<string, unknown> {
+  return isRecord(candidate) && candidate.harnessId === "codex" && candidate.label === label;
 }
 
 function agentView(agent: z.infer<typeof agentSchema>) {

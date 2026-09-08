@@ -12,7 +12,10 @@ import {
   SUPPORTED_CODEX_VERSIONS,
   TESTED_CODEX_VERSION,
 } from "../../../packages/runtime-codex/src/index";
-import { DeliveryScheduler } from "../../../packages/application/src/scheduler";
+import {
+  DeliveryConcurrency,
+  DeliveryScheduler,
+} from "../../../packages/application/src/scheduler";
 import {
   canonicalCodexHome,
   loadConfig,
@@ -440,6 +443,7 @@ async function daemon() {
       );
       callerAttestors.set(installation.id, new CodexCallerAttestor(installation.id));
     }
+  const deliveryConcurrency = new DeliveryConcurrency(settings.delivery.workerConcurrency);
   schedulers = [...adapters].map(
     ([installationId, adapter]) =>
       new DeliveryScheduler(
@@ -454,6 +458,7 @@ async function daemon() {
           reconnectMs: settings.codex.statusPollIntervalMs,
         },
         installationId,
+        deliveryConcurrency,
       ),
   );
   await Promise.all(schedulers.map((scheduler) => scheduler.start()));
