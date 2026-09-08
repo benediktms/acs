@@ -28,6 +28,7 @@ import {
   installService,
   persistentEnvironment,
   removeCodexAppServers,
+  removeCodexZshIntegration,
   restartCodexAppServer,
 } from "./service";
 
@@ -51,12 +52,14 @@ async function main() {
         uid: required(process.getuid?.(), "user ID"),
         stopUnmanagedDaemon,
       });
+      removeCodexAppServers({
+        labels: settings.codex.enabled
+          ? settings.codex.accounts.map((account) => account.label)
+          : [],
+        userHome: required(process.env.HOME, "HOME"),
+        uid: required(process.getuid?.(), "user ID"),
+      });
       if (settings.codex.enabled) {
-        removeCodexAppServers({
-          labels: settings.codex.accounts.map((account) => account.label),
-          userHome: required(process.env.HOME, "HOME"),
-          uid: required(process.getuid?.(), "user ID"),
-        });
         for (const account of settings.codex.accounts) {
           await installCodexAppServer({
             binary: required(
@@ -73,7 +76,7 @@ async function main() {
           installMcp(account.home);
         }
         installCodexZshIntegration(required(process.env.HOME, "HOME"), selfCommand());
-      }
+      } else removeCodexZshIntegration(required(process.env.HOME, "HOME"));
       await waitForDaemon();
       console.log("ACS login service and global Codex MCP are ready");
     }
@@ -637,9 +640,15 @@ async function doctor() {
       client: { name: "acs-doctor", version: "0.1.0", instanceId: String(process.pid) },
       capabilities: {},
     });
-    const runtimes = recordValue(await call("runtimes.list", { limit: 100 }));
+    const runtimes: unknown[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = recordValue(await call("runtimes.list", { limit: 100, cursor }));
+      runtimes.push(...arrayValue(page.runtimes));
+      cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+    } while (cursor);
     accountHealth = await Promise.all(
-      arrayValue(runtimes.runtimes).map(async (runtime) => {
+      runtimes.map(async (runtime) => {
         const value = recordValue(runtime),
           installationId = required(value.installationId, "installation ID");
         try {

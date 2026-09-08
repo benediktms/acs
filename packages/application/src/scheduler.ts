@@ -308,7 +308,7 @@ export class DeliveryScheduler {
         },
         [RuntimeInstallationId]
       >(
-        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM delivery_intents i JOIN runtime_bindings b ON b.id=i.pinned_binding_id WHERE i.task_id=t.id AND b.installation_id=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
+        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.task_id=t.id AND coalesce(p.installation_id,b.installation_id)=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
       )
       .get(required(this.context, "adapter context").installationId);
     if (!task) return false;
@@ -402,7 +402,7 @@ export class DeliveryScheduler {
             .run(transitionDelivery(intent.state, DeliveryState.FailedTerminal), now, intent.id);
         const rows = this.store
             .query<DeliveryIntentRow, [number, number, number, RuntimeInstallationId]>(
-              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY i.target_agent_id ORDER BY i.priority DESC,i.not_before_ms,i.created_at_ms) lane_rank FROM delivery_intents i JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.state IN ('pending','deferred') AND i.not_before_ms<=? AND (i.deadline_ms IS NULL OR i.deadline_ms>?) AND (i.lease_expires_at_ms IS NULL OR i.lease_expires_at_ms<=?) AND b.installation_id=?) WHERE lane_rank=1 ORDER BY priority DESC,not_before_ms,created_at_ms LIMIT 100",
+              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY i.target_agent_id ORDER BY i.priority DESC,i.not_before_ms,i.created_at_ms) lane_rank FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.state IN ('pending','deferred') AND i.not_before_ms<=? AND (i.deadline_ms IS NULL OR i.deadline_ms>?) AND (i.lease_expires_at_ms IS NULL OR i.lease_expires_at_ms<=?) AND coalesce(p.installation_id,b.installation_id)=? AND NOT EXISTS(SELECT 1 FROM delivery_intents active WHERE active.target_agent_id=i.target_agent_id AND active.id<>i.id AND active.state IN ('leased','attempting'))) WHERE lane_rank=1 ORDER BY priority DESC,not_before_ms,created_at_ms LIMIT 100",
             )
             .all(now, now, now, required(this.context, "adapter context").installationId),
           row = rows.find((item) => !this.lanes.has(item.target_agent_id));

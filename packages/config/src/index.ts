@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export interface AcsConfig {
   daemon: {
@@ -314,8 +314,13 @@ function codexAccounts(
 export function canonicalCodexHome(path: string) {
   if (!isAbsolute(path))
     throw new Error("VALIDATION_FAILED: runtimes.codex.accounts[].codex_home must be absolute");
-  const absolute = resolve(path);
-  return existsSync(absolute) ? realpathSync(absolute) : absolute;
+  let absolute = resolve(path);
+  const missing: string[] = [];
+  while (!existsSync(absolute)) {
+    missing.unshift(basename(absolute));
+    absolute = dirname(absolute);
+  }
+  return resolve(realpathSync(absolute), ...missing);
 }
 
 export function paths(): Paths {

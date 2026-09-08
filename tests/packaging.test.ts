@@ -12,7 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Store } from "../packages/storage-sqlite/src/index";
-import { codexSocket as derivedCodexSocket, defaultLocations } from "../packages/config/src/index";
+import {
+  canonicalCodexHome,
+  codexSocket as derivedCodexSocket,
+  defaultLocations,
+} from "../packages/config/src/index";
 
 const roots: string[] = [],
   processes: Bun.Subprocess[] = [],
@@ -44,14 +48,12 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexSocket = derivedCodexSocket(
-      "/tmp/codex",
-      dirname(dirname(defaultLocations().runtimeSocket)),
-    ),
+  const codexHome = canonicalCodexHome("/tmp/codex"),
+    codexSocket = derivedCodexSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
     bin = join(root, "bin"),
     codex = join(bin, "codex");
   mkdirSync(dirname(codexSocket), { recursive: true });
-  const codexServer = fakeCodex(codexSocket);
+  const codexServer = fakeCodex(codexSocket, codexHome);
   servers.push(codexServer);
   mkdirSync(bin);
   writeFileSync(codex, "#!/bin/sh\nprintf 'codex-cli 0.153.2\\n'\n");
@@ -63,7 +65,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
     ACS_STORAGE_PATH: join(root, "acs.db"),
     ACS_CODEX_BINARY: codex,
-    CODEX_HOME: "/tmp/codex",
+    CODEX_HOME: codexHome,
     ACS_LOG_FORMAT: "json",
     PATH: `${bin}:/usr/bin:/bin`,
   };
@@ -407,7 +409,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   processes.splice(processes.indexOf(daemon), 1);
 }, 30_000);
 
-function fakeCodex(path: string) {
+function fakeCodex(path: string, codexHome: string) {
   const buffers = new WeakMap<object, Buffer>();
   return Bun.listen({
     unix: path,
@@ -440,7 +442,7 @@ function fakeCodex(path: string) {
             serverFrame(
               JSON.stringify({
                 id: request.id,
-                result: codexResponse(string(request.method), params),
+                result: codexResponse(string(request.method), params, codexHome),
               }),
             ),
           );
@@ -523,8 +525,8 @@ async function readUntil(stream: ReadableStream<Uint8Array>, needle: string) {
   }
 }
 
-function codexResponse(method: string, params: Record<string, unknown>) {
-  if (method === "initialize") return { userAgent: "codex-cli 0.153.2", codexHome: "/tmp/codex" };
+function codexResponse(method: string, params: Record<string, unknown>, codexHome: string) {
+  if (method === "initialize") return { userAgent: "codex-cli 0.153.2", codexHome };
   if (method === "thread/list" || method === "thread/loaded/list")
     return { data: [], nextCursor: null };
   if (method === "thread/read") return { thread: codexThread(string(params.threadId)) };

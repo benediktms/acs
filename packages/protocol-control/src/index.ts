@@ -364,6 +364,12 @@ export function controlHandler(
             requestedInstallation =
               p.installationId ??
               (typeof session === "string" ? undefined : session.installationId);
+          if (
+            p.installationId &&
+            typeof session !== "string" &&
+            p.installationId !== session.installationId
+          )
+            throw new Error("BINDING_CONFLICT: runtime installation mismatch");
           const bindInstallation = requestedInstallation
             ? store
                 .query<{ id: RuntimeInstallationId }, [string]>(

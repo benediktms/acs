@@ -81,7 +81,10 @@ describe("configuration", () => {
     const config = loadConfig(path);
     expect(config.codex.accounts.map((account) => account.label)).toEqual(["personal", "work"]);
     expect(config.codex.accounts[0]?.socket).toBe(
-      codexSocket(personal, dirname(dirname(defaultLocations().runtimeSocket))),
+      codexSocket(
+        config.codex.accounts[0]?.home ?? personal,
+        dirname(dirname(defaultLocations().runtimeSocket)),
+      ),
     );
     writeFileSync(
       path,

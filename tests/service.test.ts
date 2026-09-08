@@ -80,6 +80,8 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(integration).toContain("--remote requires --acs-standalone");
   expect(integration).toContain("codex socket");
   expect(integration).toContain('"${acs_bin[@]}"');
+  expect(integration).toContain("-C|--cd|-m|--model");
+  expect(integration).toContain("session_command");
 });
 
 test("restarts only the selected Codex account service", () => {

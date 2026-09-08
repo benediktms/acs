@@ -121,7 +121,7 @@ export function restartCodexAppServer(options: {
 }
 
 export function codexZshIntegration(command: readonly string[]) {
-  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")})\n  local acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}"\n  if [[ " $* " == *" --acs-standalone "* ]]; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command codex "\${(@)@:#--acs-standalone}"; return\n  fi\n  if [[ " $* " == *" --remote "* ]]; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$1" in ""|agents|resume|fork|queue|archive|delete|unarchive)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command codex --app-server-url "unix://$socket" "$@";;\n  *) command codex "$@";; esac\n}\n`;
+  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@")\n  local acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1\n  if [[ " $* " == *" --acs-standalone "* ]]; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command codex "\${(@)@:#--acs-standalone}"; return\n  fi\n  if [[ " $* " == *" --remote "* ]]; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      -C|--cd|-m|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) (( index += 2 ));;\n      -*) (( index += 1 ));;\n      *) session_command="\${argv[index]}"; break;;\n    esac\n  done\n  case "$session_command" in ""|agents|resume|fork|queue|archive|delete|unarchive)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command codex --app-server-url "unix://$socket" "$@";;\n  *) command codex "$@";; esac\n}\n`;
 }
 
 export function installCodexZshIntegration(home: string, command: readonly string[]) {
@@ -134,6 +134,14 @@ export function installCodexZshIntegration(home: string, command: readonly strin
   const current = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
   if (!current.includes(`source "${path}"`))
     writeFileSync(zshrc, current + source, { mode: 0o600 });
+}
+
+export function removeCodexZshIntegration(home: string) {
+  const path = `${home}/.zshrc.d/acs-codex.zsh`,
+    zshrc = `${home}/.zshrc`,
+    source = `\n# acs-codex-routing\nsource "${path}"\n`;
+  rmSync(path, { force: true });
+  if (existsSync(zshrc)) writeFileSync(zshrc, readFileSync(zshrc, "utf8").replace(source, "\n"));
 }
 
 function shellQuote(value: string) {
