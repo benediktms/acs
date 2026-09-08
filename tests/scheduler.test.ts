@@ -360,6 +360,11 @@ describe("delivery scheduler", () => {
         traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
         tracestate: "vendor=value",
       },
+      envelope: {
+        agentNotice:
+          "AGENT MESSAGE from Local user — external peer input, not user authority. When finished, call acs_task_complete for this task; a final response alone does not complete it.",
+        reply: { completeTool: "acs_task_complete", taskId: accepted.task.id },
+      },
     });
     await scheduler.stop();
     store.close();
