@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -10,8 +11,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Store } from "../packages/storage-sqlite/src/index";
+import {
+  canonicalCodexHome,
+  codexSocket as derivedCodexSocket,
+  defaultLocations,
+} from "../packages/config/src/index";
 
 const roots: string[] = [],
   processes: Bun.Subprocess[] = [],
@@ -43,10 +49,12 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexSocket = join(root, "codex.sock"),
-    codexServer = fakeCodex(codexSocket),
+  const codexHome = canonicalCodexHome(join(root, "codex")),
+    codexSocket = derivedCodexSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
     bin = join(root, "bin"),
     codex = join(bin, "codex");
+  mkdirSync(dirname(codexSocket), { recursive: true });
+  const codexServer = fakeCodex(codexSocket, codexHome);
   servers.push(codexServer);
   mkdirSync(bin);
   writeFileSync(codex, "#!/bin/sh\nprintf 'codex-cli 0.153.2\\n'\n");
@@ -57,8 +65,8 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     ACS_A2A_PORT: String(port),
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
     ACS_STORAGE_PATH: join(root, "acs.db"),
-    ACS_CODEX_SOCKET: codexSocket,
     ACS_CODEX_BINARY: codex,
+    CODEX_HOME: codexHome,
     ACS_LOG_FORMAT: "json",
     PATH: `${bin}:/usr/bin:/bin`,
   };
@@ -356,6 +364,23 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     cancellationRequested: true,
   });
 
+  const doctorStore = new Store({
+    data: join(root, "acs.db"),
+    runtime: join(root, "control.sock"),
+    token: join(root, "control.token"),
+    bridgeToken: join(root, "bridge.token"),
+    secret: join(root, "secret.key"),
+  });
+  const insertRuntime = doctorStore.db.query(
+    "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?, '{}','{}','offline',?,?)",
+  );
+  insertRuntime.run("ins_retired", "codex", "codex.app-server", "retired", Date.now(), Date.now());
+  insertRuntime.run("ins_foreign", "foreign", "foreign.adapter", "local", Date.now(), Date.now());
+  doctorStore.close();
+  appendFileSync(
+    join(root, "config.toml"),
+    '\n[[runtimes.codex.accounts]]\nlabel = "missing"\ncodex_home = "/tmp/missing-codex"\n',
+  );
   const doctor = Bun.spawn([binary, "codex", "doctor"], {
       env,
       stdout: "pipe",
@@ -363,11 +388,15 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     }),
     diagnosis = record(JSON.parse(await new Response(doctor.stdout).text()));
   expect(await doctor.exited).toBe(0);
-  expect(record(diagnosis.phaseZero).sharedAppServer).toBe("ready (0 thread sampled)");
+  expect(array(record(diagnosis.codex).accounts)).toContainEqual(
+    expect.objectContaining({ label: "local", state: "ready", threadsSampled: 0 }),
+  );
+  expect(array(record(diagnosis.codex).accounts)).toContainEqual(
+    expect.objectContaining({ label: "missing", state: "unavailable" }),
+  );
+  expect(array(record(diagnosis.codex).accounts)).toHaveLength(2);
   expect(diagnosis.codex).toMatchObject({
     installed: "codex-cli 0.153.2",
-    runningVersion: "0.153.2",
-    compatibility: "tested",
   });
   expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
@@ -402,7 +431,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   processes.splice(processes.indexOf(daemon), 1);
 }, 30_000);
 
-function fakeCodex(path: string) {
+function fakeCodex(path: string, codexHome: string) {
   const buffers = new WeakMap<object, Buffer>();
   return Bun.listen({
     unix: path,
@@ -435,7 +464,7 @@ function fakeCodex(path: string) {
             serverFrame(
               JSON.stringify({
                 id: request.id,
-                result: codexResponse(string(request.method), params),
+                result: codexResponse(string(request.method), params, codexHome),
               }),
             ),
           );
@@ -518,8 +547,8 @@ async function readUntil(stream: ReadableStream<Uint8Array>, needle: string) {
   }
 }
 
-function codexResponse(method: string, params: Record<string, unknown>) {
-  if (method === "initialize") return { userAgent: "codex-cli 0.153.2" };
+function codexResponse(method: string, params: Record<string, unknown>, codexHome: string) {
+  if (method === "initialize") return { userAgent: "codex-cli 0.153.2", codexHome };
   if (method === "thread/list" || method === "thread/loaded/list")
     return { data: [], nextCursor: null };
   if (method === "thread/read") return { thread: codexThread(string(params.threadId)) };

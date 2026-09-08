@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { codexSocket as accountSocket, defaultLocations } from "../packages/config/src/index";
 import { Store } from "../packages/storage-sqlite/src/index";
 
 const tck = process.env.A2A_TCK_DIR;
@@ -17,7 +18,8 @@ if (actualRevision !== expectedRevision)
 
 const root = mkdtempSync(join(tmpdir(), "acs-tck-")),
   binary = join(root, "acs"),
-  codexSocket = join(root, "codex.sock"),
+  codexHome = join(root, "codex"),
+  codexSocket = accountSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
   servicePort = reservePort(),
   proxyPort = reservePort(),
   env = {
@@ -26,12 +28,13 @@ const root = mkdtempSync(join(tmpdir(), "acs-tck-")),
     ACS_A2A_PORT: String(servicePort),
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
     ACS_STORAGE_PATH: join(root, "acs.db"),
-    ACS_CODEX_SOCKET: codexSocket,
+    CODEX_HOME: codexHome,
   };
 let daemon: Bun.Subprocess | undefined,
   proxy: ReturnType<typeof Bun.serve> | undefined,
   emulator: ReturnType<typeof startCodexEmulator> | undefined;
 try {
+  mkdirSync(dirname(codexSocket), { recursive: true });
   run([process.execPath, "build", "apps/acs/src/main.ts", "--compile", "--outfile", binary]);
   run([binary, "init"], undefined, env);
   const tokenStore = new Store({
@@ -43,7 +46,7 @@ try {
     }),
     token = tokenStore.createToken().token;
   tokenStore.close();
-  emulator = startCodexEmulator(codexSocket);
+  emulator = startCodexEmulator(codexSocket, codexHome);
   daemon = Bun.spawn([binary, "daemon", "start"], { env, stdout: "ignore", stderr: "pipe" });
   await waitFor(() => existsSync(env.ACS_CONTROL_SOCKET));
   run([binary, "agents", "create", "tck-agent"], undefined, env);
@@ -187,7 +190,7 @@ function verifyExpectedFailures(tckPath: string, sutUrl: string) {
   console.log(`A2A TCK passed with ${actual.length} reviewed expected-failure groups`);
 }
 
-function startCodexEmulator(path: string) {
+function startCodexEmulator(path: string, expectedCodexHome: string) {
   const buffers = new WeakMap<object, Buffer>();
   let turn = 0;
   return Bun.listen({
@@ -218,7 +221,11 @@ function startCodexEmulator(path: string) {
             id = request.id;
           if (typeof id !== "number") continue;
           const turnId = method === "turn/start" ? `turn-${++turn}` : undefined;
-          socket.write(serverFrame(JSON.stringify({ id, result: codexResponse(method, turnId) })));
+          socket.write(
+            serverFrame(
+              JSON.stringify({ id, result: codexResponse(method, expectedCodexHome, turnId) }),
+            ),
+          );
           if (turnId)
             setTimeout(() => {
               socket.write(
@@ -250,8 +257,9 @@ function startCodexEmulator(path: string) {
   });
 }
 
-function codexResponse(method: string, turnId?: string) {
-  if (method === "initialize") return { userAgent: "acs-tck-emulator" };
+function codexResponse(method: string, expectedCodexHome: string, turnId?: string) {
+  if (method === "initialize")
+    return { userAgent: "acs-tck-emulator", codexHome: expectedCodexHome };
   if (method === "thread/read")
     return {
       thread: {

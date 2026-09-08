@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { defaultLocations, loadConfig } from "../packages/config/src/index";
+import { dirname, join } from "node:path";
+import {
+  canonicalCodexHome,
+  codexSocket,
+  defaultLocations,
+  loadConfig,
+  migrateCodexAccounts,
+  writeDefaultConfig,
+} from "../packages/config/src/index";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -62,5 +69,65 @@ describe("configuration", () => {
     expect(() => loadConfig(path)).toThrow("invalid daemon.log_level");
     writeFileSync(path, '[daemon]\nlog_format = "xml"\n');
     expect(() => loadConfig(path)).toThrow("invalid daemon.log_format");
+  });
+  test("loads distinct explicit Codex accounts with stable sockets", () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-config-"));
+    roots.push(root);
+    const path = join(root, "config.toml"),
+      personal = join(root, "personal"),
+      work = join(root, "work");
+    writeFileSync(
+      path,
+      `[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${personal}"\n[[runtimes.codex.accounts]]\nlabel = "work"\ncodex_home = "${work}"\n`,
+    );
+    const config = loadConfig(path);
+    expect(config.codex.accounts.map((account) => account.label)).toEqual(["personal", "work"]);
+    expect(config.codex.accounts[0]?.socket).toBe(
+      codexSocket(
+        config.codex.accounts[0]?.home ?? personal,
+        dirname(dirname(defaultLocations().runtimeSocket)),
+      ),
+    );
+    writeFileSync(
+      path,
+      `[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${personal}"\n[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${work}"\n`,
+    );
+    expect(() => loadConfig(path)).toThrow("duplicate");
+    writeFileSync(
+      path,
+      '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "relative"\n',
+    );
+    expect(() => loadConfig(path)).toThrow("codex_home must be absolute");
+    writeFileSync(path, '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "auto"\n');
+    expect(() => loadConfig(path)).toThrow("codex_home must be absolute");
+  });
+  test("writes an explicit local Codex home", () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-config-"));
+    roots.push(root);
+    const path = join(root, "config.toml");
+    writeDefaultConfig(path);
+    expect(readFileSync(path, "utf8")).not.toContain('codex_home = "auto"');
+  });
+  test("migrates an account-less configuration once", () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-config-"));
+    roots.push(root);
+    const path = join(root, "config.toml");
+    writeFileSync(path, "[runtimes.codex]\nenabled = true\n");
+    migrateCodexAccounts(path, { HOME: root, CODEX_HOME: join(root, "account") });
+    const migrated = readFileSync(path, "utf8");
+    expect(migrated).toContain('label = "local"');
+    migrateCodexAccounts(path, { HOME: root });
+    expect(readFileSync(path, "utf8")).toBe(migrated);
+    writeFileSync(path, "[ runtimes . codex ]\naccounts = []\n");
+    migrateCodexAccounts(path, { HOME: root });
+    expect(readFileSync(path, "utf8")).toBe("[ runtimes . codex ]\naccounts = []\n");
+    writeFileSync(
+      path,
+      '# codex_home = "auto"\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = "auto"\n',
+    );
+    migrateCodexAccounts(path, { HOME: root, CODEX_HOME: join(root, "account") });
+    expect(readFileSync(path, "utf8")).toBe(
+      `# codex_home = "auto"\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = ${JSON.stringify(canonicalCodexHome(join(root, "account")))}\n`,
+    );
   });
 });

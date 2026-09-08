@@ -61,7 +61,10 @@ export class CodexAppServerClient {
       }),
     );
     await this.notify("initialized", {});
-    return { userAgent: stringField(initialized, "userAgent") };
+    return {
+      userAgent: stringField(initialized, "userAgent"),
+      codexHome: stringField(initialized, "codexHome"),
+    };
   }
 
   async loadedThreads(cursor: string | null = null, signal?: AbortSignal, limit = 100) {

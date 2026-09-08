@@ -4,7 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { controlCall } from "../../protocol-control/src/index";
-import { paths } from "../../config/src/index";
+import { canonicalCodexHome, loadConfig, paths } from "../../config/src/index";
 import { uuidV7 } from "../../domain/src/index";
 
 const deliveryStatus = "urn:agent-communications:delivery-status:v1",
@@ -163,11 +163,27 @@ export async function runMcp(port = 7432) {
     client: { name: "acs-mcp-codex", version: "0.1.0", instanceId: String(process.pid) },
     capabilities: {},
   });
+  const home = process.env.CODEX_HOME ? canonicalCodexHome(process.env.CODEX_HOME) : undefined,
+    account = loadConfig().codex.accounts.find((candidate) => candidate.home === home);
+  if (!account) throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
+  let cursor: string | undefined, runtime: Record<string, unknown> | undefined;
+  do {
+    const runtimes = await call("runtimes.list", { limit: 100, cursor });
+    if (!isRecord(runtimes) || !Array.isArray(runtimes.runtimes))
+      throw new Error("RUNTIME_UNAVAILABLE");
+    runtime = runtimes.runtimes.find((candidate) =>
+      isConfiguredCodexRuntime(candidate, account.label, account.home),
+    );
+    cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;
+  } while (!runtime && cursor);
+  if (!isRecord(runtime) || typeof runtime.installationId !== "string")
+    throw new Error("RUNTIME_UNAVAILABLE");
+  const installationId = runtime.installationId;
   const server = new McpServer({ name: "acs", version: "0.1.0" });
   const evidence = (extra: unknown) => ({
       harnessId: "codex",
       bridge: "mcp",
-      metadata: hostMetadata(extra),
+      metadata: { ...hostMetadata(extra), acsInstallationId: installationId },
       bridgeInstanceId: String(process.pid),
     }),
     attest = async (extra: unknown) => {
@@ -592,6 +608,22 @@ export async function runMcp(port = 7432) {
       }),
   );
   await server.connect(new StdioServerTransport());
+}
+
+export function isConfiguredCodexRuntime(
+  candidate: unknown,
+  label: string,
+  home: string,
+): candidate is Record<string, unknown> {
+  if (!isRecord(candidate) || candidate.harnessId !== "codex" || candidate.label !== label)
+    return false;
+  const endpoint = candidate.endpoint;
+  if (!isRecord(endpoint) || typeof endpoint.home !== "string") return false;
+  try {
+    return canonicalCodexHome(endpoint.home) === canonicalCodexHome(home);
+  } catch {
+    return false;
+  }
 }
 
 function agentView(agent: z.infer<typeof agentSchema>) {

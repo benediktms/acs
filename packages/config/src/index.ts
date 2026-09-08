@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export interface AcsConfig {
   daemon: {
@@ -30,7 +31,13 @@ export interface AcsConfig {
     connection: "daemon";
     statusPollIntervalMs: number;
     maxInFlightRequests: number;
+    accounts: CodexAccount[];
   };
+}
+export interface CodexAccount {
+  label: string;
+  home: string;
+  socket: string;
 }
 
 export interface Paths {
@@ -73,6 +80,10 @@ codex_binary = "codex"
 connection = "daemon"
 status_poll_interval_ms = 2000
 max_in_flight_requests = 128
+
+[[runtimes.codex.accounts]]
+label = "local"
+codex_home = "auto"
 `;
 
 export function defaultLocations(
@@ -107,7 +118,43 @@ export function configPath() {
 export function writeDefaultConfig(path = configPath()) {
   if (existsSync(path)) return;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, text, { mode: 0o600 });
+  const home = canonicalCodexHome(process.env.CODEX_HOME ?? `${process.env.HOME ?? ""}/.codex`);
+  writeFileSync(path, text.replace('codex_home = "auto"', `codex_home = ${JSON.stringify(home)}`), {
+    mode: 0o600,
+  });
+}
+export function migrateCodexAccounts(
+  path = configPath(),
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  if (!existsSync(path)) return;
+  const source = readFileSync(path, "utf8");
+  const root = object(Bun.TOML.parse(source), "config"),
+    runtimes = root.runtimes;
+  if (isObject(runtimes) && isObject(runtimes.codex) && Object.hasOwn(runtimes.codex, "accounts")) {
+    const accounts = array(runtimes.codex.accounts, "runtimes.codex.accounts");
+    if (
+      accounts.length !== 1 ||
+      object(accounts[0], "runtimes.codex.accounts[0]").codex_home !== "auto"
+    )
+      return;
+    const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
+    writeFileSync(
+      path,
+      source.replace(
+        /^(\s*codex_home\s*=\s*)["']auto["']/m,
+        (_, assignment: string) => `${assignment}${JSON.stringify(home)}`,
+      ),
+      { mode: 0o600 },
+    );
+    return;
+  }
+  const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
+  writeFileSync(
+    path,
+    `${source.trimEnd()}\n\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = ${JSON.stringify(home)}\n`,
+    { mode: 0o600 },
+  );
 }
 export function loadConfig(path = configPath()): AcsConfig {
   const defaults = defaultLocations(),
@@ -143,6 +190,7 @@ export function loadConfig(path = configPath()): AcsConfig {
       "connection",
       "status_poll_interval_ms",
       "max_in_flight_requests",
+      "accounts",
     ]);
   const configuredListen = string(daemon.a2a_listen, "127.0.0.1:7432"),
     listen = process.env.ACS_A2A_PORT
@@ -155,7 +203,8 @@ export function loadConfig(path = configPath()): AcsConfig {
     durability = string(storage.durability, "balanced"),
     connection = string(codex.connection, "daemon"),
     logLevel = process.env.ACS_LOG_LEVEL ?? string(daemon.log_level, "info"),
-    logFormat = process.env.ACS_LOG_FORMAT ?? string(daemon.log_format, "pretty");
+    logFormat = process.env.ACS_LOG_FORMAT ?? string(daemon.log_format, "pretty"),
+    accounts = codexAccounts(codex.accounts, process.env, defaults.runtimeSocket);
   parseListen(listen);
   if (durability !== "balanced" && durability !== "strict")
     throw new Error("VALIDATION_FAILED: invalid storage.durability");
@@ -223,8 +272,75 @@ export function loadConfig(path = configPath()): AcsConfig {
         number(codex.max_in_flight_requests, 128),
         "runtimes.codex.max_in_flight_requests",
       ),
+      accounts,
     },
   };
+}
+
+export function codexSocket(
+  home: string,
+  temporary = process.env.TMPDIR ?? "/tmp",
+  uid = process.getuid?.() ?? 0,
+) {
+  return `${temporary.replace(/\/$/, "")}/acs-${uid}/codex-${createHash("sha256").update(home).digest("hex").slice(0, 16)}.sock`;
+}
+
+function codexAccounts(
+  value: unknown,
+  environment: Readonly<Record<string, string | undefined>>,
+  runtimeSocket: string,
+): CodexAccount[] {
+  const values =
+    value === undefined
+      ? [
+          {
+            label: "local",
+            codex_home: environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`,
+          },
+        ]
+      : array(value, "runtimes.codex.accounts");
+  const temporary = dirname(dirname(runtimeSocket)),
+    uid = process.getuid?.() ?? 0;
+  const accounts = values.map((entry, index) => {
+    const account = object(entry, `runtimes.codex.accounts[${index}]`);
+    keys(account, ["label", "codex_home"], `runtimes.codex.accounts[${index}]`);
+    const label = string(account.label, ""),
+      rawHome = string(account.codex_home, "");
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(label))
+      throw new Error(`VALIDATION_FAILED: invalid runtimes.codex.accounts[${index}].label`);
+    if (!rawHome)
+      throw new Error(`VALIDATION_FAILED: missing runtimes.codex.accounts[${index}].codex_home`);
+    if (rawHome === "auto")
+      throw new Error(
+        `VALIDATION_FAILED: runtimes.codex.accounts[${index}].codex_home must be absolute`,
+      );
+    const home = canonicalCodexHome(rawHome);
+    return {
+      label,
+      home,
+      socket: socketPath(
+        codexSocket(home, temporary, uid),
+        `runtimes.codex.accounts[${index}] derived socket`,
+      ),
+    };
+  });
+  if (new Set(accounts.map((account) => account.label)).size !== accounts.length)
+    throw new Error("VALIDATION_FAILED: duplicate runtimes.codex.accounts label");
+  if (new Set(accounts.map((account) => account.home)).size !== accounts.length)
+    throw new Error("VALIDATION_FAILED: duplicate runtimes.codex.accounts codex_home");
+  return accounts;
+}
+
+export function canonicalCodexHome(path: string) {
+  if (!isAbsolute(path))
+    throw new Error("VALIDATION_FAILED: runtimes.codex.accounts[].codex_home must be absolute");
+  let absolute = resolve(path);
+  const missing: string[] = [];
+  while (!existsSync(absolute)) {
+    missing.unshift(basename(absolute));
+    absolute = dirname(absolute);
+  }
+  return resolve(realpathSync(absolute), ...missing);
 }
 
 export function paths(): Paths {
@@ -260,6 +376,10 @@ function object(value: unknown, name: string): ObjectValue {
   if (!isObject(value)) throw new Error(`VALIDATION_FAILED: ${name} must be a table`);
   return value;
 }
+function array(value: unknown, name: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`VALIDATION_FAILED: ${name} must be an array`);
+  return value;
+}
 function isObject(value: unknown): value is ObjectValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -293,10 +413,10 @@ function positive(value: number, name: string) {
     throw new Error(`VALIDATION_FAILED: invalid ${name}`);
   return value;
 }
-function socketPath(value: string) {
+function socketPath(value: string, name = "daemon.control_socket") {
   const maxBytes = process.platform === "linux" ? 107 : 103;
   if (Buffer.byteLength(value) > maxBytes)
-    throw new Error(`VALIDATION_FAILED: daemon.control_socket exceeds ${maxBytes} bytes`);
+    throw new Error(`VALIDATION_FAILED: ${name} exceeds ${maxBytes} bytes`);
   return value;
 }
 function auto(value: string, fallback: string) {

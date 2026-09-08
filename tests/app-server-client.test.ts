@@ -85,7 +85,12 @@ describe("Codex app-server transport", () => {
           socket.write(
             serverFrame({
               id: request.id,
-              result: { userAgent: "fake", platformFamily: "unix", platformOs: "test" },
+              result: {
+                userAgent: "fake",
+                codexHome: "/tmp/codex",
+                platformFamily: "unix",
+                platformOs: "test",
+              },
             }),
           );
         },
@@ -97,6 +102,7 @@ describe("Codex app-server transport", () => {
     const initialized = await client.start();
     expect(received).not.toContain("jsonrpc");
     expect(initialized.userAgent).toBe("fake");
+    expect(initialized.codexHome).toBe("/tmp/codex");
     await Bun.sleep(10);
     batchTurn = true;
     const order: string[] = [];

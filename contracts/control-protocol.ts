@@ -44,6 +44,7 @@ export interface ControlErrorData {
     | "UNATTESTED_CALLER"
     | "STALE_BINDING"
     | "RUNTIME_UNAVAILABLE"
+    | "RUNTIME_AMBIGUOUS"
     | "RUNTIME_INCOMPATIBLE"
     | "TASK_NOT_FOUND"
     | "TASK_STATE_CONFLICT"
@@ -189,6 +190,7 @@ export interface ControlMethodMap {
       readonly status: "ok" | "degraded";
       readonly database: "ok" | "degraded";
       readonly adapters: readonly {
+        readonly installationId: string;
         readonly adapterId: string;
         readonly status: "ready" | "degraded" | "unavailable" | "incompatible";
       }[];
@@ -378,6 +380,7 @@ export interface ControlMethodMap {
         readonly harnessId: string;
         readonly adapterId: string;
         readonly label: string;
+        readonly endpoint: JsonObject;
         readonly probe?: RuntimeProbeResult;
       }[];
       readonly nextCursor?: string;

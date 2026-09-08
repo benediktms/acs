@@ -1,8 +1,28 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installService, launchAgent, persistentEnvironment } from "../apps/acs/src/service";
+import {
+  codexAppServerLaunchAgent,
+  codexZshIntegration,
+  installCodexAppServer,
+  installService,
+  launchAgent,
+  listenerPidCommand,
+  ownedCodexAppServerPid,
+  persistentEnvironment,
+  removeCodexAppServers,
+  restartCodexAppServer,
+  syncCodexZshIntegration,
+} from "../apps/acs/src/service";
 
 test("persistent runtime paths are absolute", () => {
   expect(
@@ -47,6 +67,281 @@ test("login service preserves executable arguments and the bridge socket environ
     expect(JSON.parse(decoded.stdout.toString())).toEqual(agent);
   }
 });
+
+test("Codex account service and zsh integration are account-scoped", () => {
+  const agent = codexAppServerLaunchAgent({
+    binary: "/opt/homebrew/bin/codex",
+    home: "/Users/example/.codex/accounts/personal",
+    socket: "/tmp/acs-501/codex-abc.sock",
+    label: "personal",
+    log: "/Users/example/Library/Logs/acs-codex-personal.log",
+  });
+  expect(agent.Label).toBe("local.acs.codex-app-server.personal");
+  expect(agent.ProgramArguments).toEqual([
+    "/opt/homebrew/bin/codex",
+    "app-server",
+    "--listen",
+    "unix:///tmp/acs-501/codex-abc.sock",
+  ]);
+  expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  expect(agent.Umask).toBe(0o77);
+  expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
+  const integration = codexZshIntegration(
+    ["/Applications/acs", "/work/acs/main.ts"],
+    "/Applications/Codex O'Brien/codex",
+  );
+  expect(integration).toContain("--acs-standalone");
+  expect(integration).toContain("--remote requires --acs-standalone");
+  expect(integration).toContain("--remote=*)");
+  expect(integration).not.toContain('" $* "');
+  expect(integration).toContain("codex socket");
+  expect(integration).toContain('"${acs_bin[@]}"');
+  expect(integration).toContain("-C|-c|-m|-p|-s|-a|--cd|--model");
+  expect(integration).toContain("routed_argv");
+  expect(integration).toContain("session_command");
+  expect(integration).toContain("exec|e|review|login|logout");
+  expect(integration).toContain(`local codex_bin='/Applications/Codex O'\\''Brien/codex'`);
+  expect(integration).not.toContain("command codex");
+});
+
+test.skipIf(!Bun.which("zsh"))(
+  "Codex zsh integration treats prompt text as a managed session",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-zsh-")),
+      bin = join(root, "bin"),
+      acs = join(bin, "acs"),
+      codex = join(root, "Codex Binary"),
+      output = join(root, "args");
+    mkdirSync(bin);
+    writeFileSync(acs, "#!/bin/sh\nprintf '/tmp/acs.sock\\n'\n");
+    writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
+    chmodSync(acs, 0o755);
+    chmodSync(codex, 0o755);
+    try {
+      const managed = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex 'fix --remote tests'`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(managed.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(
+        "--app-server-url\nunix:///tmp/acs.sock\nfix --remote tests\n",
+      );
+      const direct = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex exec test`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(direct.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
+      const directStandalone = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone exec task`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(directStandalone.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("exec\ntask\n");
+      const directRemote = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other exec task`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(directRemote.exitCode).toBe(2);
+      const standaloneTerminator = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone -- '--remote'`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(standaloneTerminator.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("--\n--remote\n");
+      const resumeStandalone = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex resume --acs-standalone`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(resumeStandalone.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("resume\n");
+      const resumeRemote = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex resume --remote=unix:///tmp/other`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(resumeRemote.exitCode).toBe(2);
+      const optionValue = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex -c --acs-standalone resume`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(optionValue.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(
+        "--app-server-url\nunix:///tmp/acs.sock\n-c\n--acs-standalone\nresume\n",
+      );
+      for (const option of ["-c", "-p", "-s", "-a"]) {
+        const shortOption = Bun.spawnSync(
+          ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex ${option} value exec test`],
+          { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+        );
+        expect(shortOption.exitCode).toBe(0);
+        expect(readFileSync(output, "utf8")).toBe(`${option}\nvalue\nexec\ntest\n`);
+      }
+      const remote = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(remote.exitCode).toBe(2);
+      const standalone = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other --acs-standalone`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(standalone.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("--remote=unix:///tmp/other\n");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  },
+);
+
+test("finds only the Codex listener owned by the configured account", () => {
+  const inspect = {
+    listenerPid: (socket: string) => (socket === "/tmp/account.sock" ? 42 : undefined),
+    processDetails: (pid: number) => ({
+      executable: "/opt/codex",
+      environment: `pid=${pid} CODEX_HOME=/tmp/account`,
+    }),
+  };
+  expect(ownedCodexAppServerPid("/tmp/account", "/tmp/account.sock", inspect)).toBe(42);
+  expect(ownedCodexAppServerPid("/tmp/account", "/tmp/other.sock", inspect)).toBeUndefined();
+  expect(() => ownedCodexAppServerPid("/tmp/stale", "/tmp/account.sock", inspect)).toThrow(
+    "CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED",
+  );
+  for (const details of [
+    { executable: "/opt/not-codex", environment: "CODEX_HOME=/tmp/account" },
+    { executable: "/opt/codex", environment: "NOT_CODEX_HOME=/tmp/account" },
+    { executable: "/opt/codex", environment: "CODEX_HOME=/tmp/account-old" },
+    { executable: "/opt/codex", environment: "CODEX_HOME=/tmp/account with suffix B=2" },
+  ])
+    expect(() =>
+      ownedCodexAppServerPid("/tmp/account", "/tmp/account.sock", {
+        ...inspect,
+        processDetails: () => details,
+      }),
+    ).toThrow("CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED");
+  expect(
+    ownedCodexAppServerPid("/tmp/account with spaces", "/tmp/account.sock", {
+      ...inspect,
+      processDetails: () => ({
+        executable: "/opt/codex",
+        environment: "A=1 CODEX_HOME=/tmp/account with spaces B=2",
+      }),
+    }),
+  ).toBe(42);
+});
+
+test("intersects lsof's Unix-socket and path selectors", () => {
+  expect(listenerPidCommand("/tmp/account.sock")).toEqual([
+    "/usr/sbin/lsof",
+    "-nP",
+    "-t",
+    "-a",
+    "-U",
+    "/tmp/account.sock",
+  ]);
+});
+
+test("enabled Codex with no accounts removes the zsh integration", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-zsh-empty-")),
+    integration = join(root, ".zshrc.d", "acs-codex.zsh"),
+    zshrc = join(root, ".zshrc");
+  mkdirSync(join(root, ".zshrc.d"));
+  writeFileSync(integration, "stale");
+  writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
+  try {
+    syncCodexZshIntegration({
+      enabled: true,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: "codex",
+    });
+    expect(existsSync(integration)).toBe(false);
+    expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("restarts only the selected Codex account service", () => {
+  const calls: string[] = [];
+  restartCodexAppServer({
+    label: "work",
+    uid: 501,
+    launchctl: (args) => {
+      calls.push(args.join(" "));
+      return { success: true, error: "" };
+    },
+  });
+  expect(calls).toEqual(["kickstart -k gui/501/local.acs.codex-app-server.work"]);
+});
+
+test.skipIf(process.platform !== "darwin")(
+  "rebootstraps changed Codex account services and removes retired accounts",
+  async () => {
+    const home = mkdtempSync(join(tmpdir(), "acs-codex-service-")),
+      actions: string[] = [];
+    let loaded = true;
+    const launchctl = (args: string[]) => {
+      actions.push(args.join(" "));
+      if (args[0] === "print") return { success: loaded, error: "not loaded" };
+      if (args[0] === "bootout") loaded = false;
+      if (args[0] === "bootstrap") loaded = true;
+      return { success: true, error: "" };
+    };
+    try {
+      const agentDirectory = join(home, "Library/LaunchAgents");
+      mkdirSync(agentDirectory, { recursive: true });
+      writeFileSync(join(agentDirectory, "local.acs.codex-app-server.retired.plist"), "retired");
+      await installCodexAppServer({
+        binary: "/usr/local/bin/codex",
+        home: "/tmp/codex",
+        socket: "/tmp/codex.sock",
+        label: "active",
+        userHome: home,
+        uid: 999,
+        launchctl,
+        socketOccupied: async () => false,
+      });
+      await installCodexAppServer({
+        binary: "/usr/local/bin/codex",
+        home: "/tmp/codex",
+        socket: "/tmp/changed.sock",
+        label: "active",
+        userHome: home,
+        uid: 999,
+        launchctl,
+        socketOccupied: async () => false,
+      });
+      removeCodexAppServers({ labels: ["active"], userHome: home, uid: 999, launchctl });
+      expect(actions).toContain("bootout gui/999/local.acs.codex-app-server.active");
+      expect(actions).toContain(
+        `bootstrap gui/999 ${agentDirectory}/local.acs.codex-app-server.active.plist`,
+      );
+      expect(actions).toContain("bootout gui/999/local.acs.codex-app-server.retired");
+      expect(existsSync(join(agentDirectory, "local.acs.codex-app-server.retired.plist"))).toBe(
+        false,
+      );
+    } finally {
+      rmSync(home, { recursive: true });
+    }
+  },
+);
 
 test.skipIf(process.platform !== "darwin")(
   "init migrates an unmanaged daemon and restarts an unchanged service",

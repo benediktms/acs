@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import type { RuntimeDeliveryRequest } from "../contracts/runtime-adapter";
-import { DeliveryScheduler, retryDelay } from "../packages/application/src/scheduler";
+import {
+  DeliveryConcurrency,
+  DeliveryScheduler,
+  retryDelay,
+} from "../packages/application/src/scheduler";
 import { TaskState } from "../packages/domain/src/index";
 import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
@@ -27,6 +31,103 @@ function fixture() {
 }
 
 describe("delivery scheduler", () => {
+  test("shares delivery capacity across schedulers", () => {
+    const capacity = new DeliveryConcurrency(1);
+    expect(capacity.tryAcquire()).toBe(true);
+    expect(capacity.tryAcquire()).toBe(false);
+    capacity.release();
+    expect(capacity.tryAcquire()).toBe(true);
+  });
+  test("releases shared delivery capacity when leasing fails", async () => {
+    const store = fixture(),
+      agent = store.createAgent("lease-failure"),
+      requester = authenticated(store),
+      capacity = new DeliveryConcurrency(1),
+      scheduler = new DeliveryScheduler(
+        store,
+        new FakeRuntimeAdapter(),
+        "lease-failure",
+        undefined,
+        undefined,
+        capacity,
+      );
+    store.bind(agent.id, "lease-failure-thread");
+    store.accept(
+      agent.id,
+      requester.id,
+      Message.fromJSON({
+        messageId: "lease-failure",
+        role: "ROLE_USER",
+        parts: [{ text: "work" }],
+      }),
+      {},
+    );
+    store.db.exec(
+      "CREATE TRIGGER fail_lease BEFORE UPDATE OF state ON delivery_intents WHEN NEW.state='leased' BEGIN SELECT RAISE(ABORT,'lease failed'); END",
+    );
+    await scheduler.start();
+    await scheduler.stop();
+    await expect(scheduler["tick"]()).rejects.toThrow("lease failed");
+    expect(capacity.tryAcquire()).toBe(true);
+    store.close();
+  });
+  test("isolates delivery scheduling by runtime installation", async () => {
+    const store = fixture(),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!primary) throw new Error("missing runtime installation");
+    const primaryId = primary.id;
+    const work: `ins_${string}` = "ins_work";
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','work','{}','{}','unknown',?,?)",
+      )
+      .run(work, Date.now(), Date.now());
+    const blockedAgent = store.createAgent("blocked"),
+      workAgent = store.createAgent("work"),
+      requester = authenticated(store);
+    store.bind(blockedAgent.id, "blocked-thread", { installationId: primaryId });
+    store.bind(workAgent.id, "work-thread", { installationId: work });
+    store.accept(
+      blockedAgent.id,
+      requester.id,
+      Message.fromJSON({ messageId: "blocked", role: "ROLE_USER", parts: [{ text: "blocked" }] }),
+      {},
+    );
+    const accepted = store.accept(
+      workAgent.id,
+      requester.id,
+      Message.fromJSON({ messageId: "work", role: "ROLE_USER", parts: [{ text: "work" }] }),
+      {},
+    );
+    const offline = new FakeRuntimeAdapter(),
+      ready = new FakeRuntimeAdapter();
+    offline.start = async () => {
+      throw new Error("offline");
+    };
+    ready.deliver = async () => ({
+      outcome: "accepted",
+      acceptedAt: new Date().toISOString(),
+      execution: { opaqueId: "work-turn", relationship: "unknown" },
+      evidence: { scheme: "fake", value: "work" },
+    });
+    const blockedScheduler = new DeliveryScheduler(store, offline, "blocked", undefined, primaryId),
+      workScheduler = new DeliveryScheduler(store, ready, "work", undefined, work);
+    try {
+      await Promise.all([blockedScheduler.start(), workScheduler.start()]);
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
+      expect(
+        store.db
+          .query<{ state: string }, [string]>(
+            "SELECT state FROM delivery_intents WHERE target_agent_id=?",
+          )
+          .get(blockedAgent.id)?.state,
+      ).toMatch(/pending|deferred/);
+    } finally {
+      await Promise.all([blockedScheduler.stop(), workScheduler.stop()]);
+    }
+  });
   test("shared-turn completion and cancellation keep task results independent", async () => {
     const store = fixture(),
       agent = store.createAgent("shared"),
@@ -794,12 +895,24 @@ describe("delivery scheduler", () => {
   });
   test("follows eligible rebinds and terminates unsafe delivery conditions", async () => {
     const store = fixture(),
-      requester = authenticated(store),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!primary) throw new Error("missing runtime installation");
+    const work: `ins_${string}` = "ins_continuity_work";
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','continuity-work','{}','{}','unknown',?,?)",
+      )
+      .run(work, Date.now(), Date.now());
+    const requester = authenticated(store),
       follow = store.createAgent("follow-rebind"),
+      followCancel = store.createAgent("follow-cancel-rebind"),
       strict = store.createAgent("strict-rebind"),
       expired = store.createAgent("expired-target"),
       disabled = store.createAgent("disabled-target"),
       followOld = store.bind(follow.id, "follow-old"),
+      followCancelOld = store.bind(followCancel.id, "follow-cancel-old"),
       strictOld = store.bind(strict.id, "strict-old", { continuityPolicy: "strict" });
     store.bind(expired.id, "expired-thread");
     store.bind(disabled.id, "disabled-thread");
@@ -813,6 +926,16 @@ describe("delivery scheduler", () => {
         strict.id,
         requester.id,
         Message.fromJSON({ messageId: "strict", role: "ROLE_USER", parts: [{ text: "work" }] }),
+        { mode: "direct" },
+      ),
+      followCancelDelivery = store.accept(
+        followCancel.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "follow-cancel",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
         { mode: "direct" },
       ),
       expiredDelivery = store.accept(
@@ -831,9 +954,20 @@ describe("delivery scheduler", () => {
       "UPDATE delivery_intents SET state='deferred',state_reason='offline',not_before_ms=?,pinned_binding_id=?,pinned_binding_epoch=? WHERE id=?",
     );
     pin.run(Date.now() + 60_000, followOld.id, followOld.epoch, followDelivery.deliveryId);
+    pin.run(
+      Date.now() + 60_000,
+      followCancelOld.id,
+      followCancelOld.epoch,
+      followCancelDelivery.deliveryId,
+    );
     pin.run(Date.now() + 60_000, strictOld.id, strictOld.epoch, strictDelivery.deliveryId);
-    store.bind(follow.id, "follow-new", { revokeExisting: true });
-    store.bind(strict.id, "strict-new", { revokeExisting: true });
+    store.bind(follow.id, "follow-new", { revokeExisting: true, installationId: work });
+    store.bind(followCancel.id, "follow-cancel-new", {
+      revokeExisting: true,
+      installationId: work,
+    });
+    store.bind(strict.id, "strict-new", { revokeExisting: true, installationId: work });
+    store.requestCancellation(followCancelDelivery.task.id, requester.id);
     store.updateAgent(disabled.id, { enabled: false });
     const sessions: string[] = [],
       adapter = new FakeRuntimeAdapter();
@@ -846,8 +980,22 @@ describe("delivery scheduler", () => {
         evidence: { scheme: "fake", value: "accepted" },
       };
     };
-    const scheduler = new DeliveryScheduler(store, adapter, "continuity");
-    await scheduler.start();
+    const primaryScheduler = new DeliveryScheduler(
+        store,
+        new FakeRuntimeAdapter(),
+        "continuity-primary",
+        undefined,
+        primary.id,
+      ),
+      workScheduler = new DeliveryScheduler(store, adapter, "continuity-work", undefined, work);
+    await workScheduler.start();
+    await until(
+      () =>
+        deliveryState(store, followDelivery.deliveryId)?.state === "accepted" &&
+        store.task(followCancelDelivery.task.id, requester.id)?.status?.state ===
+          A2ATaskState.TASK_STATE_CANCELED,
+    );
+    await primaryScheduler.start();
     await Bun.sleep(400);
     expect(sessions).toEqual(["follow-new"]);
     expect(deliveryState(store, followDelivery.deliveryId)).toEqual({
@@ -858,6 +1006,9 @@ describe("delivery scheduler", () => {
       state: "failed-terminal",
       state_reason: "strict-binding-revoked",
     });
+    expect(store.task(followCancelDelivery.task.id, requester.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_CANCELED,
+    );
     expect(deliveryState(store, expiredDelivery.deliveryId)).toEqual({
       state: "failed-terminal",
       state_reason: "deadline-expired",
@@ -866,7 +1017,7 @@ describe("delivery scheduler", () => {
       state: "failed-terminal",
       state_reason: "target-disabled",
     });
-    await scheduler.stop();
+    await Promise.all([primaryScheduler.stop(), workScheduler.stop()]);
     store.close();
   });
   test("interrupts only the correlated ACS execution on cancellation", async () => {
@@ -919,6 +1070,153 @@ describe("delivery scheduler", () => {
         .get(accepted.task.id)?.state,
     ).toBe("canceled");
     await scheduler.stop();
+    store.close();
+  });
+  test("routes cancellation to the installation that accepted started work after rebind", async () => {
+    const store = fixture(),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      secondary: `ins_${string}` = "ins_cancel_rebind";
+    if (!primary) throw new Error("missing runtime installation");
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','cancel-rebind','{}','{}','unknown',?,?)",
+      )
+      .run(secondary, Date.now(), Date.now());
+    const agent = store.createAgent("cancel-started-rebind"),
+      requester = authenticated(store);
+    store.bind(agent.id, "cancel-started-old", {
+      installationId: primary.id,
+      deliveryPolicy: { interruptOnCancel: true },
+    });
+    const accepted = store.accept(
+        agent.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "cancel-started-rebind",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { mode: "direct" },
+      ),
+      canceled: string[] = [],
+      primaryAdapter = new FakeRuntimeAdapter();
+    primaryAdapter.deliver = async () => ({
+      outcome: "accepted",
+      acceptedAt: new Date().toISOString(),
+      execution: { opaqueId: "owned-before-rebind", relationship: "started" },
+      evidence: { scheme: "fake", value: "accepted" },
+    });
+    primaryAdapter.cancel = async (request) => {
+      canceled.push(request.execution.opaqueId);
+      return { outcome: "accepted", acceptedAt: new Date().toISOString() };
+    };
+    const primaryScheduler = new DeliveryScheduler(
+      store,
+      primaryAdapter,
+      "cancel-started-primary",
+      undefined,
+      primary.id,
+    );
+    await primaryScheduler.start();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
+    store.bind(agent.id, "cancel-started-new", {
+      installationId: secondary,
+      revokeExisting: true,
+    });
+    const secondaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-started-secondary",
+      undefined,
+      secondary,
+    );
+    await secondaryScheduler.start();
+    store.requestCancellation(accepted.task.id, requester.id);
+    await until(
+      () =>
+        store.task(accepted.task.id, requester.id)?.status?.state ===
+        A2ATaskState.TASK_STATE_CANCELED,
+    );
+    expect(canceled).toEqual(["owned-before-rebind"]);
+    await Promise.all([primaryScheduler.stop(), secondaryScheduler.stop()]);
+    store.close();
+  });
+  test("task notifications do not select a second cancellation scheduler", async () => {
+    const store = fixture(),
+      primaryRow = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      secondary: `ins_${string}` = "ins_cancel_secondary";
+    if (!primaryRow) throw new Error("missing primary installation");
+    const primary = primaryRow.id;
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','secondary','{}','{}','unknown',?,?)",
+      )
+      .run(secondary, Date.now(), Date.now());
+    const sender = store.createAgent("cancel-notification-sender"),
+      target = store.createAgent("cancel-notification-target"),
+      senderBinding = store.bind(sender.id, "cancel-notification-sender-thread", {
+        installationId: secondary,
+      }),
+      targetBinding = store.bind(target.id, "cancel-notification-target-thread", {
+        installationId: primary,
+      }),
+      accepted = store.accept(
+        target.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "cancel-notification",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { notifyOn: ["input-required"] },
+      );
+    store.db
+      .query("UPDATE delivery_intents SET state='accepted' WHERE id=?")
+      .run(accepted.deliveryId);
+    store.setTaskState(accepted.task.id, targetBinding.principalId, TaskState.Working);
+    store.setTaskState(
+      accepted.task.id,
+      targetBinding.principalId,
+      TaskState.InputRequired,
+      "question",
+    );
+    store.db
+      .query(
+        "UPDATE delivery_intents SET state='acceptance-unknown' WHERE task_id=? AND kind='task-event-notification'",
+      )
+      .run(accepted.task.id);
+    store.requestCancellation(accepted.task.id, senderBinding.principalId);
+    const secondaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-secondary",
+      undefined,
+      secondary,
+    );
+    await secondaryScheduler.start();
+    await Bun.sleep(400);
+    expect(store.task(accepted.task.id, senderBinding.principalId)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_INPUT_REQUIRED,
+    );
+    await secondaryScheduler.stop();
+    const primaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-primary",
+      undefined,
+      primary,
+    );
+    await primaryScheduler.start();
+    await until(
+      () =>
+        store.task(accepted.task.id, senderBinding.principalId)?.status?.state ===
+        A2ATaskState.TASK_STATE_CANCELED,
+    );
+    await primaryScheduler.stop();
     store.close();
   });
   test("settles cancellation only after an in-flight write has a definitive outcome", async () => {
