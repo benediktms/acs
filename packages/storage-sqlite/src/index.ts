@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import migration from "../../../storage/001_initial.sql" with { type: "text" };
 import directDeliveryMigration from "../../../storage/002_direct_delivery.sql" with { type: "text" };
 import runtimeExecutionRelationshipMigration from "../../../storage/003_runtime_execution_relationship.sql" with { type: "text" };
+import taskAcknowledgementMigration from "../../../storage/004_task_acknowledgement.sql" with { type: "text" };
 import {
   agentSlug,
   BindingState,
@@ -67,6 +68,19 @@ const migrations = [
       !db
         .query("SELECT 1 FROM pragma_table_info('runtime_executions') WHERE name='relationship'")
         .get(),
+  },
+  {
+    version: 4,
+    name: "task-acknowledgement",
+    sql: taskAcknowledgementMigration,
+    rebuildsForeignKeys: true,
+    required: (db: Database) =>
+      !db
+        .query<{ sql: string | null }, []>(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_events'",
+        )
+        .get()
+        ?.sql?.includes("'task-acknowledged'"),
   },
 ];
 export type {
@@ -730,9 +744,16 @@ export class Store {
   }
   markRuntimeOffline(installationId: RuntimeInstallationId) {
     const now = Date.now();
-    this.db
-      .query("UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE id=?")
-      .run(now, installationId);
+    this.write(() => {
+      this.db
+        .query("UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE id=?")
+        .run(now, installationId);
+      this.db
+        .query(
+          "UPDATE runtime_bindings SET last_observed_availability='offline',last_observed_at_ms=? WHERE installation_id=? AND status='active'",
+        )
+        .run(now, installationId);
+    });
   }
   revokeBinding(bindingId: string, reason = "revoked") {
     const binding = this.binding(bindingId);
@@ -1400,38 +1421,84 @@ export class Store {
       this.transitionTask(taskId, principalId, next, summary, details),
     );
   }
-  acknowledgeTask(taskId: string, principalId: string, deliveryId?: string) {
+  acknowledgeTask(taskId: string, principalId: string, deliveryId: string) {
     return this.write(() => {
       const row = this.assignedTask(taskId, principalId);
-      if (deliveryId) {
-        const observed = this.db
-          .query<{ sequence: number }, [string, string]>(
-            "SELECT rowid sequence FROM delivery_intents WHERE id=? AND task_id=? AND kind='a2a-message'",
-          )
-          .get(deliveryId, taskId);
-        if (!observed) throw new Error("DELIVERY_NOT_FOUND");
-        const deliveries = this.db
-          .query<DeliveryIntentRow, [string, number]>(
-            "SELECT * FROM delivery_intents WHERE task_id=? AND kind='a2a-message' AND state IN ('pending','deferred','leased','attempting','acceptance-unknown') AND rowid<=?",
-          )
-          .all(taskId, observed.sequence);
-        if (
-          deliveries.some(
-            (delivery) => ![DeliveryState.Pending, DeliveryState.Deferred].includes(delivery.state),
-          )
+      const observed = this.db
+        .query<{ sequence: number }, [string, string]>(
+          "SELECT rowid sequence FROM delivery_intents WHERE id=? AND task_id=? AND kind='a2a-message'",
         )
-          throw new Error("DELIVERY_IN_PROGRESS");
-        const now = Date.now();
-        for (const delivery of deliveries)
-          this.db
-            .query(
-              "UPDATE delivery_intents SET state=?,state_reason='inbox-acknowledged',lease_owner=NULL,lease_expires_at_ms=NULL,updated_at_ms=? WHERE id=?",
-            )
-            .run(transitionDelivery(delivery.state, DeliveryState.Canceled), now, delivery.id);
-      }
-      if (row.state === TaskState.Working) return parseTask(row.a2a_snapshot_json);
-      return this.setTaskState(taskId, principalId, TaskState.Working);
+        .get(deliveryId, taskId);
+      if (!observed) throw new Error("DELIVERY_NOT_FOUND");
+      const deliveries = this.db
+        .query<DeliveryIntentRow, [string, number]>(
+          "SELECT * FROM delivery_intents WHERE task_id=? AND kind='a2a-message' AND state IN ('pending','deferred','leased','attempting','acceptance-unknown') AND rowid<=?",
+        )
+        .all(taskId, observed.sequence);
+      if (
+        deliveries.some(
+          (delivery) => ![DeliveryState.Pending, DeliveryState.Deferred].includes(delivery.state),
+        )
+      )
+        throw new Error("DELIVERY_IN_PROGRESS");
+      const now = Date.now();
+      for (const delivery of deliveries)
+        this.db
+          .query(
+            "UPDATE delivery_intents SET state=?,state_reason='inbox-acknowledged',lease_owner=NULL,lease_expires_at_ms=NULL,updated_at_ms=? WHERE id=?",
+          )
+          .run(transitionDelivery(delivery.state, DeliveryState.Canceled), now, delivery.id);
+      const acknowledged = this.db
+        .query<{ value: number }, [string, string, string]>(
+          "SELECT 1 value FROM task_events WHERE task_id=? AND event_type='task-acknowledged' AND actor_principal_id=? AND json_extract(payload_json,'$.deliveryId')=? LIMIT 1",
+        )
+        .get(taskId, principalId, deliveryId);
+      if (acknowledged) return parseTask(row.a2a_snapshot_json);
+      const task =
+        row.state === TaskState.Working
+          ? parseTask(row.a2a_snapshot_json)
+          : this.setTaskState(taskId, principalId, TaskState.Working);
+      const current = must(
+        this.db
+          .query<{ next_event_sequence: number }, [string]>(
+            "SELECT next_event_sequence FROM a2a_tasks WHERE id=?",
+          )
+          .get(taskId),
+        "task",
+      );
+      this.db
+        .query(
+          "INSERT INTO task_events(id,task_id,sequence,event_type,actor_principal_id,payload_json,created_at_ms) VALUES(?,?,?,?,?,?,?)",
+        )
+        .run(
+          id("evt"),
+          taskId,
+          current.next_event_sequence,
+          "task-acknowledged",
+          principalId,
+          JSON.stringify({ deliveryId, snapshot: task }),
+          now,
+        );
+      this.db
+        .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
+        .run(taskId);
+      return task;
     });
+  }
+  requireTaskAcknowledged(taskId: string, principalId: string) {
+    this.assignedTask(taskId, principalId);
+    const delivery = this.db
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM delivery_intents WHERE task_id=? AND kind='a2a-message' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(taskId);
+    if (!delivery) throw new Error("TASK_STATE_CONFLICT");
+    const acknowledged = this.db
+      .query<{ value: number }, [string, string, string]>(
+        "SELECT 1 value FROM task_events WHERE task_id=? AND event_type='task-acknowledged' AND actor_principal_id=? AND json_extract(payload_json,'$.deliveryId')=? LIMIT 1",
+      )
+      .get(taskId, principalId, delivery.id);
+    if (!acknowledged) throw new Error("TASK_STATE_CONFLICT");
   }
   completeTask(taskId: string, principalId: string, summary: string, artifacts: StoredArtifact[]) {
     return this.write(() => {
@@ -1443,14 +1510,7 @@ export class Store {
         throw new Error("TASK_STATE_CONFLICT");
       }
       if (terminalTaskState(row.state)) throw new Error("TASK_STATE_CONFLICT");
-      if (
-        this.db
-          .query(
-            "SELECT 1 FROM delivery_intents WHERE task_id=? AND kind='a2a-message' AND state IN ('pending','deferred','leased','attempting','acceptance-unknown') LIMIT 1",
-          )
-          .get(taskId)
-      )
-        throw new Error("UNACKNOWLEDGED_MESSAGES");
+      this.requireTaskAcknowledged(taskId, principalId);
       if (artifacts.length) this.publishArtifacts(taskId, principalId, artifacts);
       return this.setTaskState(taskId, principalId, TaskState.Completed, summary);
     });

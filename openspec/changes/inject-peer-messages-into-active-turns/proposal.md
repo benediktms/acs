@@ -13,6 +13,7 @@ Codex already exposes a provenance-preserving mechanism for this: `turn/start` w
 - Require explicit task-specific completion/failure/input actions for all delegated tasks. Runtime turn completion no longer implies A2A task completion.
 - Prevent cancellation of one peer task from interrupting a shared/user-owned turn unless isolated ACS ownership of that runtime execution is proven.
 - Preserve durable acceptance, binding fences, idempotency, ambiguous-write reconciliation, peer provenance, and local approval ownership.
+- Derive delegated-work authority from the authenticated requester principal: bound agents may delegate work within the recipient's existing permissions, while external clients and services remain untrusted work sources.
 - Replace the public `wake_when_idle` / `append_context` / `join_active` choice with one `direct` delivery behavior. **BREAKING**
 - Update the initial schema/contracts directly; ACS has no deployed compatibility or data-migration obligation yet.
 - Rework open delivery, compatibility, and end-to-end PRs against this contract before merging them.

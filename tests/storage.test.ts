@@ -133,7 +133,7 @@ describe("schema migrations", () => {
     ).toEqual([{ mode: "direct" }, { mode: "direct" }, { mode: "direct" }]);
     expect(
       upgraded.db.query("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
     expect(
       upgraded.db
         .query("SELECT intent_id,binding_id FROM delivery_attempts WHERE id='att_legacy'")
@@ -216,13 +216,80 @@ describe("schema migrations", () => {
       { version: 1 },
       { version: 2 },
       { version: 3 },
+      { version: 4 },
     ]);
     store.close();
     const reopened = new Store(config);
     expect(reopened.db.query("SELECT count(*) count FROM schema_migrations").get()).toEqual({
-      count: 3,
+      count: 4,
     });
     reopened.close();
+  });
+
+  test("rebuilds task events for explicit acknowledgements without losing events", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("legacy-acknowledgement-worker"),
+      principal = authenticated(store),
+      accepted = store.accept(agent.id, principal.id, requestMessage("legacy-acknowledgement"), {}),
+      events = store.db
+        .query<
+          {
+            id: string;
+            task_id: string;
+            sequence: number;
+            event_type: string;
+            actor_principal_id: string | null;
+            payload_json: string;
+            created_at_ms: number;
+          },
+          []
+        >("SELECT * FROM task_events ORDER BY task_id,sequence")
+        .all();
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy.exec("PRAGMA foreign_keys=OFF");
+    legacy
+      .transaction(() => {
+        legacy.exec(
+          "DROP TRIGGER task_events_no_update; DROP TRIGGER task_events_no_delete; DROP INDEX task_events_task_created_idx; CREATE TABLE task_events_legacy AS SELECT * FROM task_events; DROP TABLE task_events; ALTER TABLE task_events_legacy RENAME TO task_events;",
+        );
+        legacy.query("DELETE FROM schema_migrations WHERE version=4").run();
+      })
+      .immediate();
+    legacy.exec("PRAGMA foreign_keys=ON");
+    legacy.close();
+
+    const upgraded = new Store(config);
+    expect(
+      upgraded.db
+        .query(
+          "SELECT id,task_id,sequence,event_type,actor_principal_id,payload_json,created_at_ms FROM task_events ORDER BY task_id,sequence",
+        )
+        .all(),
+    ).toEqual(events);
+    expect(
+      upgraded.db
+        .query<{ sql: string }, []>(
+          "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_events'",
+        )
+        .get()?.sql,
+    ).toContain("'task-acknowledged'");
+    expect(
+      upgraded.db
+        .query("SELECT 1 value FROM sqlite_master WHERE type='index' AND name=?")
+        .get("task_events_task_created_idx"),
+    ).toEqual({ value: 1 });
+    expect(() =>
+      upgraded.db
+        .query("UPDATE task_events SET event_type=event_type WHERE task_id=?")
+        .run(accepted.task.id),
+    ).toThrow("TASK_EVENT_IMMUTABLE");
+    expect(() =>
+      upgraded.db.query("DELETE FROM task_events WHERE task_id=?").run(accepted.task.id),
+    ).toThrow("TASK_EVENT_IMMUTABLE");
+    upgraded.close();
   });
 
   test("adds the runtime execution relationship to a legacy database", () => {
@@ -619,6 +686,12 @@ describe("durable acceptance", () => {
       firstAgent = store.createAgent("first-bound-agent"),
       secondAgent = store.createAgent("second-bound-agent"),
       binding = store.bind(firstAgent.id, "shared-runtime-session");
+    expect(
+      store.db
+        .query<{ kind: string }, [string]>("SELECT kind FROM principals WHERE id=?")
+        .get(binding.principalId)?.kind,
+    ).toBe("bound-agent");
+    expect(store.authenticate(store.createToken().token)?.kind).toBe("external-a2a-client");
     expect(() =>
       store.db
         .query(

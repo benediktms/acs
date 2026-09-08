@@ -1,5 +1,29 @@
 ## ADDED Requirements
 
+### Requirement: Authenticated principals define requester identity
+
+ACS SHALL derive requester identity from the bearer token's persisted principal. Binding SHALL create a `bound-agent` principal, token creation SHALL create only `external-a2a-client` or `service` principals, and the A2A data plane SHALL reject `local-user` principals. A2A message role SHALL describe protocol content and SHALL NOT select requester identity or work authority.
+
+#### Scenario: Bound Codex agent sends through MCP
+
+- **WHEN** `acs_send` receives host-attested thread metadata for an active binding
+- **THEN** ACS issues a short-lived A2A token for that binding's `bound-agent` principal
+- **AND** the accepted task persists that principal and its agent as the requester
+
+#### Scenario: Administrative token reaches A2A
+
+- **WHEN** a `local-user` principal presents its token to the A2A data plane
+- **THEN** ACS rejects it regardless of the message role
+
+### Requirement: Executor mutations require the assigned bound principal
+
+ACS SHALL authorize acknowledgement, completion, failure, and input requests only from the active `bound-agent` principal assigned to the target task, fenced by its binding and epoch. Delivered content SHALL NOT grant executor authority.
+
+#### Scenario: Unassigned principal attempts completion
+
+- **WHEN** a principal other than the task's active assigned bound principal attempts an executor mutation
+- **THEN** ACS rejects the mutation without changing task state
+
 ### Requirement: Single direct delivery behavior
 
 ACS SHALL expose one peer-message delivery behavior: `direct`. A2A delivery metadata and MCP send inputs SHALL NOT expose history append or wake policy selection.

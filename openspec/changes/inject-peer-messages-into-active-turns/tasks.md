@@ -12,6 +12,7 @@
 - [x] 2.4 Map dormant, unloaded, offline, locally-blocked, stale-binding, unsupported-active-state, and route-unavailable outcomes to deferred delivery without `thread/inject_items`; verify targeted adapter mutation assertions observe no history append.
 - [x] 2.5 Add exact delivery-marker reconciliation for direct requests and retain `acceptance-unknown` when runtime evidence is inconclusive; verify ambiguous-write adapter tests do not blindly resend.
 - [x] 2.6 Add an upstream-evidence regression test/documentation note that empty-input `turn/steer` with only `additionalContext` is rejected by the pinned Codex profile; do not fabricate user input as a workaround.
+- [x] 2.7 Atomically mark an app-server's runtime installation record and active bindings offline when it disconnects, preserve logical agents, and refresh availability from bound sessions after reconnect; verify with a targeted scheduler regression test.
 
 ## 3. Shared Turn Correlation and Task Semantics
 
@@ -31,6 +32,13 @@
 - [ ] 4.9 Complete the live interactive matrix for locally-owned approval and user-input states; verify ACS defers without answering, denying, or bypassing the local request.
 - [ ] 4.6 Reconcile the implementation with https://github.com/benediktms/acs/pull/14, https://github.com/benediktms/acs/pull/15, https://github.com/benediktms/acs/pull/16, https://github.com/benediktms/acs/pull/19, and https://github.com/benediktms/acs/pull/35; verify each remaining PR either targets the direct-delivery contract or is explicitly superseded.
 - [ ] 4.7 Run strict OpenSpec validation plus affected test files, typecheck, lint, formatting, import-boundary, enum, and generated-protocol checks; leave the full suite to CI.
+
+## 5. Autonomous Bound-Agent Delegation
+
+- [x] 5.1 Specify principal creation and resolution, A2A rejection of `local-user`, role/identity separation, assigned-executor authorization, principal-derived work authority, and the permission-escalation boundary.
+- [x] 5.2 Add principal-derived `delegated | untrusted` work authority and the complete task reply contract to runtime envelopes; fail closed for unsupported requester principal kinds.
+- [x] 5.3 Publish trusted MCP initialization instructions that permit delegated work and ACS lifecycle/coordination calls under existing local policy while forbidding permission escalation and approval replies.
+- [x] 5.4 Update security/operator documentation and add the smallest targeted storage, A2A, scheduler, MCP, contract, and adapter regression coverage.
 
 ## Verification record
 

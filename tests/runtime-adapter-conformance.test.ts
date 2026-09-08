@@ -647,7 +647,10 @@ function delivery(mode: RuntimeDeliveryRequest["mode"] = "direct"): RuntimeDeliv
       from: { agentId: "agt_sender", name: "sender" },
       to: { agentId: "agt_target", name: "target" },
       message: { id: "msg_1", parts: [{ kind: "text", text: "hello" }] },
-      provenance: { authority: "peer-agent", trustedForPermissions: false },
+      provenance: {
+        principalKind: "bound-agent",
+        workAuthority: "delegated",
+      },
     },
     payloadHash: "payload-hash",
   };

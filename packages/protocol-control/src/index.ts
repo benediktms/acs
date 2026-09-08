@@ -762,7 +762,12 @@ export function controlHandler(
           if (rpc.method.endsWith("complete"))
             store.completeTask(taskId, a.principalId, summary, (p.artifacts ?? []).map(toArtifact));
           else if (rpc.method.endsWith("acknowledge"))
-            store.acknowledgeTask(taskId, a.principalId, p.deliveryId);
+            store.acknowledgeTask(taskId, a.principalId, required(p.deliveryId, "deliveryId"));
+          else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
+            store.write(() => {
+              store.requireTaskAcknowledged(taskId, a.principalId);
+              store.setTaskState(taskId, a.principalId, state, summary, details);
+            });
           else store.setTaskState(taskId, a.principalId, state, summary, details);
           return ok(rpc.id, {
             task: taskDto(store, taskId),

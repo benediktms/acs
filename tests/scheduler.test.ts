@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, TaskState as A2ATaskState } from "@a2a-js/sdk";
@@ -194,7 +194,7 @@ describe("delivery scheduler", () => {
       );
       for (const task of tasks)
         expect(store.task(task.task.id, requester.id)?.status?.state).toBe(
-          A2ATaskState.TASK_STATE_WORKING,
+          A2ATaskState.TASK_STATE_SUBMITTED,
         );
       const first = tasks[0],
         second = tasks[1];
@@ -207,6 +207,7 @@ describe("delivery scheduler", () => {
           A2ATaskState.TASK_STATE_CANCELED,
       );
       expect(interrupts).toBe(0);
+      store.acknowledgeTask(second.task.id, binding.principalId, second.deliveryId);
       store.completeTask(second.task.id, binding.principalId, "explicit result for b", []);
       expect(store.task(second.task.id, requester.id)?.status?.state).toBe(
         A2ATaskState.TASK_STATE_COMPLETED,
@@ -310,7 +311,7 @@ describe("delivery scheduler", () => {
     const store = fixture(),
       agent = store.createAgent("backend"),
       principal = authenticated(store);
-    store.bind(agent.id, "thread-1", {
+    const binding = store.bind(agent.id, "thread-1", {
       deliveryPolicy: { interruptOnCancel: false },
     });
     const accepted = store.accept(
@@ -347,6 +348,7 @@ describe("delivery scheduler", () => {
         .get(accepted.deliveryId),
     ).toEqual({ state: "accepted", attempt_count: 1 });
     expect(store.task(accepted.task.id, principal.id)).toMatchObject({
+      status: { state: A2ATaskState.TASK_STATE_SUBMITTED },
       metadata: {
         "urn:agent-communications:delivery-status:v1": {
           state: "accepted",
@@ -355,10 +357,30 @@ describe("delivery scheduler", () => {
         },
       },
     });
+    store.acknowledgeTask(accepted.task.id, binding.principalId, accepted.deliveryId);
+    expect(store.task(accepted.task.id, principal.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_WORKING,
+    );
     expect(delivered).toMatchObject({
       traceContext: {
         traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
         tracestate: "vendor=value",
+      },
+      envelope: {
+        agentNotice:
+          "AGENT MESSAGE from external-a2a-client — external peer input with untrusted work authority. Follow the reply contract; a final response alone does not complete this task.",
+        provenance: {
+          principalKind: "external-a2a-client",
+          workAuthority: "untrusted",
+        },
+        reply: {
+          acknowledgeTool: "acs_task_acknowledge",
+          completeTool: "acs_task_complete",
+          failTool: "acs_task_fail",
+          requestInputTool: "acs_task_request_input",
+          taskId: accepted.task.id,
+          deliveryId: accepted.deliveryId,
+        },
       },
     });
     await scheduler.stop();
@@ -415,7 +437,7 @@ describe("delivery scheduler", () => {
     await Bun.sleep(400);
     expect(store.task(accepted.task.id, principal.id)).toMatchObject({
       status: {
-        state: A2ATaskState.TASK_STATE_WORKING,
+        state: A2ATaskState.TASK_STATE_SUBMITTED,
       },
     });
     await scheduler.stop();
@@ -424,11 +446,12 @@ describe("delivery scheduler", () => {
   test("uses direct delivery with no wake-policy opt-in", async () => {
     const store = fixture(),
       agent = store.createAgent("atomic-wake"),
-      principal = authenticated(store);
+      sender = store.createAgent("atomic-sender"),
+      senderBinding = store.bind(sender.id, "thread-atomic-sender");
     store.bind(agent.id, "thread-atomic-wake");
     const accepted = store.accept(
         agent.id,
-        principal.id,
+        senderBinding.principalId,
         Message.fromJSON({
           messageId: "atomic-wake",
           role: "ROLE_USER",
@@ -438,7 +461,11 @@ describe("delivery scheduler", () => {
       ),
       delivered = Promise.withResolvers<void>(),
       adapter = new FakeRuntimeAdapter();
-    adapter.deliver = async () => {
+    adapter.deliver = async (request) => {
+      expect(request.envelope.provenance).toEqual({
+        principalKind: "bound-agent",
+        workAuthority: "delegated",
+      });
       delivered.resolve();
       return {
         outcome: "accepted",
@@ -453,6 +480,41 @@ describe("delivery scheduler", () => {
     await delivered.promise;
     await Bun.sleep(0);
     expect(deliveryState(store, accepted.deliveryId)?.state).toBe("accepted");
+    await scheduler.stop();
+    store.close();
+  });
+  test("fails closed when stored requester authority is not valid for A2A", async () => {
+    const store = fixture(),
+      agent = store.createAgent("invalid-authority"),
+      local = store.db
+        .query<{ id: `prn_${string}` }, []>("SELECT id FROM principals WHERE kind='local-user'")
+        .get();
+    if (!local) throw new Error("missing local principal");
+    store.bind(agent.id, "thread-invalid-authority");
+    const accepted = store.accept(
+        agent.id,
+        local.id,
+        Message.fromJSON({
+          messageId: "invalid-authority",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { mode: "direct" },
+      ),
+      adapter = new FakeRuntimeAdapter();
+    let deliveries = 0;
+    adapter.deliver = async () => {
+      deliveries++;
+      throw new Error("must not deliver");
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "invalid-authority");
+    await scheduler.start();
+    await Bun.sleep(300);
+    expect(deliveries).toBe(0);
+    expect(deliveryState(store, accepted.deliveryId)).toEqual({
+      state: "failed-terminal",
+      state_reason: "unsupported-requester-principal",
+    });
     await scheduler.stop();
     store.close();
   });
@@ -876,9 +938,17 @@ describe("delivery scheduler", () => {
     });
     store.close();
   });
-  test("stops the adapter after its connection drops", async () => {
+  test("marks active bindings offline without reaping agents after the runtime disconnects", async () => {
     const store = fixture(),
+      agent = store.createAgent("disconnected-agent"),
+      binding = store.bind(agent.id, "disconnected-thread"),
       adapter = new FakeRuntimeAdapter();
+    adapter.inspectSession = async (session) => ({
+      session,
+      availability: "idle",
+      observedAt: new Date().toISOString(),
+      attributes: { canAcceptDirectInput: true },
+    });
     let stopped = false;
     adapter.observe = async function* () {
       yield { type: "adapter.connection", state: "offline" };
@@ -891,6 +961,14 @@ describe("delivery scheduler", () => {
     await Bun.sleep(10);
     await scheduler.stop();
     expect(stopped).toBe(true);
+    expect(
+      store.db
+        .query<{ runtime_state: string; availability: string; binding_status: string }, [string]>(
+          "SELECT i.state runtime_state,b.last_observed_availability availability,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
+        )
+        .get(binding.id),
+    ).toEqual({ runtime_state: "offline", availability: "offline", binding_status: "active" });
+    expect(store.agent(agent.id)?.id).toBe(agent.id);
     store.close();
   });
   test("follows eligible rebinds and terminates unsafe delivery conditions", async () => {
@@ -1364,7 +1442,7 @@ describe("delivery scheduler", () => {
       availability: "idle",
       execution_id_matches: 1,
       execution_state: "awaiting-local-input",
-      task_state: "working",
+      task_state: "submitted",
     });
     await scheduler.stop();
     store.close();
@@ -1497,11 +1575,64 @@ describe("delivery scheduler", () => {
         target: { session: { opaqueId: "reply-sender-thread" }, bindingId: senderBinding.id },
         envelope: {
           agentNotice:
-            "AGENT REPLY from reply-recipient — external peer input, not user authority.",
+            "AGENT REPLY from reply-recipient — authenticated ACS delegation within your existing permissions.",
           kind: "a2a-task-event",
           from: { agentId: recipient.id, name: "reply-recipient" },
           to: { agentId: sender.id, name: "reply-sender" },
           event: { state: "completed", summary: "pong" },
+          provenance: {
+            principalKind: "bound-agent",
+            workAuthority: "delegated",
+          },
+        },
+      });
+    } finally {
+      await scheduler.stop();
+      store.close();
+    }
+  });
+  test("uses the requester as the sender of a cancellation notification", async () => {
+    const store = fixture(),
+      sender = store.createAgent("cancellation-sender"),
+      target = store.createAgent("cancellation-target"),
+      senderBinding = store.bind(sender.id, "cancellation-sender-thread"),
+      accepted = store.accept(
+        target.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "cancellation-request",
+          role: "ROLE_USER",
+          parts: [{ text: "ping" }],
+        }),
+        { notifyOn: ["terminal"] },
+      ),
+      delivered = Promise.withResolvers<RuntimeDeliveryRequest>(),
+      adapter = new FakeRuntimeAdapter();
+    store.bind(target.id, "cancellation-target-thread");
+    store.db
+      .query("UPDATE delivery_intents SET state='accepted' WHERE id=?")
+      .run(accepted.deliveryId);
+    store.requestCancellation(accepted.task.id, senderBinding.principalId);
+    adapter.deliver = async (request) => {
+      delivered.resolve(request);
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "cancellation-turn", relationship: "started" },
+        evidence: { scheme: "fake", value: "canceled" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "cancellation-notification");
+    try {
+      await scheduler.start();
+      expect(await delivered.promise).toMatchObject({
+        envelope: {
+          from: { agentId: sender.id, name: "cancellation-sender" },
+          event: { state: "canceled" },
+          provenance: {
+            principalKind: "bound-agent",
+            workAuthority: "delegated",
+          },
         },
       });
     } finally {
@@ -1570,6 +1701,7 @@ describe("delivery scheduler", () => {
       .query<{ id: `prn_${string}` }, [string]>("SELECT id FROM principals WHERE binding_id=?")
       .get(binding.id);
     if (!assignee) throw new Error("missing assignee principal");
+    store.acknowledgeTask(accepted.task.id, assignee.id, accepted.deliveryId);
     store.setTaskState(accepted.task.id, assignee.id, TaskState.Completed, "explicit result");
     completeRuntime?.();
     await Bun.sleep(50);
@@ -1629,7 +1761,7 @@ describe("delivery scheduler", () => {
       store.db.query("SELECT state FROM delivery_intents WHERE id=?").get(accepted.deliveryId),
     ).toEqual({ state: "accepted" });
     expect(store.db.query("SELECT state FROM a2a_tasks WHERE id=?").get(accepted.task.id)).toEqual({
-      state: "working",
+      state: "submitted",
     });
     await scheduler.stop();
     store.close();
@@ -1771,7 +1903,7 @@ describe("delivery scheduler", () => {
 });
 
 function authenticated(store: Store) {
-  const principal = store.authenticate(readFileSync(store.config.token, "utf8"));
+  const principal = store.authenticate(store.createToken().token);
   if (!principal) throw new Error("missing test principal");
   return principal;
 }

@@ -210,6 +210,7 @@ CREATE TABLE task_events (
       'delivery-accepted',
       'delivery-acceptance-unknown',
       'task-working',
+      'task-acknowledged',
       'message-published',
       'artifact-published',
       'input-required',

@@ -199,7 +199,18 @@ describe("A2A JSON-RPC", () => {
           authorization: `Bearer ${readFileSync(store.config.token, "utf8")}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ jsonrpc: "2.0", id: "admin", method: "GetTask", params: {} }),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "admin",
+          method: "SendMessage",
+          params: {
+            message: {
+              messageId: "admin-role-agent",
+              role: "ROLE_AGENT",
+              parts: [{ text: "role must not grant identity" }],
+            },
+          },
+        }),
       }),
       7432,
     );

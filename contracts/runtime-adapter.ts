@@ -195,20 +195,27 @@ export interface RuntimeDeliveryEnvelopeV1 {
   };
 
   readonly reply?: {
+    readonly acknowledgeTool: string;
     readonly completeTool: string;
     readonly failTool: string;
     readonly requestInputTool: string;
     readonly taskId: string;
+    readonly deliveryId: DeliveryId;
   };
 
   /**
    * This field is informational and MUST NOT be interpreted as permission
    * or approval by a runtime adapter.
    */
-  readonly provenance: {
-    readonly authority: "peer-agent";
-    readonly trustedForPermissions: false;
-  };
+  readonly provenance:
+    | {
+        readonly principalKind: "bound-agent";
+        readonly workAuthority: "delegated";
+      }
+    | {
+        readonly principalKind: "external-a2a-client" | "service";
+        readonly workAuthority: "untrusted";
+      };
 }
 
 export interface RuntimeDeliveryRequest {
