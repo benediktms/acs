@@ -12,7 +12,9 @@ import type {
   HostInvocationEvidence,
   RuntimeAdapter,
   RuntimeCallerAttestor,
+  RuntimeCapabilities,
   RuntimeInstallationId,
+  RuntimeProbeResult,
 } from "../../../contracts/runtime-adapter";
 import type {
   BridgeAttestationDto,
@@ -164,9 +166,23 @@ export function controlHandler(
   store: ControlStoragePort,
   startedAt: string,
   shutdown: () => void,
-  adapter?: RuntimeAdapter,
-  callerAttestor?: RuntimeCallerAttestor,
+  adapters?: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter>,
+  callerAttestors?:
+    | RuntimeCallerAttestor
+    | ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor>,
 ) {
+  const adapterFor = (installationId?: string) => {
+    if (!adapters) return undefined;
+    if (!isAdapterMap(adapters)) return adapters;
+    return isRuntimeInstallationId(installationId) ? adapters.get(installationId) : undefined;
+  };
+  const attestorFor = (installationId?: string) => {
+    if (!callerAttestors) return undefined;
+    if (!isAttestorMap(callerAttestors)) return callerAttestors;
+    return isRuntimeInstallationId(installationId)
+      ? callerAttestors.get(installationId)
+      : undefined;
+  };
   return async (request: Request) => {
     telemetry.increment("acs_control_requests_total");
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -209,7 +225,7 @@ export function controlHandler(
             String(rpc.id),
           ),
         attest = (evidence: Params["evidence"]) =>
-          attestEvidence(store, adapter, callerAttestor, evidence);
+          attestEvidence(store, adapters, callerAttestors, evidence);
       switch (rpc.method) {
         case "system.initialize":
           if (!/^1\.\d+$/.test(required(p.protocolVersion, "protocolVersion")))
@@ -220,35 +236,43 @@ export function controlHandler(
             protocolVersion: "1.0",
             server: { name: "acs", version: "0.1.0", instanceId: String(process.pid) },
             capabilities: {
-              codex: Boolean(adapter),
+              codex: isAdapterMap(adapters) ? adapters.size > 0 : Boolean(adapters),
               a2aJsonRpc: true,
               taskEventNotifications: true,
             },
           });
         case "system.health": {
-          const probe = adapter ? await adapter.probe() : undefined;
+          const probes = isAdapterMap(adapters)
+            ? await Promise.all(
+                [...adapters].map(
+                  async ([installationId, adapter]) =>
+                    [installationId, await adapter.probe()] as const,
+                ),
+              )
+            : adapters
+              ? [["codex.app-server", await adapters.probe()] as const]
+              : [];
           return ok(rpc.id, {
-            status: probe?.state === "ready" ? "ok" : "degraded",
+            status:
+              probes.length > 0 && probes.every(([, probe]) => probe.state === "ready")
+                ? "ok"
+                : "degraded",
             database: "ok",
-            adapters: [{ adapterId: "codex.app-server", status: probe?.state ?? "unavailable" }],
+            adapters: probes.map(([adapterId, probe]) => ({ adapterId, status: probe.state })),
             startedAt,
             metrics: store.metrics(),
             traces: telemetry.traceSnapshot(),
           });
         }
         case "system.capabilities": {
-          const probe = adapter ? await adapter.probe() : undefined;
+          const probes = isAdapterMap(adapters)
+            ? await Promise.all([...adapters.values()].map((adapter) => adapter.probe()))
+            : adapters
+              ? [await adapters.probe()]
+              : [];
+          const capabilities = combineCodexCapabilities(probes);
           return ok(rpc.id, {
-            codex: probe?.capabilities ?? {
-              listSessions: false,
-              observeSessionState: false,
-              observeExecutions: false,
-              directDelivery: false,
-              cancelOwnedExecution: false,
-              reconcileDelivery: false,
-              callerAttestationSchemes: [],
-              supportedPartKinds: [],
-            },
+            codex: capabilities,
             a2aJsonRpc: true,
           });
         }
@@ -328,7 +352,6 @@ export function controlHandler(
         }
         case "bindings.bind":
           admin(principal.kind);
-          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const session = required(p.session, "session"),
             sessionId = typeof session === "string" ? session : session.opaqueId,
             requestedInstallation =
@@ -340,13 +363,11 @@ export function controlHandler(
                   "SELECT id FROM runtime_installations WHERE id=? LIMIT 1",
                 )
                 .get(requestedInstallation)
-            : store
-                .query<{ id: RuntimeInstallationId }, []>(
-                  "SELECT id FROM runtime_installations WHERE harness_id='codex' LIMIT 1",
-                )
-                .get();
+            : runtimeInstallation(store);
           if (!bindInstallation) throw new Error("BINDING_CONFLICT: runtime installation mismatch");
-          const bindSnapshot = await adapter.inspectSession({
+          const bindAdapter = adapterFor(bindInstallation.id);
+          if (!bindAdapter) throw new Error("RUNTIME_UNAVAILABLE");
+          const bindSnapshot = await bindAdapter.inspectSession({
             installationId: bindInstallation.id,
             opaqueId: sessionId,
           });
@@ -367,12 +388,14 @@ export function controlHandler(
           return ok(rpc.id, { binding: bindingDto(createdBinding, store) });
         case "bindings.claim": {
           try {
-            if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
             const evidence = hostInvocationEvidence(p.evidence);
-            if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
-            const proof = await callerAttestor.attest(evidence);
+            const claimAttestor = attestorFor(evidenceInstallationId(evidence));
+            if (!evidence || !claimAttestor) throw new Error("UNATTESTED_CALLER");
+            const proof = await claimAttestor.attest(evidence);
             if (proof.kind !== "attested") throw new Error(`UNATTESTED_CALLER: ${proof.reason}`);
-            const claimSnapshot = await adapter.inspectSession(proof.session);
+            const claimAdapter = adapterFor(proof.session.installationId);
+            if (!claimAdapter) throw new Error("RUNTIME_UNAVAILABLE");
+            const claimSnapshot = await claimAdapter.inspectSession(proof.session);
             if (claimSnapshot.availability === "offline")
               throw new Error("RUNTIME_UNAVAILABLE: session not found");
             const binding = store.claim(
@@ -407,6 +430,7 @@ export function controlHandler(
         }
         case "bindings.register": {
           const evidence = hostInvocationEvidence(p.evidence);
+          const callerAttestor = attestorFor(evidenceInstallationId(evidence));
           if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
           const proof = await callerAttestor.attest(evidence);
           if (proof.kind !== "attested") throw new Error(`UNATTESTED_CALLER: ${proof.reason}`);
@@ -525,6 +549,7 @@ export function controlHandler(
                   harnessId: string;
                   adapterId: string;
                   label: string;
+                  endpointJson: string;
                   state: "unknown" | "online" | "degraded" | "offline" | "incompatible";
                   capabilitiesJson: string;
                   protocolFingerprint: string | null;
@@ -532,7 +557,7 @@ export function controlHandler(
                 },
                 []
               >(
-                "SELECT id installationId,harness_id harnessId,adapter_id adapterId,label,state,capabilities_json capabilitiesJson,protocol_fingerprint protocolFingerprint,last_seen_at_ms lastSeenAtMs FROM runtime_installations",
+                "SELECT id installationId,harness_id harnessId,adapter_id adapterId,label,endpoint_json endpointJson,state,capabilities_json capabilitiesJson,protocol_fingerprint protocolFingerprint,last_seen_at_ms lastSeenAtMs FROM runtime_installations",
               )
               .all(),
             Math.min(p.limit ?? 50, 100),
@@ -546,6 +571,7 @@ export function controlHandler(
               harnessId: runtime.harnessId,
               adapterId: runtime.adapterId,
               label: runtime.label,
+              endpoint: jsonRecord(runtime.endpointJson),
               probe:
                 runtime.lastSeenAtMs === null
                   ? undefined
@@ -566,15 +592,17 @@ export function controlHandler(
           });
         }
         case "runtimes.probe": {
+          const installation = runtimeInstallation(store, p.installationId),
+            adapter = adapterFor(installation.id);
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
-          const probe = await adapter.probe(),
-            installation = runtimeInstallation(store, p.installationId);
+          const probe = await adapter.probe();
           store.observeRuntime(installation.id, probe);
           return ok(rpc.id, { probe });
         }
         case "runtimes.sessions.list": {
+          const installation = runtimeInstallation(store, p.installationId),
+            adapter = adapterFor(installation.id);
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
-          runtimeInstallation(store, p.installationId);
           const page = await adapter.listSessions({
             cursor: p.cursor ? runtimeSessionCursor(store.decodeCursor(p.cursor)) : undefined,
             limit: p.limit,
@@ -591,7 +619,6 @@ export function controlHandler(
           });
         }
         case "runtimes.sessions.inspect": {
-          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const inspectSessionInput = required(p.session, "session"),
             opaqueId =
               typeof inspectSessionInput === "string"
@@ -602,7 +629,9 @@ export function controlHandler(
               (typeof inspectSessionInput === "string"
                 ? undefined
                 : inspectSessionInput.installationId),
-            inspectInstallation = runtimeInstallation(store, inspectRequestedInstallation);
+            inspectInstallation = runtimeInstallation(store, inspectRequestedInstallation),
+            adapter = adapterFor(inspectInstallation.id);
+          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const snapshot = await adapter.inspectSession({
             installationId: inspectInstallation.id,
             opaqueId,
@@ -874,13 +903,22 @@ function admin(kind: string) {
 }
 async function attestEvidence(
   store: ControlStoragePort,
-  adapter: RuntimeAdapter | undefined,
-  callerAttestor: RuntimeCallerAttestor | undefined,
+  adapters: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> | undefined,
+  callerAttestors:
+    | RuntimeCallerAttestor
+    | ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor>
+    | undefined,
   evidence: Params["evidence"],
 ): Promise<BridgeAttestationDto> {
   const callerEvidence = attestationEvidence(evidence);
   if (!callerEvidence?.metadata) return { kind: "unattested", reason: "missing-host-metadata" };
   const hostEvidence = hostInvocationEvidence(evidence);
+  const installationId = evidenceInstallationId(hostEvidence),
+    callerAttestor = isAttestorMap(callerAttestors)
+      ? installationId
+        ? callerAttestors.get(installationId)
+        : undefined
+      : callerAttestors;
   if (!callerAttestor || !hostEvidence)
     return { kind: "unattested", reason: "unsupported-harness" };
   const proof = await callerAttestor.attest(hostEvidence);
@@ -888,6 +926,7 @@ async function attestEvidence(
   const before = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);
   if (before.kind !== "attested") return before;
   let verified = false;
+  const adapter = isAdapterMap(adapters) ? adapters.get(before.session.installationId) : adapters;
   if (adapter)
     try {
       const snapshot = await adapter.inspectSession(before.session);
@@ -909,6 +948,20 @@ async function attestEvidence(
     ? current
     : { kind: "unattested", reason: "stale-binding" };
 }
+
+function isAdapterMap(
+  value: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> | undefined,
+): value is ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> {
+  return Boolean(value && "get" in value);
+}
+function isAttestorMap(
+  value:
+    | RuntimeCallerAttestor
+    | ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor>
+    | undefined,
+): value is ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor> {
+  return Boolean(value && "get" in value);
+}
 function attestationEvidence(evidence: Params["evidence"]) {
   return typeof evidence === "string" ? undefined : evidence;
 }
@@ -928,7 +981,55 @@ function hostInvocationEvidence(evidence: Params["evidence"]): HostInvocationEvi
     bridgeInstanceId: value.bridgeInstanceId,
   };
 }
+function evidenceInstallationId(evidence: HostInvocationEvidence | undefined) {
+  const value = evidence?.metadata?.acsInstallationId;
+  return isRuntimeInstallationId(value) ? value : undefined;
+}
+function isRuntimeInstallationId(value: unknown): value is RuntimeInstallationId {
+  return typeof value === "string" && value.startsWith("ins_");
+}
+function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): RuntimeCapabilities {
+  let listSessions = false,
+    observeSessionState = false,
+    observeExecutions = false,
+    directDelivery = false,
+    cancelOwnedExecution = false,
+    reconcileDelivery = false;
+  const callerAttestationSchemes = new Set<string>(),
+    supportedPartKinds = new Set<RuntimeCapabilities["supportedPartKinds"][number]>();
+  for (const probe of probes) {
+    const capabilities = probe.capabilities;
+    listSessions ||= capabilities.listSessions;
+    observeSessionState ||= capabilities.observeSessionState;
+    observeExecutions ||= capabilities.observeExecutions;
+    directDelivery ||= capabilities.directDelivery;
+    cancelOwnedExecution ||= capabilities.cancelOwnedExecution;
+    reconcileDelivery ||= capabilities.reconcileDelivery;
+    for (const scheme of capabilities.callerAttestationSchemes)
+      callerAttestationSchemes.add(scheme);
+    for (const kind of capabilities.supportedPartKinds) supportedPartKinds.add(kind);
+  }
+  return {
+    listSessions,
+    observeSessionState,
+    observeExecutions,
+    directDelivery,
+    cancelOwnedExecution,
+    reconcileDelivery,
+    callerAttestationSchemes: [...callerAttestationSchemes],
+    supportedPartKinds: [...supportedPartKinds],
+  };
+}
 function runtimeInstallation(store: ControlStoragePort, requestedId?: string) {
+  if (!requestedId) {
+    const count =
+      store
+        .query<{ count: number }, []>(
+          "SELECT count(*) count FROM runtime_installations WHERE harness_id='codex' AND state<>'offline'",
+        )
+        .get()?.count ?? 0;
+    if (count !== 1) throw new Error("RUNTIME_AMBIGUOUS: specify an installationId");
+  }
   const installation = store
     .query<{ id: RuntimeInstallationId }, [string | null, string | null]>(
       "SELECT id FROM runtime_installations WHERE harness_id='codex' AND (? IS NULL OR id=?) LIMIT 1",
@@ -978,7 +1079,10 @@ function authorize(principal: { kind: string; scopes: string[] }, method: string
   if (principal.scopes.includes("*")) return;
   const scope = method.startsWith("bridge.issueA2AToken")
     ? "bridge:token"
-    : method.startsWith("bridge.") || method === "bindings.claim" || method === "bindings.register"
+    : method.startsWith("bridge.") ||
+        method === "bindings.claim" ||
+        method === "bindings.register" ||
+        method === "runtimes.list"
       ? "bridge:attest"
       : method.startsWith("executor.")
         ? "executor"
@@ -1169,6 +1273,7 @@ function controlErrorCode(raw: string): ControlErrorData["code"] {
     case "UNATTESTED_CALLER":
     case "STALE_BINDING":
     case "RUNTIME_UNAVAILABLE":
+    case "RUNTIME_AMBIGUOUS":
     case "RUNTIME_INCOMPATIBLE":
     case "TASK_NOT_FOUND":
     case "TASK_STATE_CONFLICT":

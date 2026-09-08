@@ -14,6 +14,115 @@ afterEach(() => {
 });
 
 describe("control protocol", () => {
+  test("routes session inspection to the requested runtime installation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-"));
+    roots.push(root);
+    const paths: Paths = {
+      data: join(root, "acs.db"),
+      runtime: join(root, "control.sock"),
+      token: join(root, "control.token"),
+      bridgeToken: join(root, "bridge.token"),
+      secret: join(root, "secret.key"),
+    };
+    const store = new Store(paths),
+      first = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!first) throw new Error("missing installation");
+    const second: `ins_${string}` = "ins_second";
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','work','{}','{}','unknown',?,?)",
+      )
+      .run(second, Date.now(), Date.now());
+    const primary = new FakeRuntimeAdapter(),
+      work = new FakeRuntimeAdapter();
+    work.listSessions = async () => ({ sessions: [] });
+    const handler = controlHandler(
+      store,
+      new Date().toISOString(),
+      () => {},
+      new Map([
+        [first.id, primary],
+        [second, work],
+      ]),
+    );
+    const call = (method: string, params: unknown) =>
+      handler(
+        new Request("http://localhost", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+            "ACS-Control-Version": "1",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        }),
+      );
+    expect(
+      await (
+        await call("system.initialize", {
+          protocolVersion: "1.0",
+          client: { name: "test", version: "1", instanceId: "test" },
+          capabilities: {},
+        })
+      ).json(),
+    ).toMatchObject({ result: { capabilities: { codex: true } } });
+    expect(await (await call("system.health", {})).json()).toMatchObject({
+      result: {
+        status: "ok",
+        adapters: [
+          { adapterId: first.id, status: "ready" },
+          { adapterId: second, status: "ready" },
+        ],
+      },
+    });
+    expect(await (await call("system.capabilities", {})).json()).toMatchObject({
+      result: { codex: { directDelivery: true } },
+    });
+    const emptyHandler = controlHandler(store, new Date().toISOString(), () => {}, new Map());
+    expect(
+      await (
+        await emptyHandler(
+          new Request("http://localhost", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+              "ACS-Control-Version": "1",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "system.initialize",
+              params: {
+                protocolVersion: "1.0",
+                client: { name: "test", version: "1", instanceId: "test" },
+                capabilities: {},
+              },
+            }),
+          }),
+        )
+      ).json(),
+    ).toMatchObject({ result: { capabilities: { codex: false } } });
+    const response = await handler(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+          "ACS-Control-Version": "1",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "runtimes.sessions.list",
+          params: { installationId: second },
+        }),
+      }),
+    );
+    expect(await response.json()).toMatchObject({ result: { sessions: [] } });
+  });
   test("requires protocol version and authenticates standalone bindings", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-"));
     roots.push(root);
@@ -732,6 +841,14 @@ describe("control protocol", () => {
         })
       ).json(),
     ).toMatchObject({ error: { data: { code: "BINDING_CONFLICT" } } });
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,'unknown',?,?)",
+      )
+      .run("ins_ambiguous", "codex", "codex.app-server", "ambiguous", "{}", now, now);
+    expect(
+      await (await call("bindings.bind", { agent: "backend", session: "thread-2" })).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
     expect(new Set(inspected)).toEqual(
       new Set([
         "thread-1",

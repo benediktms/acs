@@ -27,6 +27,63 @@ function fixture() {
 }
 
 describe("delivery scheduler", () => {
+  test("isolates delivery scheduling by runtime installation", async () => {
+    const store = fixture(),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!primary) throw new Error("missing runtime installation");
+    const primaryId = primary.id;
+    const work: `ins_${string}` = "ins_work";
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','work','{}','{}','unknown',?,?)",
+      )
+      .run(work, Date.now(), Date.now());
+    const blockedAgent = store.createAgent("blocked"),
+      workAgent = store.createAgent("work"),
+      requester = authenticated(store);
+    store.bind(blockedAgent.id, "blocked-thread", { installationId: primaryId });
+    store.bind(workAgent.id, "work-thread", { installationId: work });
+    store.accept(
+      blockedAgent.id,
+      requester.id,
+      Message.fromJSON({ messageId: "blocked", role: "ROLE_USER", parts: [{ text: "blocked" }] }),
+      {},
+    );
+    const accepted = store.accept(
+      workAgent.id,
+      requester.id,
+      Message.fromJSON({ messageId: "work", role: "ROLE_USER", parts: [{ text: "work" }] }),
+      {},
+    );
+    const offline = new FakeRuntimeAdapter(),
+      ready = new FakeRuntimeAdapter();
+    offline.start = async () => {
+      throw new Error("offline");
+    };
+    ready.deliver = async () => ({
+      outcome: "accepted",
+      acceptedAt: new Date().toISOString(),
+      execution: { opaqueId: "work-turn", relationship: "unknown" },
+      evidence: { scheme: "fake", value: "work" },
+    });
+    const blockedScheduler = new DeliveryScheduler(store, offline, "blocked", undefined, primaryId),
+      workScheduler = new DeliveryScheduler(store, ready, "work", undefined, work);
+    try {
+      await Promise.all([blockedScheduler.start(), workScheduler.start()]);
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
+      expect(
+        store.db
+          .query<{ state: string }, [string]>(
+            "SELECT state FROM delivery_intents WHERE target_agent_id=?",
+          )
+          .get(blockedAgent.id)?.state,
+      ).toMatch(/pending|deferred/);
+    } finally {
+      await Promise.all([blockedScheduler.stop(), workScheduler.stop()]);
+    }
+  });
   test("shared-turn completion and cancellation keep task results independent", async () => {
     const store = fixture(),
       agent = store.createAgent("shared"),

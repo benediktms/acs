@@ -92,19 +92,22 @@ export class DeliveryScheduler {
       retryCapMs: 30_000,
       reconnectMs: 2000,
     },
+    private installationId?: RuntimeInstallationId,
   ) {
     this.capabilities = adapter.descriptor.capabilities;
   }
 
   async start() {
-    const installation = required(
-      this.store
-        .query<{ id: RuntimeInstallationId }, [string]>(
-          "SELECT id FROM runtime_installations WHERE adapter_id=? LIMIT 1",
-        )
-        .get(this.adapter.descriptor.adapterId),
-      "runtime installation",
-    );
+    const installation = this.installationId
+      ? { id: this.installationId }
+      : required(
+          this.store
+            .query<{ id: RuntimeInstallationId }, [string]>(
+              "SELECT id FROM runtime_installations WHERE adapter_id=? LIMIT 1",
+            )
+            .get(this.adapter.descriptor.adapterId),
+          "runtime installation",
+        );
     this.context = {
       installationId: installation.id,
       instanceId: this.instanceId,
@@ -177,10 +180,10 @@ export class DeliveryScheduler {
   private async reconcileOne() {
     const now = Date.now(),
       row = this.store
-        .query<ReconciliationRow, [number]>(
-          "SELECT i.id,i.task_id,i.kind,i.payload_hash,i.pinned_binding_id,i.pinned_binding_epoch,b.installation_id,b.session_opaque_id,a.reconciliation_token FROM delivery_intents i JOIN runtime_bindings b ON b.id=i.pinned_binding_id JOIN delivery_attempts a ON a.intent_id=i.id AND a.attempt_number=i.attempt_count WHERE i.state='acceptance-unknown' AND i.not_before_ms<=? AND a.reconciliation_token IS NOT NULL LIMIT 1",
+        .query<ReconciliationRow, [number, RuntimeInstallationId]>(
+          "SELECT i.id,i.task_id,i.kind,i.payload_hash,i.pinned_binding_id,i.pinned_binding_epoch,b.installation_id,b.session_opaque_id,a.reconciliation_token FROM delivery_intents i JOIN runtime_bindings b ON b.id=i.pinned_binding_id JOIN delivery_attempts a ON a.intent_id=i.id AND a.attempt_number=i.attempt_count WHERE i.state='acceptance-unknown' AND i.not_before_ms<=? AND b.installation_id=? AND a.reconciliation_token IS NOT NULL LIMIT 1",
         )
-        .get(now);
+        .get(now, required(this.context, "adapter context").installationId);
     if (!row) return false;
     const result = await this.adapter.reconcile(
       {
@@ -303,11 +306,11 @@ export class DeliveryScheduler {
           task_id: `tsk_${string}`;
           requester_principal_id: `prn_${string}`;
         },
-        []
+        [RuntimeInstallationId]
       >(
-        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
+        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=t.id AND b.installation_id=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
       )
-      .get();
+      .get(required(this.context, "adapter context").installationId);
     if (!task) return false;
     const row = this.store
       .query<
@@ -321,11 +324,11 @@ export class DeliveryScheduler {
           delivery_policy_json: string;
           state: RuntimeExecutionState;
         },
-        [`tsk_${string}`]
+        [`tsk_${string}`, RuntimeInstallationId]
       >(
-        "SELECT e.id,e.runtime_execution_opaque_id,e.binding_id,e.binding_epoch,e.state,b.installation_id,b.session_opaque_id,b.delivery_policy_json FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=? AND i.kind='a2a-message' AND e.relationship='started' AND e.state IN ('accepted','started','awaiting-local-input') AND NOT EXISTS(SELECT 1 FROM runtime_executions e2 WHERE e2.binding_id=e.binding_id AND e2.runtime_execution_opaque_id=e.runtime_execution_opaque_id AND e2.id<>e.id AND e2.state IN ('accepted','started','awaiting-local-input')) LIMIT 1",
+        "SELECT e.id,e.runtime_execution_opaque_id,e.binding_id,e.binding_epoch,e.state,b.installation_id,b.session_opaque_id,b.delivery_policy_json FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=? AND b.installation_id=? AND i.kind='a2a-message' AND e.relationship='started' AND e.state IN ('accepted','started','awaiting-local-input') AND NOT EXISTS(SELECT 1 FROM runtime_executions e2 WHERE e2.binding_id=e.binding_id AND e2.runtime_execution_opaque_id=e.runtime_execution_opaque_id AND e2.id<>e.id AND e2.state IN ('accepted','started','awaiting-local-input')) LIMIT 1",
       )
-      .get(task.task_id);
+      .get(task.task_id, required(this.context, "adapter context").installationId);
     if (
       row &&
       this.capabilities.cancelOwnedExecution &&
@@ -398,10 +401,10 @@ export class DeliveryScheduler {
             )
             .run(transitionDelivery(intent.state, DeliveryState.FailedTerminal), now, intent.id);
         const rows = this.store
-            .query<DeliveryIntentRow, [number, number, number]>(
-              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY target_agent_id ORDER BY priority DESC,not_before_ms,created_at_ms) lane_rank FROM delivery_intents i WHERE state IN ('pending','deferred') AND not_before_ms<=? AND (deadline_ms IS NULL OR deadline_ms>?) AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms<=?)) WHERE lane_rank=1 ORDER BY priority DESC,not_before_ms,created_at_ms LIMIT 100",
+            .query<DeliveryIntentRow, [number, number, number, RuntimeInstallationId]>(
+              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY i.target_agent_id ORDER BY i.priority DESC,i.not_before_ms,i.created_at_ms) lane_rank FROM delivery_intents i JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.state IN ('pending','deferred') AND i.not_before_ms<=? AND (i.deadline_ms IS NULL OR i.deadline_ms>?) AND (i.lease_expires_at_ms IS NULL OR i.lease_expires_at_ms<=?) AND b.installation_id=?) WHERE lane_rank=1 ORDER BY priority DESC,not_before_ms,created_at_ms LIMIT 100",
             )
-            .all(now, now, now),
+            .all(now, now, now, required(this.context, "adapter context").installationId),
           row = rows.find((item) => !this.lanes.has(item.target_agent_id));
         if (!row) return null;
         if (row.state === DeliveryState.Deferred) {

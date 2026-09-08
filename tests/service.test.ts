@@ -2,7 +2,16 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installService, launchAgent, persistentEnvironment } from "../apps/acs/src/service";
+import {
+  codexAppServerLaunchAgent,
+  codexZshIntegration,
+  installCodexAppServer,
+  installService,
+  launchAgent,
+  persistentEnvironment,
+  removeCodexAppServers,
+  restartCodexAppServer,
+} from "../apps/acs/src/service";
 
 test("persistent runtime paths are absolute", () => {
   expect(
@@ -47,6 +56,95 @@ test("login service preserves executable arguments and the bridge socket environ
     expect(JSON.parse(decoded.stdout.toString())).toEqual(agent);
   }
 });
+
+test("Codex account service and zsh integration are account-scoped", () => {
+  const agent = codexAppServerLaunchAgent({
+    binary: "/opt/homebrew/bin/codex",
+    home: "/Users/example/.codex/accounts/personal",
+    socket: "/tmp/acs-501/codex-abc.sock",
+    label: "personal",
+    log: "/Users/example/Library/Logs/acs-codex-personal.log",
+  });
+  expect(agent.Label).toBe("local.acs.codex-app-server.personal");
+  expect(agent.ProgramArguments).toEqual([
+    "/opt/homebrew/bin/codex",
+    "app-server",
+    "--listen",
+    "unix:///tmp/acs-501/codex-abc.sock",
+  ]);
+  expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  expect(agent.Umask).toBe(0o77);
+  expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
+  const integration = codexZshIntegration("/Applications/acs");
+  expect(integration).toContain("--acs-standalone");
+  expect(integration).toContain("--remote requires --acs-standalone");
+  expect(integration).toContain("codex socket");
+});
+
+test("restarts only the selected Codex account service", () => {
+  const calls: string[] = [];
+  restartCodexAppServer({
+    label: "work",
+    uid: 501,
+    launchctl: (args) => {
+      calls.push(args.join(" "));
+      return { success: true, error: "" };
+    },
+  });
+  expect(calls).toEqual(["kickstart -k gui/501/local.acs.codex-app-server.work"]);
+});
+
+test.skipIf(process.platform !== "darwin")(
+  "rebootstraps changed Codex account services and removes retired accounts",
+  async () => {
+    const home = mkdtempSync(join(tmpdir(), "acs-codex-service-")),
+      actions: string[] = [];
+    let loaded = true;
+    const launchctl = (args: string[]) => {
+      actions.push(args.join(" "));
+      if (args[0] === "print") return { success: loaded, error: "not loaded" };
+      if (args[0] === "bootout") loaded = false;
+      if (args[0] === "bootstrap") loaded = true;
+      return { success: true, error: "" };
+    };
+    try {
+      const agentDirectory = join(home, "Library/LaunchAgents");
+      mkdirSync(agentDirectory, { recursive: true });
+      writeFileSync(join(agentDirectory, "local.acs.codex-app-server.retired.plist"), "retired");
+      await installCodexAppServer({
+        binary: "/usr/local/bin/codex",
+        home: "/tmp/codex",
+        socket: "/tmp/codex.sock",
+        label: "active",
+        userHome: home,
+        uid: 999,
+        launchctl,
+        socketOccupied: async () => false,
+      });
+      await installCodexAppServer({
+        binary: "/usr/local/bin/codex",
+        home: "/tmp/codex",
+        socket: "/tmp/changed.sock",
+        label: "active",
+        userHome: home,
+        uid: 999,
+        launchctl,
+        socketOccupied: async () => false,
+      });
+      removeCodexAppServers({ labels: ["active"], userHome: home, uid: 999, launchctl });
+      expect(actions).toContain("bootout gui/999/local.acs.codex-app-server.active");
+      expect(actions).toContain(
+        `bootstrap gui/999 ${agentDirectory}/local.acs.codex-app-server.active.plist`,
+      );
+      expect(actions).toContain("bootout gui/999/local.acs.codex-app-server.retired");
+      expect(existsSync(join(agentDirectory, "local.acs.codex-app-server.retired.plist"))).toBe(
+        false,
+      );
+    } finally {
+      rmSync(home, { recursive: true });
+    }
+  },
+);
 
 test.skipIf(process.platform !== "darwin")(
   "init migrates an unmanaged daemon and restarts an unchanged service",

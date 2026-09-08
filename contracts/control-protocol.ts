@@ -44,6 +44,7 @@ export interface ControlErrorData {
     | "UNATTESTED_CALLER"
     | "STALE_BINDING"
     | "RUNTIME_UNAVAILABLE"
+    | "RUNTIME_AMBIGUOUS"
     | "RUNTIME_INCOMPATIBLE"
     | "TASK_NOT_FOUND"
     | "TASK_STATE_CONFLICT"

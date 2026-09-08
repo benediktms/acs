@@ -4,7 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { controlCall } from "../../protocol-control/src/index";
-import { paths } from "../../config/src/index";
+import { loadConfig, paths } from "../../config/src/index";
 import { uuidV7 } from "../../domain/src/index";
 
 const deliveryStatus = "urn:agent-communications:delivery-status:v1",
@@ -163,11 +163,23 @@ export async function runMcp(port = 7432) {
     client: { name: "acs-mcp-codex", version: "0.1.0", instanceId: String(process.pid) },
     capabilities: {},
   });
+  const home = process.env.CODEX_HOME,
+    account = loadConfig().codex.accounts.find((candidate) => candidate.home === home);
+  if (!account) throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
+  const runtimes = await call("runtimes.list", { limit: 100 });
+  if (!isRecord(runtimes) || !Array.isArray(runtimes.runtimes))
+    throw new Error("RUNTIME_UNAVAILABLE");
+  const runtime = runtimes.runtimes.find(
+    (candidate) => isRecord(candidate) && candidate.label === account.label,
+  );
+  if (!isRecord(runtime) || typeof runtime.installationId !== "string")
+    throw new Error("RUNTIME_UNAVAILABLE");
+  const installationId = runtime.installationId;
   const server = new McpServer({ name: "acs", version: "0.1.0" });
   const evidence = (extra: unknown) => ({
       harnessId: "codex",
       bridge: "mcp",
-      metadata: hostMetadata(extra),
+      metadata: { ...hostMetadata(extra), acsInstallationId: installationId },
       bridgeInstanceId: String(process.pid),
     }),
     attest = async (extra: unknown) => {

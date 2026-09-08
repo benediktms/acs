@@ -24,6 +24,7 @@ import type {
   RuntimeSessionRef,
 } from "../../../contracts/runtime-adapter";
 import { paths } from "../../config/src/index";
+import type { CodexAccount } from "../../config/src/index";
 import { telemetry } from "../../observability/src/index";
 import type {
   AgentRow,
@@ -253,6 +254,56 @@ export class Store {
   }
   close() {
     this.db.close();
+  }
+  syncCodexInstallations(accounts: CodexAccount[]) {
+    const now = Date.now(),
+      configured = new Set(accounts.map((account) => account.label));
+    this.write(() => {
+      for (const account of accounts) {
+        const endpoint = JSON.stringify({
+          kind: "unix",
+          home: account.home,
+          socket: account.socket,
+        });
+        const installation = this.db
+          .query<{ id: RuntimeInstallationId }, [string]>(
+            "SELECT id FROM runtime_installations WHERE harness_id='codex' AND label=?",
+          )
+          .get(account.label);
+        if (installation)
+          this.db
+            .query(
+              "UPDATE runtime_installations SET endpoint_json=?,state='unknown',updated_at_ms=? WHERE id=?",
+            )
+            .run(endpoint, now, installation.id);
+        else
+          this.db
+            .query(
+              "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+            )
+            .run(
+              id("ins"),
+              "codex",
+              "codex.app-server",
+              account.label,
+              endpoint,
+              "{}",
+              "unknown",
+              now,
+              now,
+            );
+      }
+      this.db
+        .query(
+          "UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?))",
+        )
+        .run(now, JSON.stringify([...configured]));
+    });
+    return this.db
+      .query<{ id: RuntimeInstallationId; label: string }, []>(
+        "SELECT id,label FROM runtime_installations WHERE harness_id='codex'",
+      )
+      .all();
   }
   write<T>(operation: () => T): T {
     try {

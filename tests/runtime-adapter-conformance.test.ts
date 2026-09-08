@@ -29,8 +29,16 @@ test("Codex codec renders the delivery envelope as canonical JSON", () => {
   expect(item.output).toBe(canonical(envelope));
 });
 
+test("Codex runtime adapter rejects an app-server for another CODEX_HOME", async () => {
+  const fixture = await codexFixture();
+  const adapter = new CodexRuntimeAdapter(fixture.socketPath, 128, "/other-account");
+  await expect(adapter.start(fixture.context)).rejects.toThrow("home mismatch");
+  fixture.close();
+});
+
 type Fixture = {
   adapter: RuntimeAdapter;
+  socketPath: string;
   context: RuntimeAdapterContext;
   methods: string[];
   failNext(
@@ -571,6 +579,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
   });
   return {
     adapter: new CodexRuntimeAdapter(path),
+    socketPath: path,
     context: {
       installationId: "ins_conformance",
       instanceId: "conformance",
@@ -655,7 +664,7 @@ function response(
   loadedOnly = false,
   canAcceptDirectInput = true,
 ) {
-  if (method === "initialize") return { userAgent };
+  if (method === "initialize") return { userAgent, codexHome: "/tmp/codex" };
   if (method === "thread/loaded/list")
     return { data: sessionPages ? ["thread-1"] : loadedOnly ? ["thread-3"] : [], nextCursor: null };
   if (method === "thread/list") {

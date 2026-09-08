@@ -10,8 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Store } from "../packages/storage-sqlite/src/index";
+import { codexSocket as derivedCodexSocket } from "../packages/config/src/index";
 
 const roots: string[] = [],
   processes: Bun.Subprocess[] = [],
@@ -43,10 +44,11 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexSocket = join(root, "codex.sock"),
-    codexServer = fakeCodex(codexSocket),
+  const codexSocket = derivedCodexSocket("/tmp/codex"),
     bin = join(root, "bin"),
     codex = join(bin, "codex");
+  mkdirSync(dirname(codexSocket), { recursive: true });
+  const codexServer = fakeCodex(codexSocket);
   servers.push(codexServer);
   mkdirSync(bin);
   writeFileSync(codex, "#!/bin/sh\nprintf 'codex-cli 0.153.2\\n'\n");
@@ -57,8 +59,8 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     ACS_A2A_PORT: String(port),
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
     ACS_STORAGE_PATH: join(root, "acs.db"),
-    ACS_CODEX_SOCKET: codexSocket,
     ACS_CODEX_BINARY: codex,
+    CODEX_HOME: "/tmp/codex",
     ACS_LOG_FORMAT: "json",
     PATH: `${bin}:/usr/bin:/bin`,
   };
@@ -363,11 +365,11 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     }),
     diagnosis = record(JSON.parse(await new Response(doctor.stdout).text()));
   expect(await doctor.exited).toBe(0);
-  expect(record(diagnosis.phaseZero).sharedAppServer).toBe("ready (0 thread sampled)");
+  expect(array(record(diagnosis.codex).accounts)).toContainEqual(
+    expect.objectContaining({ label: "local", state: "ready", threadsSampled: 0 }),
+  );
   expect(diagnosis.codex).toMatchObject({
     installed: "codex-cli 0.153.2",
-    runningVersion: "0.153.2",
-    compatibility: "tested",
   });
   expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
@@ -519,7 +521,7 @@ async function readUntil(stream: ReadableStream<Uint8Array>, needle: string) {
 }
 
 function codexResponse(method: string, params: Record<string, unknown>) {
-  if (method === "initialize") return { userAgent: "codex-cli 0.153.2" };
+  if (method === "initialize") return { userAgent: "codex-cli 0.153.2", codexHome: "/tmp/codex" };
   if (method === "thread/list" || method === "thread/loaded/list")
     return { data: [], nextCursor: null };
   if (method === "thread/read") return { thread: codexThread(string(params.threadId)) };

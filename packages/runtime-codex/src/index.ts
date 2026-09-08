@@ -124,6 +124,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   constructor(
     readonly socketPath: string,
     readonly maxInFlightRequests = 128,
+    readonly expectedCodexHome?: string,
   ) {}
 
   async start(context: RuntimeAdapterContext) {
@@ -148,6 +149,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     };
     try {
       const initialized = await client.start();
+      if (this.expectedCodexHome && initialized.codexHome !== this.expectedCodexHome)
+        throw new Error(`Codex app-server home mismatch: expected ${this.expectedCodexHome}`);
       this.runtimeVersion = codexVersion(initialized.userAgent);
     } catch (error) {
       client.close();
