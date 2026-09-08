@@ -141,7 +141,10 @@ export function migrateCodexAccounts(
     const home = canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`);
     writeFileSync(
       path,
-      source.replace(/codex_home\s*=\s*["']auto["']/, `codex_home = ${JSON.stringify(home)}`),
+      source.replace(
+        /^(\s*codex_home\s*=\s*)["']auto["']/m,
+        (_, assignment: string) => `${assignment}${JSON.stringify(home)}`,
+      ),
       { mode: 0o600 },
     );
     return;

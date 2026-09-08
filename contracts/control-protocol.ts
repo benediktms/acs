@@ -380,6 +380,7 @@ export interface ControlMethodMap {
         readonly harnessId: string;
         readonly adapterId: string;
         readonly label: string;
+        readonly endpoint: JsonObject;
         readonly probe?: RuntimeProbeResult;
       }[];
       readonly nextCursor?: string;

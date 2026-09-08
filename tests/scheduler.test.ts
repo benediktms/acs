@@ -1072,6 +1072,77 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
+  test("routes cancellation to the installation that accepted started work after rebind", async () => {
+    const store = fixture(),
+      primary = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      secondary: `ins_${string}` = "ins_cancel_rebind";
+    if (!primary) throw new Error("missing runtime installation");
+    store.db
+      .query(
+        "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','cancel-rebind','{}','{}','unknown',?,?)",
+      )
+      .run(secondary, Date.now(), Date.now());
+    const agent = store.createAgent("cancel-started-rebind"),
+      requester = authenticated(store);
+    store.bind(agent.id, "cancel-started-old", {
+      installationId: primary.id,
+      deliveryPolicy: { interruptOnCancel: true },
+    });
+    const accepted = store.accept(
+        agent.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "cancel-started-rebind",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { mode: "direct" },
+      ),
+      canceled: string[] = [],
+      primaryAdapter = new FakeRuntimeAdapter();
+    primaryAdapter.deliver = async () => ({
+      outcome: "accepted",
+      acceptedAt: new Date().toISOString(),
+      execution: { opaqueId: "owned-before-rebind", relationship: "started" },
+      evidence: { scheme: "fake", value: "accepted" },
+    });
+    primaryAdapter.cancel = async (request) => {
+      canceled.push(request.execution.opaqueId);
+      return { outcome: "accepted", acceptedAt: new Date().toISOString() };
+    };
+    const primaryScheduler = new DeliveryScheduler(
+      store,
+      primaryAdapter,
+      "cancel-started-primary",
+      undefined,
+      primary.id,
+    );
+    await primaryScheduler.start();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
+    store.bind(agent.id, "cancel-started-new", {
+      installationId: secondary,
+      revokeExisting: true,
+    });
+    const secondaryScheduler = new DeliveryScheduler(
+      store,
+      new FakeRuntimeAdapter(),
+      "cancel-started-secondary",
+      undefined,
+      secondary,
+    );
+    await secondaryScheduler.start();
+    store.requestCancellation(accepted.task.id, requester.id);
+    await until(
+      () =>
+        store.task(accepted.task.id, requester.id)?.status?.state ===
+        A2ATaskState.TASK_STATE_CANCELED,
+    );
+    expect(canceled).toEqual(["owned-before-rebind"]);
+    await Promise.all([primaryScheduler.stop(), secondaryScheduler.stop()]);
+    store.close();
+  });
   test("task notifications do not select a second cancellation scheduler", async () => {
     const store = fixture(),
       primaryRow = store.db

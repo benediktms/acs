@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  canonicalCodexHome,
   codexSocket,
   defaultLocations,
   loadConfig,
@@ -120,8 +121,13 @@ describe("configuration", () => {
     writeFileSync(path, "[ runtimes . codex ]\naccounts = []\n");
     migrateCodexAccounts(path, { HOME: root });
     expect(readFileSync(path, "utf8")).toBe("[ runtimes . codex ]\naccounts = []\n");
-    writeFileSync(path, '[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = "auto"\n');
+    writeFileSync(
+      path,
+      '# codex_home = "auto"\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = "auto"\n',
+    );
     migrateCodexAccounts(path, { HOME: root, CODEX_HOME: join(root, "account") });
-    expect(readFileSync(path, "utf8")).not.toContain('codex_home = "auto"');
+    expect(readFileSync(path, "utf8")).toBe(
+      `# codex_home = "auto"\n[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = ${JSON.stringify(canonicalCodexHome(join(root, "account")))}\n`,
+    );
   });
 });

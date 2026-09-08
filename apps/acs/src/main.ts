@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { createConnection } from "node:net";
 import { handleA2A } from "../../../packages/protocol-a2a/src/index";
 import { controlCall, controlHandler } from "../../../packages/protocol-control/src/index";
-import { runMcp } from "../../../packages/bridge-mcp-codex/src/index";
+import { isConfiguredCodexRuntime, runMcp } from "../../../packages/bridge-mcp-codex/src/index";
 import { initFiles, Store } from "../../../packages/storage-sqlite/src/index";
 import {
   CodexCallerAttestor,
@@ -582,9 +582,8 @@ async function accountInstallationId(call: (method: string, params?: unknown) =>
   let cursor: string | undefined, installationId: unknown;
   do {
     const runtimes = recordValue(await call("runtimes.list", { limit: 100, cursor })),
-      runtime = arrayValue(runtimes.runtimes).find(
-        (item) =>
-          recordValue(item).harnessId === "codex" && recordValue(item).label === account.label,
+      runtime = arrayValue(runtimes.runtimes).find((item) =>
+        isConfiguredCodexRuntime(item, account.label, account.home),
       );
     installationId = runtime ? recordValue(runtime).installationId : undefined;
     cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;

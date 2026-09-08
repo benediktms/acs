@@ -49,7 +49,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexHome = canonicalCodexHome("/tmp/codex"),
+  const codexHome = canonicalCodexHome(join(root, "codex")),
     codexSocket = derivedCodexSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
     bin = join(root, "bin"),
     codex = join(bin, "codex");

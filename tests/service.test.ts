@@ -162,13 +162,37 @@ test.skipIf(!Bun.which("zsh"))(
 test("finds only the Codex listener owned by the configured account", () => {
   const inspect = {
     listenerPid: (socket: string) => (socket === "/tmp/account.sock" ? 42 : undefined),
-    processDetails: (pid: number) => `codex app-server CODEX_HOME=/tmp/account pid=${pid}`,
+    processDetails: (pid: number) => ({
+      executable: "/opt/codex",
+      environment: `pid=${pid} CODEX_HOME=/tmp/account`,
+    }),
   };
   expect(ownedCodexAppServerPid("/tmp/account", "/tmp/account.sock", inspect)).toBe(42);
   expect(ownedCodexAppServerPid("/tmp/account", "/tmp/other.sock", inspect)).toBeUndefined();
   expect(() => ownedCodexAppServerPid("/tmp/stale", "/tmp/account.sock", inspect)).toThrow(
     "CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED",
   );
+  for (const details of [
+    { executable: "/opt/not-codex", environment: "CODEX_HOME=/tmp/account" },
+    { executable: "/opt/codex", environment: "NOT_CODEX_HOME=/tmp/account" },
+    { executable: "/opt/codex", environment: "CODEX_HOME=/tmp/account-old" },
+    { executable: "/opt/codex", environment: "CODEX_HOME=/tmp/account with suffix B=2" },
+  ])
+    expect(() =>
+      ownedCodexAppServerPid("/tmp/account", "/tmp/account.sock", {
+        ...inspect,
+        processDetails: () => details,
+      }),
+    ).toThrow("CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED");
+  expect(
+    ownedCodexAppServerPid("/tmp/account with spaces", "/tmp/account.sock", {
+      ...inspect,
+      processDetails: () => ({
+        executable: "/opt/codex",
+        environment: "A=1 CODEX_HOME=/tmp/account with spaces B=2",
+      }),
+    }),
+  ).toBe(42);
 });
 
 test("enabled Codex with no accounts removes the zsh integration", () => {

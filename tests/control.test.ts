@@ -812,6 +812,7 @@ describe("control protocol", () => {
     const listedRuntime = record(runtimeItems[0]);
     expect(listedRuntime).toMatchObject({
       installationId: installation.id,
+      endpoint: {},
       probe: { state: "ready", capabilities: { directDelivery: true }, diagnostics: [] },
     });
     expect(listedRuntime.state).toBeUndefined();

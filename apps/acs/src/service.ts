@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 export function persistentEnvironment(environment: Record<string, string>, cwd = process.cwd()) {
   const normalized = { ...environment };
@@ -128,7 +128,10 @@ export function ownedCodexAppServerPid(
   const pid = inspect.listenerPid(socket);
   if (!pid) return undefined;
   const details = inspect.processDetails(pid);
-  if (!details.includes("codex") || !details.includes(`CODEX_HOME=${home}`))
+  if (
+    basename(details.executable) !== "codex" ||
+    !environmentHas(details.environment, "CODEX_HOME", home)
+  )
     throw new Error("CODEX_APP_SERVER_OWNERSHIP_UNVERIFIED");
   return pid;
 }
@@ -185,7 +188,26 @@ function listenerPid(socket: string) {
 }
 
 function processDetails(pid: number) {
-  return Bun.spawnSync(["/bin/ps", "eww", "-p", String(pid)]).stdout.toString();
+  const args = ["-p", String(pid), "-o", "command="],
+    command = Bun.spawnSync(["/bin/ps", "ww", ...args])
+      .stdout.toString()
+      .trim(),
+    withEnvironment = Bun.spawnSync(["/bin/ps", "eww", ...args])
+      .stdout.toString()
+      .trim();
+  return {
+    executable: Bun.spawnSync(["/bin/ps", "-p", String(pid), "-o", "comm="])
+      .stdout.toString()
+      .trim(),
+    environment: withEnvironment.startsWith(command)
+      ? withEnvironment.slice(command.length).trim()
+      : "",
+  };
+}
+
+function environmentHas(environment: string, name: string, value: string) {
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^| )${name}=${escaped}(?= [A-Za-z_][A-Za-z0-9_]*=|$)`).test(environment);
 }
 
 export async function installService(options: {
