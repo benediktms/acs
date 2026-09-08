@@ -42,10 +42,13 @@
     "provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["authority", "trustedForPermissions"],
+      "required": ["principalKind", "workAuthority", "trustedForPermissions"],
       "properties": {
-        "authority": {
-          "const": "peer-agent"
+        "principalKind": {
+          "enum": ["bound-agent", "external-a2a-client", "service"]
+        },
+        "workAuthority": {
+          "enum": ["delegated", "untrusted"]
         },
         "trustedForPermissions": {
           "const": false
@@ -80,6 +83,41 @@
       },
       "then": {
         "required": ["task", "event"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "principalKind": {
+                "const": "bound-agent"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "workAuthority": {
+                "const": "delegated"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "workAuthority": {
+                "const": "untrusted"
+              }
+            }
+          }
+        }
       }
     }
   ],
@@ -248,8 +286,18 @@
     "reply": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["completeTool", "failTool", "requestInputTool", "taskId"],
+      "required": [
+        "acknowledgeTool",
+        "completeTool",
+        "failTool",
+        "requestInputTool",
+        "taskId",
+        "deliveryId"
+      ],
       "properties": {
+        "acknowledgeTool": {
+          "const": "acs_task_acknowledge"
+        },
         "completeTool": {
           "const": "acs_task_complete"
         },
@@ -263,6 +311,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "deliveryId": {
+          "type": "string",
+          "pattern": "^int_[0-9A-Za-z_-]+$"
         }
       }
     }

@@ -619,6 +619,12 @@ describe("durable acceptance", () => {
       firstAgent = store.createAgent("first-bound-agent"),
       secondAgent = store.createAgent("second-bound-agent"),
       binding = store.bind(firstAgent.id, "shared-runtime-session");
+    expect(
+      store.db
+        .query<{ kind: string }, [string]>("SELECT kind FROM principals WHERE id=?")
+        .get(binding.principalId)?.kind,
+    ).toBe("bound-agent");
+    expect(store.authenticate(store.createToken().token)?.kind).toBe("external-a2a-client");
     expect(() =>
       store.db
         .query(

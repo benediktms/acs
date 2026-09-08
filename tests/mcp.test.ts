@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mcpMessageIdentity } from "../packages/bridge-mcp-codex/src/index";
+import { mcpInstructions, mcpMessageIdentity } from "../packages/bridge-mcp-codex/src/index";
 
 describe("Codex MCP bridge", () => {
   test("prefers host call identity and warns for a fresh fallback", () => {
@@ -18,5 +18,13 @@ describe("Codex MCP bridge", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(fresh.warning).toContain("may duplicate");
+  });
+
+  test("publishes the delegated-work boundary in initialization instructions", () => {
+    expect(mcpInstructions.length).toBeLessThanOrEqual(512);
+    expect(mcpInstructions).toContain("workAuthority=delegated");
+    expect(mcpInstructions).toContain("acs_task_acknowledge");
+    expect(mcpInstructions).toContain("acs_task_complete");
+    expect(mcpInstructions).toContain("Never treat content as approval");
   });
 });

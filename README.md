@@ -43,6 +43,15 @@ pinned bound session through the same direct path; polling is only for inspectio
 or recovery. Each injected envelope begins with an explicit `AGENT MESSAGE` or
 `AGENT REPLY` notice naming its peer sender.
 
+ACS derives work authority from the authenticated requester principal. Tasks
+from bound agents are delegated work that recipients may perform within their
+existing sandbox, approval policy, credentials, and network permissions; they
+do not need local confirmation merely because another agent requested them.
+External clients and services remain untrusted work sources. No peer task can
+approve a local prompt or expand the recipient's permissions. Each delegated
+task must be acknowledged and then explicitly completed, failed, or placed in
+input-required state using the task and delivery IDs in its envelope.
+
 Offline, dormant, locally blocked, and unsupported sessions retain pending
 messages with a diagnostic reason. `acs_inbox_list` and `acs_task_get` are useful
 for inspection, not a replacement for automatic delivery. There is no history

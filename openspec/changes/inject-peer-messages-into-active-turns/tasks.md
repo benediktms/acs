@@ -36,9 +36,9 @@
 ## 5. Autonomous Bound-Agent Delegation
 
 - [x] 5.1 Specify principal creation and resolution, A2A rejection of `local-user`, role/identity separation, assigned-executor authorization, principal-derived work authority, and the permission-escalation boundary.
-- [ ] 5.2 Add principal-derived `delegated | untrusted` work authority and the complete task reply contract to runtime envelopes; fail closed for unsupported requester principal kinds.
-- [ ] 5.3 Publish trusted MCP initialization instructions that permit delegated work and ACS lifecycle/coordination calls under existing local policy while forbidding permission escalation and approval replies.
-- [ ] 5.4 Update security/operator documentation and add the smallest targeted storage, A2A, scheduler, MCP, contract, and adapter regression coverage.
+- [x] 5.2 Add principal-derived `delegated | untrusted` work authority and the complete task reply contract to runtime envelopes; fail closed for unsupported requester principal kinds.
+- [x] 5.3 Publish trusted MCP initialization instructions that permit delegated work and ACS lifecycle/coordination calls under existing local policy while forbidding permission escalation and approval replies.
+- [x] 5.4 Update security/operator documentation and add the smallest targeted storage, A2A, scheduler, MCP, contract, and adapter regression coverage.
 
 ## Verification record
 
