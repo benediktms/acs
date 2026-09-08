@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   codexSocket,
   defaultLocations,
@@ -80,7 +80,9 @@ describe("configuration", () => {
     );
     const config = loadConfig(path);
     expect(config.codex.accounts.map((account) => account.label)).toEqual(["personal", "work"]);
-    expect(config.codex.accounts[0]?.socket).toBe(codexSocket(personal));
+    expect(config.codex.accounts[0]?.socket).toBe(
+      codexSocket(personal, dirname(dirname(defaultLocations().runtimeSocket))),
+    );
     writeFileSync(
       path,
       `[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${personal}"\n[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "${work}"\n`,
