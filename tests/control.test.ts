@@ -644,6 +644,39 @@ describe("control protocol", () => {
       updatedAt: expect.any(String),
     });
     expect(record(completed.task).status).toBeUndefined();
+    const acknowledgementRequired = store.accept(
+        required(store.agent("backend"), "backend").id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "acknowledgement-required",
+          role: Role.ROLE_USER,
+          parts: [{ text: "work" }],
+        }),
+        {},
+      ),
+      mutation = (method: string, parameters: Record<string, unknown> = {}) =>
+        call(
+          method,
+          { evidence: callerEvidence, taskId: acknowledgementRequired.task.id, ...parameters },
+          "1",
+          bridgeToken,
+        );
+    expect(
+      await (await mutation("executor.task.fail", { summary: "failed" })).json(),
+    ).toMatchObject({ error: { data: { code: "TASK_STATE_CONFLICT" } } });
+    expect(
+      await (await mutation("executor.task.requestInput", { question: "need input" })).json(),
+    ).toMatchObject({ error: { data: { code: "TASK_STATE_CONFLICT" } } });
+    expect(store.task(acknowledgementRequired.task.id, principal.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_SUBMITTED,
+    );
+    await mutation("executor.task.acknowledge", { deliveryId: acknowledgementRequired.deliveryId });
+    expect(
+      await (await mutation("executor.task.requestInput", { question: "need input" })).json(),
+    ).toMatchObject({ result: { task: { state: "input-required" } } });
+    expect(
+      await (await mutation("executor.task.fail", { summary: "failed" })).json(),
+    ).toMatchObject({ result: { task: { state: "failed" } } });
     const firstMessage = store.accept(
         required(store.agent("backend"), "backend").id,
         principal.id,
