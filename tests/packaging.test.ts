@@ -363,6 +363,19 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     cancellationRequested: true,
   });
 
+  const doctorStore = new Store({
+    data: join(root, "acs.db"),
+    runtime: join(root, "control.sock"),
+    token: join(root, "control.token"),
+    bridgeToken: join(root, "bridge.token"),
+    secret: join(root, "secret.key"),
+  });
+  const insertRuntime = doctorStore.db.query(
+    "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?, '{}','{}','offline',?,?)",
+  );
+  insertRuntime.run("ins_retired", "codex", "codex.app-server", "retired", Date.now(), Date.now());
+  insertRuntime.run("ins_foreign", "foreign", "foreign.adapter", "local", Date.now(), Date.now());
+  doctorStore.close();
   const doctor = Bun.spawn([binary, "codex", "doctor"], {
       env,
       stdout: "pipe",
@@ -373,6 +386,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   expect(array(record(diagnosis.codex).accounts)).toContainEqual(
     expect.objectContaining({ label: "local", state: "ready", threadsSampled: 0 }),
   );
+  expect(array(record(diagnosis.codex).accounts)).toHaveLength(1);
   expect(diagnosis.codex).toMatchObject({
     installed: "codex-cli 0.153.2",
   });

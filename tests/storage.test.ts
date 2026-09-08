@@ -57,9 +57,7 @@ test("preserves removed Codex installations as offline records", () => {
   store.db
     .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
     .run(binding.id);
-  store.syncCodexInstallations([
-    { label: "personal", home: "/accounts/personal", socket: "/tmp/personal.sock" },
-  ]);
+  store.syncCodexInstallations([]);
   expect(
     store.db
       .query<{ state: string }, [string]>(

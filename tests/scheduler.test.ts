@@ -38,6 +38,39 @@ describe("delivery scheduler", () => {
     capacity.release();
     expect(capacity.tryAcquire()).toBe(true);
   });
+  test("releases shared delivery capacity when leasing fails", async () => {
+    const store = fixture(),
+      agent = store.createAgent("lease-failure"),
+      requester = authenticated(store),
+      capacity = new DeliveryConcurrency(1),
+      scheduler = new DeliveryScheduler(
+        store,
+        new FakeRuntimeAdapter(),
+        "lease-failure",
+        undefined,
+        undefined,
+        capacity,
+      );
+    store.bind(agent.id, "lease-failure-thread");
+    store.accept(
+      agent.id,
+      requester.id,
+      Message.fromJSON({
+        messageId: "lease-failure",
+        role: "ROLE_USER",
+        parts: [{ text: "work" }],
+      }),
+      {},
+    );
+    store.db.exec(
+      "CREATE TRIGGER fail_lease BEFORE UPDATE OF state ON delivery_intents WHEN NEW.state='leased' BEGIN SELECT RAISE(ABORT,'lease failed'); END",
+    );
+    await scheduler.start();
+    await scheduler.stop();
+    await expect(scheduler["tick"]()).rejects.toThrow("lease failed");
+    expect(capacity.tryAcquire()).toBe(true);
+    store.close();
+  });
   test("isolates delivery scheduling by runtime installation", async () => {
     const store = fixture(),
       primary = store.db
@@ -874,10 +907,12 @@ describe("delivery scheduler", () => {
       .run(work, Date.now(), Date.now());
     const requester = authenticated(store),
       follow = store.createAgent("follow-rebind"),
+      followCancel = store.createAgent("follow-cancel-rebind"),
       strict = store.createAgent("strict-rebind"),
       expired = store.createAgent("expired-target"),
       disabled = store.createAgent("disabled-target"),
       followOld = store.bind(follow.id, "follow-old"),
+      followCancelOld = store.bind(followCancel.id, "follow-cancel-old"),
       strictOld = store.bind(strict.id, "strict-old", { continuityPolicy: "strict" });
     store.bind(expired.id, "expired-thread");
     store.bind(disabled.id, "disabled-thread");
@@ -891,6 +926,16 @@ describe("delivery scheduler", () => {
         strict.id,
         requester.id,
         Message.fromJSON({ messageId: "strict", role: "ROLE_USER", parts: [{ text: "work" }] }),
+        { mode: "direct" },
+      ),
+      followCancelDelivery = store.accept(
+        followCancel.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "follow-cancel",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
         { mode: "direct" },
       ),
       expiredDelivery = store.accept(
@@ -909,9 +954,20 @@ describe("delivery scheduler", () => {
       "UPDATE delivery_intents SET state='deferred',state_reason='offline',not_before_ms=?,pinned_binding_id=?,pinned_binding_epoch=? WHERE id=?",
     );
     pin.run(Date.now() + 60_000, followOld.id, followOld.epoch, followDelivery.deliveryId);
+    pin.run(
+      Date.now() + 60_000,
+      followCancelOld.id,
+      followCancelOld.epoch,
+      followCancelDelivery.deliveryId,
+    );
     pin.run(Date.now() + 60_000, strictOld.id, strictOld.epoch, strictDelivery.deliveryId);
     store.bind(follow.id, "follow-new", { revokeExisting: true, installationId: work });
+    store.bind(followCancel.id, "follow-cancel-new", {
+      revokeExisting: true,
+      installationId: work,
+    });
     store.bind(strict.id, "strict-new", { revokeExisting: true, installationId: work });
+    store.requestCancellation(followCancelDelivery.task.id, requester.id);
     store.updateAgent(disabled.id, { enabled: false });
     const sessions: string[] = [],
       adapter = new FakeRuntimeAdapter();
@@ -932,7 +988,14 @@ describe("delivery scheduler", () => {
         primary.id,
       ),
       workScheduler = new DeliveryScheduler(store, adapter, "continuity-work", undefined, work);
-    await Promise.all([primaryScheduler.start(), workScheduler.start()]);
+    await workScheduler.start();
+    await until(
+      () =>
+        deliveryState(store, followDelivery.deliveryId)?.state === "accepted" &&
+        store.task(followCancelDelivery.task.id, requester.id)?.status?.state ===
+          A2ATaskState.TASK_STATE_CANCELED,
+    );
+    await primaryScheduler.start();
     await Bun.sleep(400);
     expect(sessions).toEqual(["follow-new"]);
     expect(deliveryState(store, followDelivery.deliveryId)).toEqual({
@@ -943,6 +1006,9 @@ describe("delivery scheduler", () => {
       state: "failed-terminal",
       state_reason: "strict-binding-revoked",
     });
+    expect(store.task(followCancelDelivery.task.id, requester.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_CANCELED,
+    );
     expect(deliveryState(store, expiredDelivery.deliveryId)).toEqual({
       state: "failed-terminal",
       state_reason: "deadline-expired",

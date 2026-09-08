@@ -81,7 +81,11 @@ async function main() {
           });
           installMcp(account.home);
         }
-        installCodexZshIntegration(required(process.env.HOME, "HOME"), selfCommand());
+        installCodexZshIntegration(
+          required(process.env.HOME, "HOME"),
+          selfCommand(),
+          Bun.which(settings.codex.binary) ?? settings.codex.binary,
+        );
       } else removeCodexZshIntegration(required(process.env.HOME, "HOME"));
       await waitForDaemon();
       console.log("ACS login service and global Codex MCP are ready");
@@ -431,7 +435,9 @@ async function daemon() {
   const stopped = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  const installations = store.syncCodexInstallations(settings.codex.accounts),
+  const installations = store.syncCodexInstallations(
+      settings.codex.enabled ? settings.codex.accounts : [],
+    ),
     adapters = new Map<`ins_${string}`, CodexRuntimeAdapter>(),
     callerAttestors = new Map<`ins_${string}`, CodexCallerAttestor>();
   if (settings.codex.enabled)
@@ -656,33 +662,44 @@ async function doctor() {
       runtimes.push(...arrayValue(page.runtimes));
       cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
     } while (cursor);
+    const configuredLabels = new Set(settings.codex.accounts.map((account) => account.label));
     accountHealth = await Promise.all(
-      runtimes.map(async (runtime) => {
-        const value = recordValue(runtime),
-          installationId = required(value.installationId, "installation ID");
-        try {
-          const probe = recordValue(
-              recordValue(await call("runtimes.probe", { installationId })).probe,
-            ),
-            sessions = recordValue(
-              await call("runtimes.sessions.list", { installationId, limit: 1 }),
-            ).sessions,
-            capabilities = recordValue(probe.capabilities);
-          directDelivery ||= capabilities.directDelivery === true;
-          return {
-            label: value.label,
-            installationId,
-            socket: settings.codex.accounts.find((account) => account.label === value.label)
-              ?.socket,
-            state: probe.state,
-            version: probe.runtimeVersion,
-            directDelivery: capabilities.directDelivery === true,
-            threadsSampled: Array.isArray(sessions) ? sessions.length : 0,
-          };
-        } catch (error) {
-          return { label: value.label, installationId, state: "unavailable", error: String(error) };
-        }
-      }),
+      runtimes
+        .filter((runtime) => {
+          const value = recordValue(runtime);
+          return value.harnessId === "codex" && configuredLabels.has(String(value.label));
+        })
+        .map(async (runtime) => {
+          const value = recordValue(runtime),
+            installationId = required(value.installationId, "installation ID");
+          try {
+            const probe = recordValue(
+                recordValue(await call("runtimes.probe", { installationId })).probe,
+              ),
+              sessions = recordValue(
+                await call("runtimes.sessions.list", { installationId, limit: 1 }),
+              ).sessions,
+              capabilities = recordValue(probe.capabilities);
+            directDelivery ||= capabilities.directDelivery === true;
+            return {
+              label: value.label,
+              installationId,
+              socket: settings.codex.accounts.find((account) => account.label === value.label)
+                ?.socket,
+              state: probe.state,
+              version: probe.runtimeVersion,
+              directDelivery: capabilities.directDelivery === true,
+              threadsSampled: Array.isArray(sessions) ? sessions.length : 0,
+            };
+          } catch (error) {
+            return {
+              label: value.label,
+              installationId,
+              state: "unavailable",
+              error: String(error),
+            };
+          }
+        }),
     );
   } catch (error) {
     accountHealth = [{ state: "unavailable", error: String(error) }];

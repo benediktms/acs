@@ -163,7 +163,13 @@ export class DeliveryScheduler {
       if (await this.cancelOne()) return;
       while (this.inFlight.size < this.options.concurrency) {
         if (this.sharedConcurrency && !this.sharedConcurrency.tryAcquire()) break;
-        const intent = this.lease();
+        let intent: DeliveryIntentRow | null;
+        try {
+          intent = this.lease();
+        } catch (error) {
+          this.sharedConcurrency?.release();
+          throw error;
+        }
         if (!intent) {
           this.sharedConcurrency?.release();
           break;
@@ -327,7 +333,7 @@ export class DeliveryScheduler {
         },
         [RuntimeInstallationId]
       >(
-        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.task_id=t.id AND coalesce(p.installation_id,b.installation_id)=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
+        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.task_id=t.id AND CASE WHEN p.status='active' OR p.continuity_policy='strict' THEN p.installation_id ELSE b.installation_id END=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
       )
       .get(required(this.context, "adapter context").installationId);
     if (!task) return false;

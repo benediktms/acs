@@ -190,6 +190,7 @@ export interface ControlMethodMap {
       readonly status: "ok" | "degraded";
       readonly database: "ok" | "degraded";
       readonly adapters: readonly {
+        readonly installationId: string;
         readonly adapterId: string;
         readonly status: "ready" | "degraded" | "unavailable" | "incompatible";
       }[];

@@ -83,7 +83,10 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
-  const integration = codexZshIntegration(["/Applications/acs", "/work/acs/main.ts"]);
+  const integration = codexZshIntegration(
+    ["/Applications/acs", "/work/acs/main.ts"],
+    "/Applications/Codex O'Brien/codex",
+  );
   expect(integration).toContain("--acs-standalone");
   expect(integration).toContain("--remote requires --acs-standalone");
   expect(integration).toContain("--remote=*)");
@@ -93,6 +96,8 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(integration).toContain("-C|--cd|-m|--model");
   expect(integration).toContain("session_command");
   expect(integration).toContain("exec|e|review|login|logout");
+  expect(integration).toContain(`local codex_bin='/Applications/Codex O'\\''Brien/codex'`);
+  expect(integration).not.toContain("command codex");
 });
 
 test.skipIf(!Bun.which("zsh"))(
@@ -101,7 +106,7 @@ test.skipIf(!Bun.which("zsh"))(
     const root = mkdtempSync(join(tmpdir(), "acs-zsh-")),
       bin = join(root, "bin"),
       acs = join(bin, "acs"),
-      codex = join(bin, "codex"),
+      codex = join(root, "Codex Binary"),
       output = join(root, "args");
     mkdirSync(bin);
     writeFileSync(acs, "#!/bin/sh\nprintf '/tmp/acs.sock\\n'\n");
@@ -110,15 +115,21 @@ test.skipIf(!Bun.which("zsh"))(
     chmodSync(codex, 0o755);
     try {
       const managed = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs])}\ncodex 'fix --remote tests'`],
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex 'fix --remote tests'`],
         { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
       );
       expect(managed.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
         "--app-server-url\nunix:///tmp/acs.sock\nfix --remote tests\n",
       );
+      const direct = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex exec test`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(direct.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
       const remote = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs])}\ncodex --remote=unix:///tmp/other`],
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other`],
         { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
       );
       expect(remote.exitCode).toBe(2);
@@ -126,7 +137,7 @@ test.skipIf(!Bun.which("zsh"))(
         [
           "zsh",
           "-fc",
-          `${codexZshIntegration([acs])}\ncodex --remote=unix:///tmp/other --acs-standalone`,
+          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other --acs-standalone`,
         ],
         { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
       );
