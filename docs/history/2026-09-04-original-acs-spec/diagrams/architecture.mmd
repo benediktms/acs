@@ -1,0 +1,38 @@
+flowchart TB
+  subgraph Codex["Independent Codex sessions"]
+    A["Codex thread A\n@architect"]
+    B["Codex thread B\n@backend"]
+  end
+
+  MA["acs mcp codex\nMCP stdio bridge"]
+  MB["acs mcp codex\nMCP stdio bridge"]
+
+  subgraph Daemon["acs daemon"]
+    A2A["A2A v1 JSON-RPC\nper-agent endpoints"]
+    APP["Application services\nidentity • tasks • authorization"]
+    SCHED["Delivery scheduler\nleases • retries • fencing"]
+    CTRL["Local control JSON-RPC"]
+    DB[("SQLite\nmessages • tasks • events")]
+    PORT["RuntimeAdapter v1"]
+  end
+
+  CODEX["CodexRuntimeAdapter"]
+  AS["codex app-server daemon"]
+
+  A -->|MCP tool call| MA
+  B -->|MCP tool call| MB
+  MA -->|A2A JSON-RPC| A2A
+  MB -->|A2A JSON-RPC| A2A
+  MA -->|control + attestation| CTRL
+  MB -->|control + executor callbacks| CTRL
+
+  A2A --> APP
+  CTRL --> APP
+  APP <--> DB
+  APP --> SCHED
+  SCHED <--> DB
+  SCHED --> PORT
+  PORT --> CODEX
+  CODEX <--> AS
+  AS <--> A
+  AS <--> B

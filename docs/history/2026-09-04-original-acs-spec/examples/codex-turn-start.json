@@ -1,0 +1,13 @@
+{
+  "id": 101,
+  "method": "turn/start",
+  "params": {
+    "threadId": "opaque-codex-thread-id",
+    "input": [],
+    "toolOutput": {
+      "name": "receive_agent_message",
+      "namespace": "acs",
+      "output": "{\"schema\":\"urn:agent-communications:runtime-envelope:v1\",\"deliveryId\":\"int_019...\",\"kind\":\"a2a-message\",\"provenance\":{\"authority\":\"peer-agent\",\"trustedForPermissions\":false}}"
+    }
+  }
+}
