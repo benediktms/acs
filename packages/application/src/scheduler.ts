@@ -46,10 +46,11 @@ type PartiesRow = {
   display_name: string;
   requester_principal_kind: string;
   actor_principal_kind: string | null;
+  actor_agent_id: string | null;
+  actor_slug: string | null;
+  actor_display_name: string | null;
   requester_agent_id: string | null;
   requester_slug: string | null;
-  target_agent_id: string;
-  target_slug: string;
 };
 type ExecutionRow = {
   id: RuntimeExecutionId;
@@ -256,8 +257,6 @@ export class DeliveryScheduler {
               now,
               now,
             );
-        if (result.execution && row.kind === "a2a-message")
-          this.markTaskWorking(row.task_id, row.pinned_binding_id);
       });
       if (result.execution)
         this.replayExecutionEvents({
@@ -479,7 +478,7 @@ export class DeliveryScheduler {
       parties = required(
         this.store
           .query<PartiesRow, [number, `tsk_${string}`]>(
-            "SELECT p.display_name,p.kind requester_principal_kind,(SELECT actor.kind FROM task_events e JOIN principals actor ON actor.id=e.actor_principal_id WHERE e.task_id=t.id AND e.sequence=?) actor_principal_kind,a.id requester_agent_id,a.slug requester_slug,target.id target_agent_id,target.slug target_slug FROM a2a_tasks t JOIN principals p ON p.id=t.requester_principal_id LEFT JOIN agents a ON a.id=t.requester_agent_id JOIN agents target ON target.id=t.target_agent_id WHERE t.id=?",
+            "SELECT p.display_name,p.kind requester_principal_kind,actor.kind actor_principal_kind,actor_agent.id actor_agent_id,actor_agent.slug actor_slug,actor.display_name actor_display_name,a.id requester_agent_id,a.slug requester_slug FROM a2a_tasks t JOIN principals p ON p.id=t.requester_principal_id LEFT JOIN agents a ON a.id=t.requester_agent_id LEFT JOIN task_events e ON e.task_id=t.id AND e.sequence=? LEFT JOIN principals actor ON actor.id=e.actor_principal_id LEFT JOIN agents actor_agent ON actor_agent.id=actor.agent_id WHERE t.id=?",
           )
           .get(notification && "sequence" in payload ? payload.sequence : -1, intent.task_id),
         "delivery parties",
@@ -528,7 +527,7 @@ export class DeliveryScheduler {
     });
     if (!startedAttempt) return;
     const senderName = notification
-      ? parties.target_slug
+      ? (parties.actor_slug ?? parties.actor_display_name ?? "external")
       : (parties.requester_slug ?? parties.display_name);
     const envelope: RuntimeDeliveryEnvelopeV1 = {
       agentNotice: `${notification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${notification ? "" : " Follow the reply contract; a final response alone does not complete this task."}`,
@@ -536,7 +535,7 @@ export class DeliveryScheduler {
       deliveryId: intent.id,
       kind: notification ? "a2a-task-event" : "a2a-message",
       from: notification
-        ? { agentId: parties.target_agent_id, name: parties.target_slug }
+        ? { agentId: parties.actor_agent_id ?? "external", name: senderName }
         : {
             agentId: parties.requester_agent_id ?? "external",
             name: senderName,
@@ -631,7 +630,6 @@ export class DeliveryScheduler {
               completed,
               completed,
             );
-        if (execution && !notification) this.markTaskWorking(intent.task_id, binding.id);
       });
       if (execution)
         this.replayExecutionEvents({
@@ -913,23 +911,6 @@ export class DeliveryScheduler {
         token ?? null,
         attempt,
       );
-  }
-  private markTaskWorking(taskId: `tsk_${string}`, bindingId: BindingId) {
-    const task = this.store
-      .query<{ state: TaskState }, [`tsk_${string}`]>("SELECT state FROM a2a_tasks WHERE id=?")
-      .get(taskId);
-    if (
-      !task ||
-      ![TaskState.Submitted, TaskState.InputRequired, TaskState.AuthRequired].includes(task.state)
-    )
-      return;
-    const principal = required(
-      this.store
-        .query<{ id: `prn_${string}` }, [BindingId]>("SELECT id FROM principals WHERE binding_id=?")
-        .get(bindingId),
-      "binding principal",
-    );
-    this.store.setTaskState(taskId, principal.id, TaskState.Working);
   }
   private async observe() {
     for await (const event of this.adapter.observe(this.abort.signal)) {

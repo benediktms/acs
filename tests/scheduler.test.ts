@@ -194,7 +194,7 @@ describe("delivery scheduler", () => {
       );
       for (const task of tasks)
         expect(store.task(task.task.id, requester.id)?.status?.state).toBe(
-          A2ATaskState.TASK_STATE_WORKING,
+          A2ATaskState.TASK_STATE_SUBMITTED,
         );
       const first = tasks[0],
         second = tasks[1];
@@ -207,6 +207,7 @@ describe("delivery scheduler", () => {
           A2ATaskState.TASK_STATE_CANCELED,
       );
       expect(interrupts).toBe(0);
+      store.acknowledgeTask(second.task.id, binding.principalId, second.deliveryId);
       store.completeTask(second.task.id, binding.principalId, "explicit result for b", []);
       expect(store.task(second.task.id, requester.id)?.status?.state).toBe(
         A2ATaskState.TASK_STATE_COMPLETED,
@@ -310,7 +311,7 @@ describe("delivery scheduler", () => {
     const store = fixture(),
       agent = store.createAgent("backend"),
       principal = authenticated(store);
-    store.bind(agent.id, "thread-1", {
+    const binding = store.bind(agent.id, "thread-1", {
       deliveryPolicy: { interruptOnCancel: false },
     });
     const accepted = store.accept(
@@ -347,6 +348,7 @@ describe("delivery scheduler", () => {
         .get(accepted.deliveryId),
     ).toEqual({ state: "accepted", attempt_count: 1 });
     expect(store.task(accepted.task.id, principal.id)).toMatchObject({
+      status: { state: A2ATaskState.TASK_STATE_SUBMITTED },
       metadata: {
         "urn:agent-communications:delivery-status:v1": {
           state: "accepted",
@@ -355,6 +357,10 @@ describe("delivery scheduler", () => {
         },
       },
     });
+    store.acknowledgeTask(accepted.task.id, binding.principalId, accepted.deliveryId);
+    expect(store.task(accepted.task.id, principal.id)?.status?.state).toBe(
+      A2ATaskState.TASK_STATE_WORKING,
+    );
     expect(delivered).toMatchObject({
       traceContext: {
         traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
@@ -431,7 +437,7 @@ describe("delivery scheduler", () => {
     await Bun.sleep(400);
     expect(store.task(accepted.task.id, principal.id)).toMatchObject({
       status: {
-        state: A2ATaskState.TASK_STATE_WORKING,
+        state: A2ATaskState.TASK_STATE_SUBMITTED,
       },
     });
     await scheduler.stop();
@@ -1436,7 +1442,7 @@ describe("delivery scheduler", () => {
       availability: "idle",
       execution_id_matches: 1,
       execution_state: "awaiting-local-input",
-      task_state: "working",
+      task_state: "submitted",
     });
     await scheduler.stop();
     store.close();
@@ -1585,6 +1591,54 @@ describe("delivery scheduler", () => {
       store.close();
     }
   });
+  test("uses the requester as the sender of a cancellation notification", async () => {
+    const store = fixture(),
+      sender = store.createAgent("cancellation-sender"),
+      target = store.createAgent("cancellation-target"),
+      senderBinding = store.bind(sender.id, "cancellation-sender-thread"),
+      accepted = store.accept(
+        target.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "cancellation-request",
+          role: "ROLE_USER",
+          parts: [{ text: "ping" }],
+        }),
+        { notifyOn: ["terminal"] },
+      ),
+      delivered = Promise.withResolvers<RuntimeDeliveryRequest>(),
+      adapter = new FakeRuntimeAdapter();
+    store.bind(target.id, "cancellation-target-thread");
+    store.db
+      .query("UPDATE delivery_intents SET state='accepted' WHERE id=?")
+      .run(accepted.deliveryId);
+    store.requestCancellation(accepted.task.id, senderBinding.principalId);
+    adapter.deliver = async (request) => {
+      delivered.resolve(request);
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        evidence: { scheme: "fake", value: "canceled" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "cancellation-notification");
+    try {
+      await scheduler.start();
+      expect(await delivered.promise).toMatchObject({
+        envelope: {
+          from: { agentId: sender.id, name: "cancellation-sender" },
+          event: { state: "canceled" },
+          provenance: {
+            principalKind: "bound-agent",
+            workAuthority: "delegated",
+          },
+        },
+      });
+    } finally {
+      await scheduler.stop();
+      store.close();
+    }
+  });
   test("finalizes the runtime execution without replacing an explicit task result", async () => {
     const store = fixture(),
       agent = store.createAgent("explicit-result-target"),
@@ -1646,6 +1700,7 @@ describe("delivery scheduler", () => {
       .query<{ id: `prn_${string}` }, [string]>("SELECT id FROM principals WHERE binding_id=?")
       .get(binding.id);
     if (!assignee) throw new Error("missing assignee principal");
+    store.acknowledgeTask(accepted.task.id, assignee.id, accepted.deliveryId);
     store.setTaskState(accepted.task.id, assignee.id, TaskState.Completed, "explicit result");
     completeRuntime?.();
     await Bun.sleep(50);
@@ -1705,7 +1760,7 @@ describe("delivery scheduler", () => {
       store.db.query("SELECT state FROM delivery_intents WHERE id=?").get(accepted.deliveryId),
     ).toEqual({ state: "accepted" });
     expect(store.db.query("SELECT state FROM a2a_tasks WHERE id=?").get(accepted.task.id)).toEqual({
-      state: "working",
+      state: "submitted",
     });
     await scheduler.stop();
     store.close();
