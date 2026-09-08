@@ -137,7 +137,7 @@ export function ownedCodexAppServerPid(
 }
 
 export function codexZshIntegration(command: readonly string[], codexBinary = "codex") {
-  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@")\n  local codex_bin=${shellQuote(codexBinary)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1 standalone=false remote=false\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      --acs-standalone) standalone=true; (( index += 1 ));;\n      --remote) remote=true; (( index += 2 ));;\n      --remote=*) remote=true; (( index += 1 ));;\n      -C|-c|-m|-p|-s|-a|--cd|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) (( index += 2 ));;\n      -*) (( index += 1 ));;\n      *) session_command="\${argv[index]}"; break;;\n    esac\n  done\n  if $standalone; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command "$codex_bin" "\${(@)@:#--acs-standalone}"; return\n  fi\n  if $remote; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  case "$session_command" in exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|migrate-rollouts|cloud|exec-server|features|help) command "$codex_bin" "$@";;\n  *)\n    local home="\${CODEX_HOME:-$HOME/.codex}" socket\n    socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n    command "$codex_bin" --app-server-url "unix://$socket" "$@";; esac\n}\n`;
+  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@") routed_argv=()\n  local codex_bin=${shellQuote(codexBinary)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1 standalone=false remote=false direct=false\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      --acs-standalone) standalone=true; (( index += 1 ));;\n      --remote) remote=true; routed_argv+=("\${argv[index]}" "\${argv[index + 1]}"); (( index += 2 ));;\n      --remote=*) remote=true; routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n      -C|-c|-m|-p|-s|-a|--cd|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) routed_argv+=("\${argv[index]}" "\${argv[index + 1]}"); (( index += 2 ));;\n      --) routed_argv+=("\${argv[@]:$index}"); break;;\n      -*) routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n      *)\n        if [[ -z "$session_command" ]]; then\n          session_command="\${argv[index]}"\n          case "$session_command" in exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|migrate-rollouts|cloud|exec-server|features|help) direct=true; routed_argv+=("\${argv[@]:$index}"); break;; esac\n        fi\n        routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n    esac\n  done\n  if $standalone; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command "$codex_bin" "\${routed_argv[@]}"; return\n  fi\n  if $remote; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  if $direct; then command "$codex_bin" "$@"; return; fi\n  local home="\${CODEX_HOME:-$HOME/.codex}" socket\n  socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n  command "$codex_bin" --app-server-url "unix://$socket" "$@"\n}\n`;
 }
 
 export function installCodexZshIntegration(
@@ -180,10 +180,12 @@ function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+export function listenerPidCommand(socket: string) {
+  return ["/usr/sbin/lsof", "-nP", "-t", "-a", "-U", socket];
+}
+
 function listenerPid(socket: string) {
-  const value = Bun.spawnSync(["/usr/sbin/lsof", "-nP", "-t", "-U", socket])
-    .stdout.toString()
-    .trim();
+  const value = Bun.spawnSync(listenerPidCommand(socket)).stdout.toString().trim();
   return /^\d+$/.test(value) ? Number(value) : undefined;
 }
 

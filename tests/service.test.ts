@@ -16,6 +16,7 @@ import {
   installCodexAppServer,
   installService,
   launchAgent,
+  listenerPidCommand,
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
@@ -96,6 +97,7 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(integration).toContain("codex socket");
   expect(integration).toContain('"${acs_bin[@]}"');
   expect(integration).toContain("-C|-c|-m|-p|-s|-a|--cd|--model");
+  expect(integration).toContain("routed_argv");
   expect(integration).toContain("session_command");
   expect(integration).toContain("exec|e|review|login|logout");
   expect(integration).toContain(`local codex_bin='/Applications/Codex O'\\''Brien/codex'`);
@@ -130,6 +132,54 @@ test.skipIf(!Bun.which("zsh"))(
       );
       expect(direct.exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
+      const directStandalone = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone exec task`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(directStandalone.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("exec\ntask\n");
+      const directRemote = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other exec task`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(directRemote.exitCode).toBe(2);
+      const standaloneTerminator = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone -- '--remote'`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(standaloneTerminator.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("--\n--remote\n");
+      const resumeStandalone = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex resume --acs-standalone`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(resumeStandalone.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe("resume\n");
+      const resumeRemote = Bun.spawnSync(
+        [
+          "zsh",
+          "-fc",
+          `${codexZshIntegration([acs], codex)}\ncodex resume --remote=unix:///tmp/other`,
+        ],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(resumeRemote.exitCode).toBe(2);
+      const optionValue = Bun.spawnSync(
+        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex -c --acs-standalone resume`],
+        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
+      );
+      expect(optionValue.exitCode).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(
+        "--app-server-url\nunix:///tmp/acs.sock\n-c\n--acs-standalone\nresume\n",
+      );
       for (const option of ["-c", "-p", "-s", "-a"]) {
         const shortOption = Bun.spawnSync(
           ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex ${option} value exec test`],
@@ -193,6 +243,17 @@ test("finds only the Codex listener owned by the configured account", () => {
       }),
     }),
   ).toBe(42);
+});
+
+test("intersects lsof's Unix-socket and path selectors", () => {
+  expect(listenerPidCommand("/tmp/account.sock")).toEqual([
+    "/usr/sbin/lsof",
+    "-nP",
+    "-t",
+    "-a",
+    "-U",
+    "/tmp/account.sock",
+  ]);
 });
 
 test("enabled Codex with no accounts removes the zsh integration", () => {
