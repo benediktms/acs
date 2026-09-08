@@ -236,17 +236,20 @@ function serviceEnvironment() {
 
 function installMcp(codexHome = configuredCodexHome()) {
   const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
-    installed = Bun.spawnSync([
-      settings.codex.binary,
-      "mcp",
-      "add",
-      "acs",
-      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-      "--",
-      ...selfCommand(),
-      "mcp",
-      "codex",
-    ]);
+    installed = Bun.spawnSync(
+      [
+        settings.codex.binary,
+        "mcp",
+        "add",
+        "acs",
+        ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+        "--",
+        ...selfCommand(),
+        "mcp",
+        "codex",
+      ],
+      { env: { ...process.env, CODEX_HOME: codexHome } },
+    );
   if (!installed.success)
     throw new Error(installed.stderr.toString().trim() || "Codex MCP installation failed");
   process.stdout.write(installed.stdout);
@@ -558,18 +561,24 @@ function bindingParams(
   };
 }
 async function accountInstallationId(call: (method: string, params?: unknown) => Promise<unknown>) {
-  const home = process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+  const home = canonicalCodexHome(
+      process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+    ),
     label =
       option("--account") ??
       settings.codex.accounts.find((candidate) => candidate.home === home)?.label;
   if (!label) throw new Error("CODEX_ACCOUNT_UNCONFIGURED: set CODEX_HOME or use --account");
   const account = settings.codex.accounts.find((candidate) => candidate.label === label);
   if (!account) throw new Error(`CODEX_ACCOUNT_UNCONFIGURED: ${label}`);
-  const runtimes = recordValue(await call("runtimes.list", { limit: 100 })),
-    runtime = arrayValue(runtimes.runtimes).find(
-      (item) => recordValue(item).label === account.label,
-    ),
+  let cursor: string | undefined, installationId: unknown;
+  do {
+    const runtimes = recordValue(await call("runtimes.list", { limit: 100, cursor })),
+      runtime = arrayValue(runtimes.runtimes).find(
+        (item) => recordValue(item).label === account.label,
+      );
     installationId = runtime ? recordValue(runtime).installationId : undefined;
+    cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;
+  } while (typeof installationId !== "string" && cursor);
   if (typeof installationId !== "string") throw new Error(`RUNTIME_UNAVAILABLE: ${label}`);
   return installationId;
 }

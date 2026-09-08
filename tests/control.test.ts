@@ -38,15 +38,11 @@ describe("control protocol", () => {
     const primary = new FakeRuntimeAdapter(),
       work = new FakeRuntimeAdapter();
     work.listSessions = async () => ({ sessions: [] });
-    const handler = controlHandler(
-      store,
-      new Date().toISOString(),
-      () => {},
-      new Map([
+    const adapters = new Map([
         [first.id, primary],
         [second, work],
       ]),
-    );
+      handler = controlHandler(store, new Date().toISOString(), () => {}, adapters);
     const call = (method: string, params: unknown) =>
       handler(
         new Request("http://localhost", {
@@ -81,6 +77,7 @@ describe("control protocol", () => {
       result: { codex: { directDelivery: true } },
     });
     store.db.query("DELETE FROM runtime_installations WHERE id=?").run(second);
+    adapters.delete(second);
     store.db.query("UPDATE runtime_installations SET state='offline' WHERE id=?").run(first.id);
     expect(await (await call("runtimes.sessions.list", {})).json()).toMatchObject({
       result: { sessions: [] },
@@ -90,6 +87,7 @@ describe("control protocol", () => {
         "INSERT INTO runtime_installations(id,harness_id,adapter_id,label,endpoint_json,capabilities_json,state,created_at_ms,updated_at_ms) VALUES(?,'codex','codex.app-server','work','{}','{}','unknown',?,?)",
       )
       .run(second, Date.now(), Date.now());
+    adapters.set(second, work);
     const emptyHandler = controlHandler(store, new Date().toISOString(), () => {}, new Map());
     expect(
       await (

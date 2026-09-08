@@ -295,7 +295,14 @@ function codexAccounts(
       rawHome === "auto"
         ? canonicalCodexHome(environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`)
         : canonicalCodexHome(rawHome);
-    return { label, home, socket: codexSocket(home, temporary, uid) };
+    return {
+      label,
+      home,
+      socket: socketPath(
+        codexSocket(home, temporary, uid),
+        `runtimes.codex.accounts[${index}] derived socket`,
+      ),
+    };
   });
   if (new Set(accounts.map((account) => account.label)).size !== accounts.length)
     throw new Error("VALIDATION_FAILED: duplicate runtimes.codex.accounts label");
@@ -381,10 +388,10 @@ function positive(value: number, name: string) {
     throw new Error(`VALIDATION_FAILED: invalid ${name}`);
   return value;
 }
-function socketPath(value: string) {
+function socketPath(value: string, name = "daemon.control_socket") {
   const maxBytes = process.platform === "linux" ? 107 : 103;
   if (Buffer.byteLength(value) > maxBytes)
-    throw new Error(`VALIDATION_FAILED: daemon.control_socket exceeds ${maxBytes} bytes`);
+    throw new Error(`VALIDATION_FAILED: ${name} exceeds ${maxBytes} bytes`);
   return value;
 }
 function auto(value: string, fallback: string) {

@@ -78,13 +78,14 @@ export async function installCodexAppServer(options: {
     loaded = control(["print", target]).success;
   mkdirSync(dirname(path), { recursive: true });
   mkdirSync(dirname(log), { recursive: true });
+  mkdirSync(dirname(options.socket), { recursive: true, mode: 0o700 });
   if (!loaded && options.socketOccupied && (await options.socketOccupied()))
     throw new Error(
       `Codex app-server socket is already in use; run acs codex app-server adopt ${options.label}`,
     );
   const changed = !existsSync(path) || readFileSync(path, "utf8") !== content;
-  if (changed) writeFileSync(path, content, { mode: 0o600 });
   if (loaded && changed) requireSuccess(control(["bootout", target]));
+  if (changed) writeFileSync(path, content, { mode: 0o600 });
   if (!loaded || changed) requireSuccess(control(["bootstrap", domain, path]));
 }
 

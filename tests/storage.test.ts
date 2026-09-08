@@ -46,6 +46,17 @@ test("preserves removed Codex installations as offline records", () => {
     { label: "personal", home: "/accounts/personal", socket: "/tmp/personal.sock" },
     { label: "work", home: "/accounts/work", socket: "/tmp/work.sock" },
   ]);
+  const work = store.db
+    .query<{ id: `ins_${string}` }, []>(
+      "SELECT id FROM runtime_installations WHERE harness_id='codex' AND label='work'",
+    )
+    .get();
+  if (!work) throw new Error("missing work installation");
+  const agent = store.createAgent("work-agent"),
+    binding = store.bind(agent.id, "work-session", { installationId: work.id });
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(binding.id);
   store.syncCodexInstallations([
     { label: "personal", home: "/accounts/personal", socket: "/tmp/personal.sock" },
   ]);
@@ -56,6 +67,13 @@ test("preserves removed Codex installations as offline records", () => {
       )
       .get("work"),
   ).toEqual({ state: "offline" });
+  expect(
+    store.db
+      .query<{ availability: string }, [string]>(
+        "SELECT last_observed_availability availability FROM runtime_bindings WHERE id=?",
+      )
+      .get(binding.id),
+  ).toEqual({ availability: "offline" });
 });
 
 describe("schema migrations", () => {

@@ -308,7 +308,7 @@ export class DeliveryScheduler {
         },
         [RuntimeInstallationId]
       >(
-        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.task_id=t.id AND b.installation_id=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
+        "SELECT t.id task_id,t.requester_principal_id FROM a2a_tasks t WHERE t.cancellation_requested=1 AND t.state NOT IN ('completed','failed','canceled','rejected') AND EXISTS(SELECT 1 FROM delivery_intents i JOIN runtime_bindings b ON b.id=i.pinned_binding_id WHERE i.task_id=t.id AND b.installation_id=?) AND NOT EXISTS(SELECT 1 FROM delivery_intents i WHERE i.task_id=t.id AND i.kind='a2a-message' AND i.state IN ('leased','attempting','acceptance-unknown')) LIMIT 1",
       )
       .get(required(this.context, "adapter context").installationId);
     if (!task) return false;

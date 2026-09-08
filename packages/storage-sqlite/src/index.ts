@@ -298,6 +298,11 @@ export class Store {
           "UPDATE runtime_installations SET state='offline',updated_at_ms=? WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?))",
         )
         .run(now, JSON.stringify([...configured]));
+      this.db
+        .query(
+          "UPDATE runtime_bindings SET last_observed_availability='offline',last_observed_at_ms=? WHERE status='active' AND installation_id IN (SELECT id FROM runtime_installations WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?)))",
+        )
+        .run(now, JSON.stringify([...configured]));
     });
     return this.db
       .query<{ id: RuntimeInstallationId; label: string }, []>(

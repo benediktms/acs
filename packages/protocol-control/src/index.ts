@@ -370,7 +370,7 @@ export function controlHandler(
                   "SELECT id FROM runtime_installations WHERE id=? LIMIT 1",
                 )
                 .get(requestedInstallation)
-            : runtimeInstallation(store);
+            : runtimeInstallation(store, adapters);
           if (!bindInstallation) throw new Error("BINDING_CONFLICT: runtime installation mismatch");
           const bindAdapter = adapterFor(bindInstallation.id);
           if (!bindAdapter) throw new Error("RUNTIME_UNAVAILABLE");
@@ -599,7 +599,7 @@ export function controlHandler(
           });
         }
         case "runtimes.probe": {
-          const installation = runtimeInstallation(store, p.installationId),
+          const installation = runtimeInstallation(store, adapters, p.installationId),
             adapter = adapterFor(installation.id);
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const probe = await adapter.probe();
@@ -607,7 +607,7 @@ export function controlHandler(
           return ok(rpc.id, { probe });
         }
         case "runtimes.sessions.list": {
-          const installation = runtimeInstallation(store, p.installationId),
+          const installation = runtimeInstallation(store, adapters, p.installationId),
             adapter = adapterFor(installation.id);
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const page = await adapter.listSessions({
@@ -636,7 +636,11 @@ export function controlHandler(
               (typeof inspectSessionInput === "string"
                 ? undefined
                 : inspectSessionInput.installationId),
-            inspectInstallation = runtimeInstallation(store, inspectRequestedInstallation),
+            inspectInstallation = runtimeInstallation(
+              store,
+              adapters,
+              inspectRequestedInstallation,
+            ),
             adapter = adapterFor(inspectInstallation.id);
           if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           const snapshot = await adapter.inspectSession({
@@ -1027,15 +1031,25 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     supportedPartKinds: [...supportedPartKinds],
   };
 }
-function runtimeInstallation(store: ControlStoragePort, requestedId?: string) {
+function runtimeInstallation(
+  store: ControlStoragePort,
+  adapters: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> | undefined,
+  requestedId?: string,
+) {
   if (!requestedId) {
-    const count =
-      store
-        .query<{ count: number }, []>(
-          "SELECT count(*) count FROM runtime_installations WHERE harness_id='codex'",
-        )
-        .get()?.count ?? 0;
-    if (count !== 1) throw new Error("RUNTIME_AMBIGUOUS: specify an installationId");
+    if (isAdapterMap(adapters)) {
+      if (adapters.size === 0) throw new Error("RUNTIME_UNAVAILABLE");
+      if (adapters.size !== 1) throw new Error("RUNTIME_AMBIGUOUS: specify an installationId");
+      requestedId = [...adapters.keys()][0];
+    } else {
+      const count =
+        store
+          .query<{ count: number }, []>(
+            "SELECT count(*) count FROM runtime_installations WHERE harness_id='codex' AND state<>'offline'",
+          )
+          .get()?.count ?? 0;
+      if (count !== 1) throw new Error("RUNTIME_AMBIGUOUS: specify an installationId");
+    }
   }
   const installation = store
     .query<{ id: RuntimeInstallationId }, [string | null, string | null]>(
