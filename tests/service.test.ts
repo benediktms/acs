@@ -1,16 +1,7 @@
 import { expect, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createServer } from "node:net";
 import {
   codexAppServerLaunchAgent,
   daemonCommandRunsForeground,
@@ -26,13 +17,12 @@ import {
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
+  removeLegacySwarmLauncher,
   restartCodexAppServer,
   restartDaemonService,
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
-  swarmLauncher,
-  syncSwarmLauncher,
 } from "../apps/acs/src/service";
 
 test("persistent runtime paths are absolute", () => {
@@ -416,149 +406,23 @@ test("Codex account service is account-scoped", () => {
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
 });
 
-test("swarm routes interactive new, resume, and fork sessions", async () => {
-  const root = mkdtempSync(join(tmpdir(), "acs-swarm-")),
-    bin = join(root, "bin"),
-    acs = join(bin, "acs"),
-    codex = join(bin, "codex"),
+test("initialization removes only the legacy ACS launcher and integration", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-cleanup-")),
     swarm = join(root, ".local/bin/swarm"),
-    socket = join(root, "codex.sock"),
-    output = join(root, "args"),
-    configuredHome = join(root, "account"),
-    workingDirectory = join(root, "work");
-  mkdirSync(bin);
-  mkdirSync(configuredHome);
-  mkdirSync(workingDirectory);
-  const effectiveWorkingDirectory = Bun.spawnSync(["/bin/pwd"], { cwd: workingDirectory })
-    .stdout.toString()
-    .trim();
-  writeFileSync(
-    acs,
-    `#!/bin/sh\n[ "$CODEX_HOME" = ${JSON.stringify(configuredHome)} ] || exit 1\nprintf '%s\\n' ${JSON.stringify(socket)}\n`,
-  );
-  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
-  chmodSync(acs, 0o755);
-  chmodSync(codex, 0o755);
-  const listener = createServer();
-  await new Promise<void>((resolve, reject) => {
-    listener.once("error", reject);
-    listener.listen(socket, resolve);
-  });
-  try {
-    syncSwarmLauncher({
-      enabled: true,
-      accountCount: 1,
-      home: root,
-      command: [acs],
-      codexBinary: codex,
-    });
-    const run = (arguments_: string[], home = configuredHome) =>
-      Bun.spawnSync([swarm, ...arguments_], {
-        cwd: workingDirectory,
-        env: { ...process.env, HOME: root, CODEX_HOME: home, ACS_TEST_OUTPUT: output },
-      });
-    for (const arguments_ of [
-      ["new prompt"],
-      ["--model", "test", "resume", "session-id", "continue"],
-      ["fork", "session-id"],
-    ]) {
-      expect(run(arguments_).exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe(
-        `--remote\nunix://${socket}\n--cd\n${effectiveWorkingDirectory}\n${arguments_.join("\n")}\n`,
-      );
-    }
-    expect(run(["--cd", "/explicit", "resume", "session-id"]).exitCode).toBe(0);
-    expect(readFileSync(output, "utf8")).toBe(
-      "--remote\nunix://" + socket + "\n--cd\n/explicit\nresume\nsession-id\n",
-    );
-    const remote = run(["--remote=unix:///tmp/other", "resume"]);
-    expect(remote.exitCode).toBe(2);
-    expect(remote.stderr.toString()).toContain("swarm owns --remote");
-    const lateRemote = run(["resume", "session-id", "--remote", "unix:///tmp/other"]);
-    expect(lateRemote.exitCode).toBe(2);
-    expect(lateRemote.stderr.toString()).toContain("swarm owns --remote");
-    const unsupported = run(["exec", "test"]);
-    expect(unsupported.exitCode).toBe(2);
-    expect(unsupported.stderr.toString()).toContain("use codex exec");
-    const unconfigured = run(["resume"], join(root, "other-account"));
-    expect(unconfigured.exitCode).toBe(2);
-    expect(unconfigured.stderr.toString()).toContain("configure CODEX_HOME");
-    rmSync(socket);
-    const unavailable = run(["resume"]);
-    expect(unavailable.exitCode).toBe(2);
-    expect(unavailable.stderr.toString()).toContain("app-server is unavailable");
-  } finally {
-    await new Promise<void>((resolve) => listener.close(() => resolve()));
-    rmSync(root, { recursive: true });
-  }
-});
-
-test("swarm installation cleans up the legacy wrapper and preserves native codex", () => {
-  const root = mkdtempSync(join(tmpdir(), "acs-swarm-install-")),
     integration = join(root, ".zshrc.d", "acs-codex.zsh"),
-    zshrc = join(root, ".zshrc"),
-    bin = join(root, "bin"),
-    codex = join(bin, "codex"),
-    output = join(root, "args");
+    zshrc = join(root, ".zshrc");
+  mkdirSync(dirname(swarm), { recursive: true });
   mkdirSync(dirname(integration), { recursive: true });
-  mkdirSync(bin);
+  writeFileSync(swarm, "#!/bin/sh\n# acs-swarm-launcher\nlegacy\n");
   writeFileSync(integration, "legacy");
   writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
-  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
-  chmodSync(codex, 0o755);
   try {
-    syncSwarmLauncher({
-      enabled: true,
-      accountCount: 1,
-      home: root,
-      command: ["acs"],
-      codexBinary: codex,
-    });
+    removeLegacySwarmLauncher(root);
+    expect(existsSync(swarm)).toBe(false);
     expect(existsSync(integration)).toBe(false);
     expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
-    expect(readFileSync(join(root, ".local/bin/swarm"), "utf8")).toBe(
-      swarmLauncher(["acs"], codex),
-    );
-    expect(
-      Bun.spawnSync([codex, "exec", "test"], { env: { ACS_TEST_OUTPUT: output } }).exitCode,
-    ).toBe(0);
-    expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
-    syncSwarmLauncher({
-      enabled: false,
-      accountCount: 0,
-      home: root,
-      command: ["acs"],
-      codexBinary: codex,
-    });
-    expect(existsSync(join(root, ".local/bin/swarm"))).toBe(false);
-  } finally {
-    rmSync(root, { recursive: true });
-  }
-});
-
-test("swarm leaves an unowned command untouched", () => {
-  const root = mkdtempSync(join(tmpdir(), "acs-swarm-collision-")),
-    swarm = join(root, ".local/bin/swarm");
-  mkdirSync(dirname(swarm), { recursive: true });
-  writeFileSync(swarm, "unrelated");
-  try {
-    expect(() =>
-      syncSwarmLauncher({
-        enabled: true,
-        accountCount: 1,
-        home: root,
-        command: ["acs"],
-        codexBinary: "codex",
-      }),
-    ).toThrow("ACS_SWARM_LAUNCHER_COLLISION");
-    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
-    syncSwarmLauncher({
-      enabled: false,
-      accountCount: 0,
-      home: root,
-      command: ["acs"],
-      codexBinary: "codex",
-    });
+    writeFileSync(swarm, "unrelated");
+    removeLegacySwarmLauncher(root);
     expect(readFileSync(swarm, "utf8")).toBe("unrelated");
   } finally {
     rmSync(root, { recursive: true });
@@ -610,29 +474,6 @@ test("intersects lsof's Unix-socket and path selectors", () => {
     "-U",
     "/tmp/account.sock",
   ]);
-});
-
-test("disabled Codex removes swarm and the legacy integration", () => {
-  const root = mkdtempSync(join(tmpdir(), "acs-zsh-empty-")),
-    integration = join(root, ".zshrc.d", "acs-codex.zsh"),
-    zshrc = join(root, ".zshrc");
-  mkdirSync(join(root, ".zshrc.d"));
-  writeFileSync(integration, "stale");
-  writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
-  try {
-    syncSwarmLauncher({
-      enabled: true,
-      accountCount: 0,
-      home: root,
-      command: ["acs"],
-      codexBinary: "codex",
-    });
-    expect(existsSync(integration)).toBe(false);
-    expect(existsSync(join(root, ".local/bin/swarm"))).toBe(false);
-    expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
-  } finally {
-    rmSync(root, { recursive: true });
-  }
 });
 
 test("restarts only the selected Codex account service", () => {

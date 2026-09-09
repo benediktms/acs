@@ -62,6 +62,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   chmodSync(codex, 0o700);
   const env = {
     ...process.env,
+    HOME: join(root, "user-home"),
     ACS_HOME: root,
     ACS_A2A_PORT: String(port),
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
@@ -71,7 +72,8 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     ACS_LOG_FORMAT: "json",
     PATH: `${bin}:/usr/bin:/bin`,
   };
-  expect(Bun.spawnSync([binary, "init", "--no-service"], { env }).exitCode).toBe(0);
+  const initialization = Bun.spawnSync([binary, "init", "--no-service"], { env });
+  if (initialization.exitCode !== 0) throw new Error(initialization.stderr.toString());
   expect(existsSync(join(root, "acs.db"))).toBe(false);
   const tokenStore = new Store({
       data: join(root, "acs.db"),
@@ -137,9 +139,9 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   );
   for (const bound of bindings)
     if ((await bound.exited) !== 0) throw new Error(await new Response(bound.stderr).text());
-  const listed = record(
-    JSON.parse(Bun.spawnSync([binary, "agents", "list"], { env }).stdout.toString()),
-  );
+  const listedCommand = Bun.spawnSync([binary, "agents", "list"], { env });
+  if (listedCommand.exitCode !== 0) throw new Error(listedCommand.stderr.toString());
+  const listed = record(JSON.parse(listedCommand.stdout.toString()));
   expect(array(listed.items).map((item) => string(record(item).slug))).toEqual([
     "claimant",
     "receiver",
@@ -448,6 +450,173 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   processes.splice(processes.indexOf(daemon), 1);
 }, 30_000);
 
+test("compiled CLI help, usage, and Codex passthrough stay isolated", async () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-cli-"));
+  roots.push(root);
+  const binary = join(root, "acs"),
+    built = Bun.spawnSync([
+      process.execPath,
+      "build",
+      "apps/acs/src/main.ts",
+      "--compile",
+      "--outfile",
+      binary,
+    ]),
+    stateHome = join(root, "state-home"),
+    environment = { ...process.env, HOME: join(root, "user-home"), ACS_HOME: stateHome };
+  expect(built.exitCode).toBe(0);
+
+  for (const path of [
+    [],
+    ["help"],
+    ["init"],
+    ["daemon"],
+    ["daemon", "run"],
+    ["daemon", "start"],
+    ["daemon", "stop"],
+    ["daemon", "status"],
+    ["daemon", "restart"],
+    ["agents"],
+    ["agents", "create"],
+    ["agents", "get"],
+    ["agents", "update"],
+    ["agents", "delete"],
+    ["agents", "list"],
+    ["bindings"],
+    ["bindings", "bind"],
+    ["bindings", "get"],
+    ["bindings", "revoke"],
+    ["bindings", "list"],
+    ["runtimes"],
+    ["runtimes", "list"],
+    ["inbox"],
+    ["deliveries"],
+    ["deliveries", "list"],
+    ["deliveries", "get"],
+    ["deliveries", "retry"],
+    ["deliveries", "cancel"],
+    ["deliveries", "resolve"],
+    ["token"],
+    ["token", "show"],
+    ["mcp"],
+    ["mcp", "codex"],
+    ["codex"],
+    ["codex", "run"],
+    ["codex", "doctor"],
+    ["codex", "socket"],
+    ["codex", "install-mcp"],
+    ["codex", "bind"],
+    ["codex", "app-server"],
+    ["codex", "app-server", "restart"],
+    ["codex", "app-server", "adopt"],
+    ["codex", "sessions"],
+    ["codex", "sessions", "list"],
+  ])
+    for (const option of ["-h", "--help"]) {
+      const result = Bun.spawnSync([binary, ...path, option], { env: environment });
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(stateHome)).toBe(false);
+    }
+  expect(
+    Bun.spawnSync([binary, "help", "codex", "app-server"], { env: environment }).exitCode,
+  ).toBe(0);
+  expect(existsSync(stateHome)).toBe(false);
+
+  for (const args of [
+    ["unknown"],
+    ["agents", "get"],
+    ["agents", "update", "agent", "--enable", "--disable"],
+    ["agents", "list", "--unknown"],
+  ]) {
+    const result = Bun.spawnSync([binary, ...args], { env: environment });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("error:");
+    expect(existsSync(stateHome)).toBe(false);
+  }
+
+  const codexHome = join(root, "codex"),
+    bin = join(root, "bin"),
+    codex = join(bin, "codex"),
+    passedArgs = join(root, "passed-args"),
+    cwd = join(root, "cwd"),
+    env = {
+      ...environment,
+      ACS_CODEX_BINARY: codex,
+      ACS_TEST_ARGS: passedArgs,
+      CODEX_HOME: codexHome,
+      PATH: `${bin}:/usr/bin:/bin`,
+    };
+  mkdirSync(bin);
+  mkdirSync(cwd);
+  const workingDirectory = Bun.spawnSync(["/bin/pwd"], { cwd }).stdout.toString().trim();
+  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_ARGS"\n');
+  chmodSync(codex, 0o700);
+  const initialized = Bun.spawnSync([binary, "init", "--no-service"], { env });
+  if (initialized.exitCode !== 0) throw new Error(initialized.stderr.toString());
+  const socket = Bun.spawnSync([binary, "codex", "socket"], { env }).stdout.toString().trim();
+  const unconfigured = Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
+    env: { ...env, CODEX_HOME: join(root, "unknown-codex") },
+  });
+  expect(unconfigured.exitCode).toBe(2);
+  const unavailable = Bun.spawnSync([binary, "codex", "run", "--", "--help"], { env });
+  expect(unavailable.exitCode).toBe(2);
+  mkdirSync(dirname(socket), { recursive: true });
+  const socketServer = Bun.listen({
+    unix: socket,
+    socket: { open() {}, data() {}, close() {}, error() {} },
+  });
+  servers.push(socketServer);
+  const codexRun = Bun.spawnSync([binary, "codex", "run", "--", "--help", "--model", "test"], {
+    cwd,
+    env,
+  });
+  if (codexRun.exitCode !== 0) throw new Error(codexRun.stderr.toString());
+  expect(readFileSync(passedArgs, "utf8")).toBe(
+    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
+  );
+  const withDirectory = Bun.spawnSync([binary, "codex", "run", "--", "-C", "/chosen", "resume"], {
+    env,
+  });
+  if (withDirectory.exitCode !== 0) throw new Error(withDirectory.stderr.toString());
+  expect(readFileSync(passedArgs, "utf8")).toBe(
+    `--remote\nunix://${socket}\n-C\n/chosen\nresume\n`,
+  );
+  const remote = Bun.spawnSync([binary, "codex", "run", "--", "--remote=unix:///other"], {
+    env,
+  });
+  expect(remote.exitCode).toBe(2);
+  expect(remote.stderr.toString()).toContain("owns --remote");
+
+  const legacyHome = join(root, "legacy-state"),
+    legacyConfig = join(legacyHome, "config.toml"),
+    legacyText = '[daemon]\na2a_listen = "127.0.0.1:7432"\n';
+  mkdirSync(legacyHome, { recursive: true });
+  writeFileSync(legacyConfig, legacyText);
+  const rejectedBeforeMigration = Bun.spawnSync(
+    [binary, "codex", "run", "--", "--remote=unix:///other"],
+    { env: { ...env, ACS_HOME: legacyHome } },
+  );
+  expect(rejectedBeforeMigration.exitCode).toBe(2);
+  expect(readFileSync(legacyConfig, "utf8")).toBe(legacyText);
+
+  const nestedRemote = Bun.spawnSync([binary, "codex", "run", "--", "--", "--remote"], {
+    cwd,
+    env,
+  });
+  if (nestedRemote.exitCode !== 0) throw new Error(nestedRemote.stderr.toString());
+  expect(readFileSync(passedArgs, "utf8")).toBe(
+    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n--remote\n`,
+  );
+  const nestedDirectory = Bun.spawnSync([binary, "codex", "run", "--", "--", "-C", "/chosen"], {
+    cwd,
+    env,
+  });
+  if (nestedDirectory.exitCode !== 0) throw new Error(nestedDirectory.stderr.toString());
+  expect(readFileSync(passedArgs, "utf8")).toBe(
+    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
+  );
+}, 15_000);
+
 test("compiled daemon ownership ignores listener overrides and releases after a crash", async () => {
   const root = mkdtempSync(join(tmpdir(), "acs-daemon-lock-"));
   roots.push(root);
@@ -462,13 +631,14 @@ test("compiled daemon ownership ignores listener overrides and releases after a 
     ]);
   expect(built.exitCode).toBe(0);
 
-  const helpHome = join(root, "help");
+  const helpHome = join(root, "help"),
+    helpEnvironment = { ...process.env, HOME: join(root, "user-home"), ACS_HOME: helpHome };
   for (const args of [[], ["help"], ["-h"], ["--help"], ["init", "-h"], ["init", "--help"]]) {
     const help = Bun.spawnSync([binary, ...args], {
-      env: { ...process.env, ACS_HOME: helpHome },
+      env: helpEnvironment,
     });
     expect(help.exitCode).toBe(0);
-    expect(help.stdout.toString()).toContain("foreground daemon");
+    expect(help.stdout.toString()).toContain("Usage:");
     expect(existsSync(helpHome)).toBe(false);
   }
 
@@ -496,23 +666,6 @@ test("compiled daemon ownership ignores listener overrides and releases after a 
   freshDaemon.kill("SIGTERM");
   expect(await freshDaemon.exited).toBe(0);
   processes.splice(processes.indexOf(freshDaemon), 1);
-
-  const passedArgs = join(root, "passed-args"),
-    codex = join(root, "codex"),
-    passthrough = join(root, "passthrough");
-  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_ARGS"\n');
-  chmodSync(codex, 0o700);
-  expect(
-    Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
-      env: {
-        ...process.env,
-        ACS_HOME: passthrough,
-        ACS_CODEX_BINARY: codex,
-        ACS_TEST_ARGS: passedArgs,
-      },
-    }).exitCode,
-  ).toBe(0);
-  expect(readFileSync(passedArgs, "utf8")).toBe("--help\n");
 
   const home = join(root, "home"),
     first = daemonEnvironment(
@@ -707,6 +860,7 @@ function availablePort() {
 function daemonEnvironment(home: string, port: number, runtime: string, data: string) {
   return {
     ...process.env,
+    HOME: join(home, "user-home"),
     ACS_HOME: home,
     ACS_A2A_PORT: String(port),
     ACS_CONTROL_SOCKET: runtime,

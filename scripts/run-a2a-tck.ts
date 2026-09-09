@@ -24,6 +24,7 @@ const root = mkdtempSync(join(tmpdir(), "acs-tck-")),
   proxyPort = reservePort(),
   env = {
     ...process.env,
+    HOME: join(root, "home"),
     ACS_HOME: root,
     ACS_A2A_PORT: String(servicePort),
     ACS_CONTROL_SOCKET: join(root, "control.sock"),
@@ -36,7 +37,7 @@ let daemon: Bun.Subprocess | undefined,
 try {
   mkdirSync(dirname(codexSocket), { recursive: true });
   run([process.execPath, "build", "apps/acs/src/main.ts", "--compile", "--outfile", binary]);
-  run([binary, "init"], undefined, env);
+  run([binary, "init", "--no-service"], undefined, env);
   const tokenStore = new Store({
       data: env.ACS_STORAGE_PATH,
       runtime: env.ACS_CONTROL_SOCKET,
@@ -51,7 +52,7 @@ try {
   await waitFor(() => existsSync(env.ACS_CONTROL_SOCKET));
   run([binary, "agents", "create", "tck-agent"], undefined, env);
   await runAsync(
-    [binary, "bindings", "bind", "tck-agent", "--session", "thread-1", "--allow-non-atomic-wake"],
+    [binary, "bindings", "bind", "tck-agent", "--session", "thread-1"],
     undefined,
     env,
   );
