@@ -290,7 +290,7 @@ function configuredCodexHome() {
 }
 
 async function waitForDaemon() {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 15_000;
   for (;;) {
     if (await controlReady()) return;
     if (Date.now() >= deadline) break;

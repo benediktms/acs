@@ -888,7 +888,8 @@ export async function controlCall(
   return await new Promise<unknown>((resolve, reject) => {
     let response = Buffer.alloc(0),
       expected = Infinity,
-      done = false;
+      done = false,
+      timedOut = false;
     Bun.connect({
       unix: socketPath,
       socket: {
@@ -908,13 +909,16 @@ export async function controlCall(
           if (response.length >= expected) finish();
         },
         close() {
+          if (timedOut) return;
           if (response.length) finish();
           else rejectOnce(new Error("Control connection closed without a response"));
         },
         error(_socket, error) {
           rejectOnce(error);
         },
-        timeout() {
+        timeout(socket) {
+          timedOut = true;
+          socket.terminate();
           rejectOnce(new Error("Control call timed out"));
         },
       },

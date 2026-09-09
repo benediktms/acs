@@ -109,6 +109,7 @@ test("manages only the ACS LaunchAgent lifecycle", async () => {
         unmanaged++;
         events.push("unmanaged stop");
       },
+      isControlReady: async () => false,
     };
     await startDaemonService(options);
     await startDaemonService(options);
@@ -182,6 +183,41 @@ test("does not bootstrap over an occupied unmanaged socket", async () => {
   }
 });
 
+test("uses authenticated shutdown only when control remains ready after launchd unload", async () => {
+  for (const ready of [true, false]) {
+    const events: string[] = [];
+    let loaded = true;
+    await stopDaemonService({
+      home: "/Users/example",
+      uid: 501,
+      launchctl: (args) => {
+        events.push(args.join(" "));
+        if (args[0] === "print") return { success: loaded, error: "not loaded" };
+        loaded = false;
+        return { success: true, error: "" };
+      },
+      isControlReady: async () => {
+        events.push("control ready");
+        return ready;
+      },
+      stopUnmanagedDaemon: async () => {
+        events.push("authenticated shutdown");
+      },
+      waitUntilStopped: async () => {
+        events.push("stopped wait");
+      },
+    });
+    expect(events).toEqual([
+      "print gui/501/local.acs.daemon",
+      "bootout gui/501/local.acs.daemon",
+      "print gui/501/local.acs.daemon",
+      "control ready",
+      ...(ready ? ["authenticated shutdown"] : []),
+      "stopped wait",
+    ]);
+  }
+});
+
 test("waits for launchd to report an unloaded service before restarting", async () => {
   const home = mkdtempSync(join(tmpdir(), "acs-daemon-service-")),
     path = join(home, "Library/LaunchAgents/local.acs.daemon.plist"),
@@ -212,6 +248,7 @@ test("waits for launchd to report an unloaded service before restarting", async 
         events.push("sleep");
       },
       stopUnmanagedDaemon: async () => {},
+      isControlReady: async () => false,
       waitUntilStopped: async () => {
         events.push("stopped wait");
       },
@@ -257,6 +294,7 @@ test("propagates daemon readiness and bootout failures", async () => {
         uid: 999,
         launchctl: (args) => ({ success: args[0] === "print", error: "bootout denied" }),
         stopUnmanagedDaemon: async () => {},
+        isControlReady: async () => false,
         waitUntilStopped: async () => {},
       }),
     ).rejects.toThrow("bootout denied");

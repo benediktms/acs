@@ -18,9 +18,17 @@ describe("control protocol", () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-timeout-")),
       socket = join(root, "control.sock"),
       token = join(root, "control.token"),
+      closed = Promise.withResolvers<void>(),
       listener = Bun.listen({
         unix: socket,
-        socket: { open() {}, data() {}, close() {}, error() {} },
+        socket: {
+          open() {},
+          data() {},
+          close() {
+            closed.resolve();
+          },
+          error() {},
+        },
       });
     roots.push(root);
     writeFileSync(token, "test-token");
@@ -30,10 +38,11 @@ describe("control protocol", () => {
         "Control call timed out",
       );
       expect(performance.now() - started).toBeLessThan(8_000);
+      await closed.promise;
     } finally {
-      listener.stop(true);
+      listener.stop();
     }
-  });
+  }, 10_000);
 
   test("rejects when a Unix listener closes without responding", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-close-")),

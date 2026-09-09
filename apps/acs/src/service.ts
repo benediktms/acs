@@ -296,6 +296,7 @@ export async function startDaemonService(
 
 export async function stopDaemonService(
   options: DaemonLifecycleOptions & {
+    isControlReady: () => Promise<boolean>;
     stopUnmanagedDaemon: () => Promise<void>;
     waitUntilStopped: () => Promise<void>;
   },
@@ -311,6 +312,7 @@ export async function stopDaemonService(
       if (attempt === 49) throw new Error("ACS service did not unload");
       await (options.sleep ?? Bun.sleep)(100);
     }
+    if (await options.isControlReady()) await options.stopUnmanagedDaemon();
   } else await options.stopUnmanagedDaemon();
   await options.waitUntilStopped();
 }
@@ -328,6 +330,7 @@ export async function daemonServiceStatus(
 
 export async function restartDaemonService(
   options: DaemonLifecycleOptions & {
+    isControlReady: () => Promise<boolean>;
     stopUnmanagedDaemon: () => Promise<void>;
     waitUntilStopped: () => Promise<void>;
     waitUntilReady: () => Promise<void>;
