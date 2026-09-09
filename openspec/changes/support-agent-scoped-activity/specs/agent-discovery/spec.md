@@ -59,6 +59,11 @@ ACS SHALL provide an authenticated task-independent operation through which the 
 - **WHEN** ACS cannot freshly resolve an absolute working directory while publishing, acknowledging, or refreshing activity
 - **THEN** ACS rejects that activity mutation without changing the existing activity, while an explicit clear remains permitted
 
+#### Scenario: Git workspace inspection fails
+
+- **WHEN** ACS identifies a Git worktree but cannot inspect its current branch
+- **THEN** ACS rejects the activity mutation without changing the existing activity instead of treating the failure as detached HEAD
+
 ## MODIFIED Requirements
 
 ### Requirement: ACS discovery projects current assigned activity

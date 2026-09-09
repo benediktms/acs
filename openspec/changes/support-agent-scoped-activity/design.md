@@ -55,7 +55,7 @@ This is intentionally instruction-driven: ACS stores only an explicit agent publ
 
 ### Capture workspace context from attested runtime state
 
-For `acs_activity_update`, `acs_task_acknowledge`, and `acs_task_activity_update`, the control handler uses the installation-routed `thread/read` snapshot already obtained during caller attestation as the authoritative absolute `cwd`, then resolves the attached branch with the local Git executable. It omits `gitBranch` when Git reports no branch, including a non-worktree directory and detached HEAD. These values are derived after ownership checks rather than accepted as model or executor inputs.
+For `acs_activity_update`, `acs_task_acknowledge`, and `acs_task_activity_update`, the control handler uses the installation-routed `thread/read` snapshot already obtained during caller attestation as the authoritative absolute `cwd`, then resolves the attached branch with the local Git executable. It omits `gitBranch` only for a non-worktree directory or a successful detached-HEAD lookup; other Git failures reject the mutation. These values are derived after ownership checks rather than accepted as model or executor inputs.
 
 Persist the captured values on the same binding- or task-scoped activity marker. Explicit publication, acknowledgement, and refresh fail with retryable `RUNTIME_UNAVAILABLE` when a fresh absolute runtime cwd is unavailable; clear remains permitted because it needs no workspace context. A successful refresh replaces both values, while task lifecycle updates without a fresh context retain the marker's existing values. The selected `currentActivity` projects optional `cwd` and `gitBranch` fields through authenticated control and MCP discovery only.
 

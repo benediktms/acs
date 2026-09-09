@@ -1265,6 +1265,22 @@ describe("control protocol", () => {
     ).currentActivity;
     expect(nonRepository).toMatchObject({ cwd: outside });
     expect(record(nonRepository)).not.toHaveProperty("gitBranch");
+    const originalPath = process.env.PATH;
+    process.env.PATH = outside;
+    try {
+      expect(
+        await (
+          await call({ evidence: evidence("local-activity-thread"), action: "refresh" })
+        ).json(),
+      ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE", retryable: true } } });
+      expect(store.currentActivity(agent.id)).toMatchObject({
+        summary: "Outside work",
+        cwd: outside,
+      });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
     expect(
       await (await call({ action: "refresh", activitySummary: "must not write" })).json(),
     ).toMatchObject({ error: { data: { code: "UNATTESTED_CALLER" } } });

@@ -1412,11 +1412,19 @@ function activityWorkspace(cwd: string | undefined) {
   if (!cwd || !isAbsolute(cwd))
     throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
   try {
-    const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"]),
-      gitBranch = git.success ? git.stdout.toString().trim() : "";
+    const options = { env: { ...process.env, LC_ALL: "C" } },
+      worktree = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], options);
+    if (!worktree.success) {
+      if (worktree.stderr.toString().includes("not a git repository")) return { cwd };
+      throw new Error("git workspace lookup failed");
+    }
+    if (worktree.stdout.toString().trim() !== "true") return { cwd };
+    const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"], options);
+    if (!git.success) throw new Error("git branch lookup failed");
+    const gitBranch = git.stdout.toString().trim();
     return { cwd, ...(gitBranch ? { gitBranch } : {}) };
   } catch {
-    return { cwd };
+    throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
   }
 }
 function runtimeSessionCursor(value: unknown) {
