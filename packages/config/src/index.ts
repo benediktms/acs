@@ -310,11 +310,13 @@ function codexAccounts(
       throw new Error(`VALIDATION_FAILED: invalid runtimes.codex.accounts[${index}].label`);
     if (!rawHome)
       throw new Error(`VALIDATION_FAILED: missing runtimes.codex.accounts[${index}].codex_home`);
-    if (rawHome === "auto")
+    if (rawHome === "auto" && values.length !== 1)
       throw new Error(
         `VALIDATION_FAILED: runtimes.codex.accounts[${index}].codex_home must be absolute`,
       );
-    const home = canonicalCodexHome(rawHome);
+    const home = canonicalCodexHome(
+      rawHome === "auto" ? (environment.CODEX_HOME ?? `${environment.HOME ?? ""}/.codex`) : rawHome,
+    );
     return {
       label,
       home,

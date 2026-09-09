@@ -98,8 +98,22 @@ describe("configuration", () => {
       '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "relative"\n',
     );
     expect(() => loadConfig(path)).toThrow("codex_home must be absolute");
-    writeFileSync(path, '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "auto"\n');
+    writeFileSync(
+      path,
+      '[[runtimes.codex.accounts]]\nlabel = "personal"\ncodex_home = "auto"\n[[runtimes.codex.accounts]]\nlabel = "work"\ncodex_home = "auto"\n',
+    );
     expect(() => loadConfig(path)).toThrow("codex_home must be absolute");
+  });
+  test("resolves a legacy automatic Codex home without rewriting configuration", () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-config-"));
+    roots.push(root);
+    const path = join(root, "config.toml"),
+      source = '[[runtimes.codex.accounts]]\nlabel = "local"\ncodex_home = "auto"\n';
+    writeFileSync(path, source);
+    expect(loadConfig(path).codex.accounts[0]?.home).toBe(
+      canonicalCodexHome(process.env.CODEX_HOME ?? `${process.env.HOME ?? ""}/.codex`),
+    );
+    expect(readFileSync(path, "utf8")).toBe(source);
   });
   test("writes an explicit local Codex home", () => {
     const root = mkdtempSync(join(tmpdir(), "acs-config-"));

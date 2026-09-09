@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
-import { controlHandler } from "../packages/protocol-control/src/index";
+import { controlCall, controlHandler } from "../packages/protocol-control/src/index";
 import { CodexCallerAttestor } from "../packages/runtime-codex/src/index";
 import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
@@ -14,6 +14,64 @@ afterEach(() => {
 });
 
 describe("control protocol", () => {
+  test("bounds a control call when a Unix listener never responds", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-timeout-")),
+      socket = join(root, "control.sock"),
+      token = join(root, "control.token"),
+      closed = Promise.withResolvers<void>(),
+      listener = Bun.listen({
+        unix: socket,
+        socket: {
+          open() {},
+          data() {},
+          close() {
+            closed.resolve();
+          },
+          error() {},
+        },
+      });
+    roots.push(root);
+    writeFileSync(token, "test-token");
+    try {
+      const started = performance.now();
+      await expect(controlCall(socket, token, "system.shutdown", {}, 1)).rejects.toThrow(
+        "Control call timed out",
+      );
+      expect(performance.now() - started).toBeLessThan(8_000);
+      await closed.promise;
+    } finally {
+      listener.stop();
+    }
+  }, 10_000);
+
+  test("rejects when a Unix listener closes without responding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-close-")),
+      socket = join(root, "control.sock"),
+      token = join(root, "control.token"),
+      listener = Bun.listen({
+        unix: socket,
+        socket: {
+          open() {},
+          data(connection) {
+            connection.end();
+          },
+          close() {},
+          error() {},
+        },
+      });
+    roots.push(root);
+    writeFileSync(token, "test-token");
+    try {
+      const started = performance.now();
+      await expect(controlCall(socket, token, "system.shutdown")).rejects.toThrow(
+        "Control connection closed without a response",
+      );
+      expect(performance.now() - started).toBeLessThan(2_000);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
   test("routes session inspection to the requested runtime installation", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-"));
     roots.push(root);

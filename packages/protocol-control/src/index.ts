@@ -881,16 +881,20 @@ export async function controlCall(
   tokenPath: string,
   method: string,
   params: unknown = {},
+  timeoutSeconds?: number,
 ): Promise<unknown> {
   const body = JSON.stringify({ jsonrpc: "2.0", id: crypto.randomUUID(), method, params }),
     token = readFileSync(tokenPath, "utf8");
   return await new Promise<unknown>((resolve, reject) => {
     let response = Buffer.alloc(0),
-      expected = Infinity;
+      expected = Infinity,
+      done = false,
+      timedOut = false;
     Bun.connect({
       unix: socketPath,
       socket: {
         open(socket) {
+          if (timeoutSeconds) socket.timeout(timeoutSeconds);
           socket.write(
             `POST / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nACS-Control-Version: 1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
           );
@@ -905,14 +909,25 @@ export async function controlCall(
           if (response.length >= expected) finish();
         },
         close() {
+          if (timedOut) return;
           if (response.length) finish();
+          else rejectOnce(new Error("Control connection closed without a response"));
         },
         error(_socket, error) {
-          reject(error);
+          rejectOnce(error);
+        },
+        timeout(socket) {
+          timedOut = true;
+          socket.terminate();
+          rejectOnce(new Error("Control call timed out"));
         },
       },
-    }).catch(reject);
-    let done = false;
+    }).catch(rejectOnce);
+    function rejectOnce(error: unknown) {
+      if (done) return;
+      done = true;
+      reject(error);
+    }
     function finish() {
       if (done) return;
       done = true;

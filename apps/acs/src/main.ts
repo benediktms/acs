@@ -27,18 +27,26 @@ import {
 } from "../../../packages/config/src/index";
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
+  daemonCommandRunsForeground,
+  type DaemonControlPaths,
+  daemonServiceStatus,
   installCodexAppServer,
   installService,
+  installedDaemonControlPaths,
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
+  restartDaemonService,
   restartCodexAppServer,
+  startDaemonService,
+  stopDaemonService,
+  stopUnmanagedDaemon,
   syncCodexZshIntegration,
 } from "./service";
 
 const args = Bun.argv.slice(2),
   configFile = configPath();
-migrateCodexAccounts(configFile);
+if (!(args[0] === "daemon" && args[1] === "status")) migrateCodexAccounts(configFile);
 const config = paths(),
   settings = loadConfig(),
   listen = parseListen(settings.daemon.a2aListen),
@@ -56,7 +64,10 @@ async function main() {
         environment: serviceEnvironment(),
         home: required(process.env.HOME, "HOME"),
         uid: required(process.getuid?.(), "user ID"),
-        stopUnmanagedDaemon,
+        stopUnmanagedDaemon: async () => {
+          await stopUnmanagedDaemonAt();
+          await waitForDaemonStop();
+        },
       });
       removeCodexAppServers({
         labels: settings.codex.enabled
@@ -95,7 +106,9 @@ async function main() {
     console.log(`Initialized ACS at ${config.data}`);
     return;
   }
-  if (args[0] === "daemon" && (args[1] === "run" || args[1] === "start")) return daemon();
+  if (args[0] === "daemon" && daemonCommandRunsForeground(args[1])) return daemon();
+  if (args[0] === "daemon" && ["start", "stop", "status", "restart"].includes(args[1] ?? ""))
+    return daemonLifecycle(required(args[1], "daemon lifecycle command"));
   if (args[0] === "mcp" && args[1] === "codex") return runMcp(port);
   if (args[0] === "codex" && args[1] === "run") {
     if (args[2] !== "--") throw new Error("Usage: acs codex run -- <codex arguments>");
@@ -280,30 +293,80 @@ function configuredCodexHome() {
   );
 }
 
-async function waitForDaemon() {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      await controlCall(config.runtime, config.token, "system.initialize", {
-        protocolVersion: "1.0",
-        client: { name: "acs-init", version: "0.1.0", instanceId: String(process.pid) },
-        capabilities: {},
-      });
-      return;
-    } catch {
-      await Bun.sleep(100);
-    }
+async function waitForDaemon(control: DaemonControlPaths = config) {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    if (await controlReady(control)) return;
+    if (Date.now() >= deadline) break;
+    await Bun.sleep(100);
   }
   throw new Error("ACS service did not become ready; check ~/Library/Logs/acs.log");
 }
 
-async function stopUnmanagedDaemon() {
-  if (!(await socketListening(config.runtime))) return;
-  await controlCall(config.runtime, config.token, "system.shutdown", {});
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (!existsSync(config.runtime)) return;
+async function waitForDaemonStop(control: DaemonControlPaths = config) {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    if (!(await socketListening(control.runtime))) return;
+    if (Date.now() >= deadline) break;
     await Bun.sleep(100);
   }
-  throw new Error("Existing ACS daemon did not stop; service installation aborted");
+  throw new Error("ACS daemon did not stop; check ~/Library/Logs/acs.log");
+}
+
+async function daemonLifecycle(command: string) {
+  if (process.platform !== "darwin")
+    throw new Error(
+      "daemon lifecycle commands require macOS; run acs daemon run under your service manager",
+    );
+  const home = required(process.env.HOME, "HOME"),
+    control = installedDaemonControlPaths(home, config),
+    options = {
+      home,
+      uid: required(process.getuid?.(), "user ID"),
+      waitUntilReady: () => waitForDaemon(control),
+      waitUntilStopped: () => waitForDaemonStop(control),
+      stopUnmanagedDaemon: () => stopUnmanagedDaemonAt(control),
+      isSocketOccupied: () => socketListening(control.runtime),
+      isControlReady: () => controlReady(control),
+    };
+  if (command === "start") {
+    console.log(`ACS service ${await startDaemonService(options)} is ready`);
+    return;
+  }
+  if (command === "stop") return stopDaemonService(options);
+  if (command === "restart") {
+    console.log(`ACS service ${await restartDaemonService(options)} is ready`);
+    return;
+  }
+  const status = await daemonServiceStatus(options);
+  console.log(status.state);
+  process.exitCode = status.exitCode;
+}
+
+async function controlReady(control: DaemonControlPaths = config) {
+  try {
+    await controlCall(
+      control.runtime,
+      control.token,
+      "system.initialize",
+      {
+        protocolVersion: "1.0",
+        client: { name: "acs-cli", version: "0.1.0", instanceId: String(process.pid) },
+        capabilities: {},
+      },
+      1,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopUnmanagedDaemonAt(control: DaemonControlPaths = config) {
+  await stopUnmanagedDaemon(
+    () => socketListening(control.runtime),
+    () => controlCall(control.runtime, control.token, "system.shutdown", {}, 5),
+  );
 }
 
 async function adoptCodexAppServer(label: string, force: boolean) {
@@ -378,6 +441,10 @@ async function stopOwnedCodexAppServer(
 function socketListening(path: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(path);
+    socket.setTimeout(1_000, () => {
+      socket.destroy();
+      resolve(false);
+    });
     socket.once("connect", () => {
       socket.destroy();
       resolve(true);
@@ -741,7 +808,7 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 }
 function usage() {
   console.log(
-    `ACS 0.1.0\n\n  acs init\n  acs daemon start\n  acs agents create <slug> [--claim] [--name name] [--description text]\n  acs agents get|delete <agent>\n  acs agents update <agent> [--slug slug] [--name name] [--description text] [--enable|--disable]\n  acs agents list\n  acs codex sessions list\n  acs codex bind <agent> [--session <codex-thread-id>] [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings bind <agent> --session <codex-thread-id> [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings get|revoke <binding-id>\n  acs bindings list\n  acs runtimes list\n  acs inbox [agent]\n  acs deliveries list|get|retry|cancel <delivery-id>\n  acs deliveries resolve <delivery-id> --accepted|--not-accepted-and-retry|--not-accepted-and-cancel\n  acs token show\n  acs codex doctor\n  acs codex install-mcp\n  acs mcp codex`,
+    `ACS 0.1.0\n\n  acs init\n  acs daemon run|start|stop|status|restart\n    status: control-ready (0), stopped (1), supervisor-running/control-unavailable (2)\n  acs agents create <slug> [--claim] [--name name] [--description text]\n  acs agents get|delete <agent>\n  acs agents update <agent> [--slug slug] [--name name] [--description text] [--enable|--disable]\n  acs agents list\n  acs codex sessions list\n  acs codex bind <agent> [--session <codex-thread-id>] [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings bind <agent> --session <codex-thread-id> [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings get|revoke <binding-id>\n  acs bindings list\n  acs runtimes list\n  acs inbox [agent]\n  acs deliveries list|get|retry|cancel <delivery-id>\n  acs deliveries resolve <delivery-id> --accepted|--not-accepted-and-retry|--not-accepted-and-cancel\n  acs token show\n  acs codex doctor\n  acs codex install-mcp\n  acs codex app-server restart <account-label>\n  acs mcp codex`,
   );
 }
 

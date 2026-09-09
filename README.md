@@ -16,11 +16,18 @@ global Codex MCP bridge with the same socket path. The service starts at login
 and restarts if it exits; logs are in `~/Library/Logs/acs.log`. Re-running `init`
 updates the registration and retires the legacy `local.asc.daemon` service. Restart existing Codex sessions to load the MCP tools.
 Use `acs init --no-service` for file initialization only (for example in tests).
-On other platforms, start `acs daemon start` under your service manager.
+The LaunchAgent runs `acs daemon run` in the foreground. Use `acs daemon start`
+to bootstrap its installed plist and wait for authenticated control readiness;
+it is safe to repeat. `acs daemon stop` boots out the supervisor before waiting
+for shutdown, `acs daemon restart` is stop then start, and `acs daemon status`
+prints `control-ready` (exit 0), `stopped` (exit 1), or
+`supervisor-running/control-unavailable` (exit 2). These lifecycle commands do
+not alter per-account Codex app-server services; restart one explicitly with
+`acs codex app-server restart <account-label>`. On other platforms, run
+`acs daemon run` under your service manager.
 
 `init` migrates a running foreground daemon to the login service and restarts
-an existing service so rebuilt binaries take effect. `acs daemon start` refuses
-to replace a live control socket.
+an existing service so rebuilt binaries take effect.
 
 ### Receiving messages in independently launched sessions
 

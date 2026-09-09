@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export function persistentEnvironment(environment: Record<string, string>, cwd = process.cwd()) {
   const normalized = { ...environment };
@@ -24,7 +24,7 @@ export function launchAgent(options: {
 }) {
   return {
     Label: "local.acs.daemon",
-    ProgramArguments: [...options.command, "daemon", "start"],
+    ProgramArguments: [...options.command, "daemon", "run"],
     RunAtLoad: true,
     KeepAlive: true,
     ThrottleInterval: 10,
@@ -251,6 +251,145 @@ export async function installService(options: {
   } else requireSuccess(control(["kickstart", "-k", target]));
 }
 
+type DaemonLifecycleOptions = {
+  home: string;
+  uid: number;
+  launchctl?: typeof launchctl;
+  sleep?: (milliseconds: number) => Promise<void>;
+};
+
+export type DaemonControlPaths = { runtime: string; token: string };
+
+export function daemonControlPathsFromEnvironment(environment: unknown): DaemonControlPaths {
+  if (!isRecord(environment)) throw new Error("Invalid ACS LaunchAgent EnvironmentVariables");
+  const runtime = absolutePath(environment.ACS_CONTROL_SOCKET, "ACS_CONTROL_SOCKET"),
+    dataDirectory =
+      environment.ACS_HOME === undefined
+        ? `${absolutePath(environment.HOME, "HOME")}/Library/Application Support/acs`
+        : absolutePath(environment.ACS_HOME, "ACS_HOME");
+  return { runtime, token: `${dataDirectory}/control.token` };
+}
+
+export function installedDaemonControlPaths(
+  home: string,
+  fallback: DaemonControlPaths,
+): DaemonControlPaths {
+  const path = `${home}/Library/LaunchAgents/local.acs.daemon.plist`;
+  if (!existsSync(path)) return fallback;
+  const plist = Bun.spawnSync(["/usr/bin/plutil", "-convert", "json", "-o", "-", path]);
+  if (!plist.success) throw new Error(plist.stderr.toString() || "Invalid ACS LaunchAgent plist");
+  const root: unknown = JSON.parse(plist.stdout.toString());
+  if (!isRecord(root)) throw new Error("Invalid ACS LaunchAgent plist");
+  return daemonControlPathsFromEnvironment(root.EnvironmentVariables);
+}
+
+export function daemonCommandRunsForeground(
+  command: string | undefined,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  platform = process.platform,
+) {
+  return (
+    command === "run" ||
+    (platform === "darwin" &&
+      command === "start" &&
+      environment.XPC_SERVICE_NAME === "local.acs.daemon")
+  );
+}
+
+export async function stopUnmanagedDaemon(
+  isSocketOccupied: () => Promise<boolean>,
+  shutdown: () => Promise<unknown>,
+) {
+  if (!(await isSocketOccupied())) return;
+  try {
+    await shutdown();
+  } catch (error) {
+    if (await isSocketOccupied()) throw error;
+  }
+}
+
+export type DaemonServiceStatus = {
+  state: "control-ready" | "stopped" | "supervisor-running/control-unavailable";
+  exitCode: 0 | 1 | 2;
+};
+
+function daemonService(options: Pick<DaemonLifecycleOptions, "home" | "uid">) {
+  const domain = `gui/${options.uid}`,
+    label = "local.acs.daemon";
+  return {
+    domain,
+    target: `${domain}/${label}`,
+    path: `${options.home}/Library/LaunchAgents/${label}.plist`,
+  };
+}
+
+export async function startDaemonService(
+  options: DaemonLifecycleOptions & {
+    isSocketOccupied?: () => Promise<boolean>;
+    waitUntilReady: () => Promise<void>;
+  },
+) {
+  const control = options.launchctl ?? launchctl,
+    service = daemonService(options);
+  if (!control(["print", service.target]).success) {
+    if (options.isSocketOccupied && (await options.isSocketOccupied()))
+      throw new Error(
+        "ACS daemon is already running; stop the unmanaged daemon before starting the service",
+      );
+    if (!existsSync(service.path))
+      throw new Error(`ACS LaunchAgent is not installed: ${service.path}`);
+    requireSuccess(control(["bootstrap", service.domain, service.path]));
+  }
+  await options.waitUntilReady();
+  return service.target;
+}
+
+export async function stopDaemonService(
+  options: DaemonLifecycleOptions & {
+    isControlReady: () => Promise<boolean>;
+    stopUnmanagedDaemon: () => Promise<void>;
+    waitUntilStopped: () => Promise<void>;
+  },
+) {
+  const control = options.launchctl ?? launchctl,
+    service = daemonService(options),
+    loaded = control(["print", service.target]).success;
+  if (loaded) {
+    const result = control(["bootout", service.target]);
+    if (!result.success && control(["print", service.target]).success) requireSuccess(result);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (!control(["print", service.target]).success) break;
+      if (attempt === 49) throw new Error("ACS service did not unload");
+      await (options.sleep ?? Bun.sleep)(100);
+    }
+    if (await options.isControlReady()) await options.stopUnmanagedDaemon();
+  } else await options.stopUnmanagedDaemon();
+  await options.waitUntilStopped();
+}
+
+export async function daemonServiceStatus(
+  options: DaemonLifecycleOptions & { isControlReady: () => Promise<boolean> },
+): Promise<DaemonServiceStatus> {
+  const control = options.launchctl ?? launchctl,
+    loaded = control(["print", daemonService(options).target]).success;
+  if (await options.isControlReady()) return { state: "control-ready", exitCode: 0 };
+  return loaded
+    ? { state: "supervisor-running/control-unavailable", exitCode: 2 }
+    : { state: "stopped", exitCode: 1 };
+}
+
+export async function restartDaemonService(
+  options: DaemonLifecycleOptions & {
+    isControlReady: () => Promise<boolean>;
+    stopUnmanagedDaemon: () => Promise<void>;
+    waitUntilStopped: () => Promise<void>;
+    waitUntilReady: () => Promise<void>;
+  },
+) {
+  await stopDaemonService(options);
+  return startDaemonService(options);
+}
+
 function launchctl(args: string[]) {
   const result = Bun.spawnSync(["/bin/launchctl", ...args]);
   return { success: result.success, error: result.stderr.toString() };
@@ -258,4 +397,14 @@ function launchctl(args: string[]) {
 
 function requireSuccess(result: ReturnType<typeof launchctl>) {
   if (!result.success) throw new Error(result.error || "launchctl failed");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function absolutePath(value: unknown, name: string) {
+  if (typeof value !== "string" || !isAbsolute(value))
+    throw new Error(`Invalid ACS LaunchAgent ${name}`);
+  return value;
 }
