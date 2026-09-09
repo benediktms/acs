@@ -12,11 +12,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   codexAppServerLaunchAgent,
+  daemonCommandRunsForeground,
+  daemonControlPathsFromEnvironment,
   type DaemonServiceStatus,
   codexZshIntegration,
   daemonServiceStatus,
   installCodexAppServer,
   installService,
+  installedDaemonControlPaths,
   launchAgent,
   listenerPidCommand,
   ownedCodexAppServerPid,
@@ -26,6 +29,7 @@ import {
   restartDaemonService,
   startDaemonService,
   stopDaemonService,
+  stopUnmanagedDaemon,
   syncCodexZshIntegration,
 } from "../apps/acs/src/service";
 
@@ -71,6 +75,63 @@ test("login service preserves executable arguments and the bridge socket environ
     expect(decoded.exitCode).toBe(0);
     expect(JSON.parse(decoded.stdout.toString())).toEqual(agent);
   }
+});
+
+test("derives installed daemon control paths from persisted environment", () => {
+  expect(
+    daemonControlPathsFromEnvironment({
+      ACS_CONTROL_SOCKET: "/private/tmp/acs/control.sock",
+      ACS_HOME: "/Users/example/.acs",
+    }),
+  ).toEqual({
+    runtime: "/private/tmp/acs/control.sock",
+    token: "/Users/example/.acs/control.token",
+  });
+  expect(
+    daemonControlPathsFromEnvironment({
+      ACS_CONTROL_SOCKET: "/private/tmp/acs/control.sock",
+      HOME: "/Users/example",
+    }),
+  ).toEqual({
+    runtime: "/private/tmp/acs/control.sock",
+    token: "/Users/example/Library/Application Support/acs/control.token",
+  });
+  expect(() =>
+    daemonControlPathsFromEnvironment({ ACS_CONTROL_SOCKET: "relative", HOME: "/Users/example" }),
+  ).toThrow("ACS_CONTROL_SOCKET");
+  const fallback = { runtime: "/tmp/current.sock", token: "/tmp/current.token" };
+  expect(installedDaemonControlPaths("/missing", fallback)).toBe(fallback);
+});
+
+test("runs daemon start in the foreground only for its launchd service", () => {
+  const launchd = { XPC_SERVICE_NAME: "local.acs.daemon" };
+  expect(daemonCommandRunsForeground("run", {}, "linux")).toBe(true);
+  expect(daemonCommandRunsForeground("start", launchd, "darwin")).toBe(true);
+  expect(daemonCommandRunsForeground("start", launchd, "linux")).toBe(false);
+  expect(daemonCommandRunsForeground("start", {}, "darwin")).toBe(false);
+  expect(
+    daemonCommandRunsForeground("start", { XPC_SERVICE_NAME: "other.service" }, "darwin"),
+  ).toBe(false);
+});
+
+test("accepts a shutdown error only after the unmanaged socket vanishes", async () => {
+  const error = new Error("unauthorized");
+  let probes = [true, false];
+  await stopUnmanagedDaemon(
+    async () => probes.shift() ?? false,
+    async () => {
+      throw error;
+    },
+  );
+  probes = [true, true];
+  await expect(
+    stopUnmanagedDaemon(
+      async () => probes.shift() ?? false,
+      async () => {
+        throw error;
+      },
+    ),
+  ).rejects.toBe(error);
 });
 
 test("manages only the ACS LaunchAgent lifecycle", async () => {

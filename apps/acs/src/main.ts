@@ -27,9 +27,12 @@ import {
 } from "../../../packages/config/src/index";
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
+  daemonCommandRunsForeground,
+  type DaemonControlPaths,
   daemonServiceStatus,
   installCodexAppServer,
   installService,
+  installedDaemonControlPaths,
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
@@ -37,6 +40,7 @@ import {
   restartCodexAppServer,
   startDaemonService,
   stopDaemonService,
+  stopUnmanagedDaemon,
   syncCodexZshIntegration,
 } from "./service";
 
@@ -61,7 +65,7 @@ async function main() {
         home: required(process.env.HOME, "HOME"),
         uid: required(process.getuid?.(), "user ID"),
         stopUnmanagedDaemon: async () => {
-          await stopUnmanagedDaemon();
+          await stopUnmanagedDaemonAt();
           await waitForDaemonStop();
         },
       });
@@ -102,7 +106,7 @@ async function main() {
     console.log(`Initialized ACS at ${config.data}`);
     return;
   }
-  if (args[0] === "daemon" && args[1] === "run") return daemon();
+  if (args[0] === "daemon" && daemonCommandRunsForeground(args[1])) return daemon();
   if (args[0] === "daemon" && ["start", "stop", "status", "restart"].includes(args[1] ?? ""))
     return daemonLifecycle(required(args[1], "daemon lifecycle command"));
   if (args[0] === "mcp" && args[1] === "codex") return runMcp(port);
@@ -289,20 +293,20 @@ function configuredCodexHome() {
   );
 }
 
-async function waitForDaemon() {
+async function waitForDaemon(control: DaemonControlPaths = config) {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    if (await controlReady()) return;
+    if (await controlReady(control)) return;
     if (Date.now() >= deadline) break;
     await Bun.sleep(100);
   }
   throw new Error("ACS service did not become ready; check ~/Library/Logs/acs.log");
 }
 
-async function waitForDaemonStop() {
+async function waitForDaemonStop(control: DaemonControlPaths = config) {
   const deadline = Date.now() + 10_000;
   for (;;) {
-    if (!(await socketListening(config.runtime))) return;
+    if (!(await socketListening(control.runtime))) return;
     if (Date.now() >= deadline) break;
     await Bun.sleep(100);
   }
@@ -314,15 +318,17 @@ async function daemonLifecycle(command: string) {
     throw new Error(
       "daemon lifecycle commands require macOS; run acs daemon run under your service manager",
     );
-  const options = {
-    home: required(process.env.HOME, "HOME"),
-    uid: required(process.getuid?.(), "user ID"),
-    waitUntilReady: waitForDaemon,
-    waitUntilStopped: waitForDaemonStop,
-    stopUnmanagedDaemon,
-    isSocketOccupied: () => socketListening(config.runtime),
-    isControlReady: controlReady,
-  };
+  const home = required(process.env.HOME, "HOME"),
+    control = installedDaemonControlPaths(home, config),
+    options = {
+      home,
+      uid: required(process.getuid?.(), "user ID"),
+      waitUntilReady: () => waitForDaemon(control),
+      waitUntilStopped: () => waitForDaemonStop(control),
+      stopUnmanagedDaemon: () => stopUnmanagedDaemonAt(control),
+      isSocketOccupied: () => socketListening(control.runtime),
+      isControlReady: () => controlReady(control),
+    };
   if (command === "start") {
     console.log(`ACS service ${await startDaemonService(options)} is ready`);
     return;
@@ -337,11 +343,11 @@ async function daemonLifecycle(command: string) {
   process.exitCode = status.exitCode;
 }
 
-async function controlReady() {
+async function controlReady(control: DaemonControlPaths = config) {
   try {
     await controlCall(
-      config.runtime,
-      config.token,
+      control.runtime,
+      control.token,
       "system.initialize",
       {
         protocolVersion: "1.0",
@@ -356,9 +362,11 @@ async function controlReady() {
   }
 }
 
-async function stopUnmanagedDaemon() {
-  if (!(await socketListening(config.runtime))) return;
-  await controlCall(config.runtime, config.token, "system.shutdown", {}, 5);
+async function stopUnmanagedDaemonAt(control: DaemonControlPaths = config) {
+  await stopUnmanagedDaemon(
+    () => socketListening(control.runtime),
+    () => controlCall(control.runtime, control.token, "system.shutdown", {}, 5),
+  );
 }
 
 async function adoptCodexAppServer(label: string, force: boolean) {

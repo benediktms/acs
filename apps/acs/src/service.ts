@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export function persistentEnvironment(environment: Record<string, string>, cwd = process.cwd()) {
   const normalized = { ...environment };
@@ -258,6 +258,56 @@ type DaemonLifecycleOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
+export type DaemonControlPaths = { runtime: string; token: string };
+
+export function daemonControlPathsFromEnvironment(environment: unknown): DaemonControlPaths {
+  if (!isRecord(environment)) throw new Error("Invalid ACS LaunchAgent EnvironmentVariables");
+  const runtime = absolutePath(environment.ACS_CONTROL_SOCKET, "ACS_CONTROL_SOCKET"),
+    dataDirectory =
+      environment.ACS_HOME === undefined
+        ? `${absolutePath(environment.HOME, "HOME")}/Library/Application Support/acs`
+        : absolutePath(environment.ACS_HOME, "ACS_HOME");
+  return { runtime, token: `${dataDirectory}/control.token` };
+}
+
+export function installedDaemonControlPaths(
+  home: string,
+  fallback: DaemonControlPaths,
+): DaemonControlPaths {
+  const path = `${home}/Library/LaunchAgents/local.acs.daemon.plist`;
+  if (!existsSync(path)) return fallback;
+  const plist = Bun.spawnSync(["/usr/bin/plutil", "-convert", "json", "-o", "-", path]);
+  if (!plist.success) throw new Error(plist.stderr.toString() || "Invalid ACS LaunchAgent plist");
+  const root: unknown = JSON.parse(plist.stdout.toString());
+  if (!isRecord(root)) throw new Error("Invalid ACS LaunchAgent plist");
+  return daemonControlPathsFromEnvironment(root.EnvironmentVariables);
+}
+
+export function daemonCommandRunsForeground(
+  command: string | undefined,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  platform = process.platform,
+) {
+  return (
+    command === "run" ||
+    (platform === "darwin" &&
+      command === "start" &&
+      environment.XPC_SERVICE_NAME === "local.acs.daemon")
+  );
+}
+
+export async function stopUnmanagedDaemon(
+  isSocketOccupied: () => Promise<boolean>,
+  shutdown: () => Promise<unknown>,
+) {
+  if (!(await isSocketOccupied())) return;
+  try {
+    await shutdown();
+  } catch (error) {
+    if (await isSocketOccupied()) throw error;
+  }
+}
+
 export type DaemonServiceStatus = {
   state: "control-ready" | "stopped" | "supervisor-running/control-unavailable";
   exitCode: 0 | 1 | 2;
@@ -347,4 +397,14 @@ function launchctl(args: string[]) {
 
 function requireSuccess(result: ReturnType<typeof launchctl>) {
   if (!result.success) throw new Error(result.error || "launchctl failed");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function absolutePath(value: unknown, name: string) {
+  if (typeof value !== "string" || !isAbsolute(value))
+    throw new Error(`Invalid ACS LaunchAgent ${name}`);
+  return value;
 }
