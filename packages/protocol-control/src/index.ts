@@ -332,7 +332,9 @@ export function controlHandler(
         case "agents.get": {
           const agent = store.agent(required(p.agent, "agent"));
           if (!agent) throw new Error("AGENT_NOT_FOUND");
-          return ok(rpc.id, { agent: agentDto(store, agent) });
+          return ok(rpc.id, {
+            agent: { ...agentDto(store, agent), currentActivity: store.currentActivity(agent.id) },
+          });
         }
         case "agents.list": {
           const agentLimit = Math.min(p.limit ?? 50, 100),
@@ -360,7 +362,10 @@ export function controlHandler(
               "ascending",
             );
           return ok(rpc.id, {
-            items: page.items.map(({ dto }) => dto),
+            items: page.items.map(({ agent, dto }) => ({
+              ...dto,
+              currentActivity: store.currentActivity(agent.id),
+            })),
             nextCursor: page.nextCursor,
           });
         }
@@ -1190,7 +1195,6 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
     availability: binding?.last_observed_availability ?? "unknown",
-    currentActivity: store.currentActivity(agent.id),
     binding: binding
       ? {
           id: binding.id,
@@ -1393,6 +1397,7 @@ function agentHasSkill(json: string, skill: string) {
       isRecord(item) &&
       (item.id === skill ||
         item.name === skill ||
+        item.description === skill ||
         (Array.isArray(item.tags) && item.tags.includes(skill))),
   );
 }

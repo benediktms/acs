@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1165,9 +1165,14 @@ describe("control protocol", () => {
         page(await (await request(method, params)).json());
     const beta = store.createAgent("beta");
     store.createAgent("delta");
+    const activityReads = spyOn(store, "currentActivity");
     const firstAgents = await call("agents.list", { limit: 1 });
+    expect(activityReads).toHaveBeenCalledTimes(1);
+    activityReads.mockClear();
     store.createAgent("alpha");
     const secondAgents = await call("agents.list", { limit: 1, cursor: firstAgents.nextCursor });
+    expect(activityReads).toHaveBeenCalledTimes(1);
+    activityReads.mockRestore();
     expect(slugs(firstAgents.items)).toEqual(["beta"]);
     expect(slugs(secondAgents.items)).toEqual(["delta"]);
     expect(slugs((await call("agents.list", { text: "ELT" })).items)).toEqual(["delta"]);
@@ -1187,6 +1192,9 @@ describe("control protocol", () => {
       },
     });
     expect(slugs((await call("agents.list", { skill: "data" })).items)).toEqual(["reports-agent"]);
+    expect(slugs((await call("agents.list", { skill: "Build reports" })).items)).toEqual([
+      "reports-agent",
+    ]);
 
     const betaOldBinding = store.bind(beta.id, "beta-old"),
       betaBinding = store.bind(beta.id, "beta-current", { revokeExisting: true }),
