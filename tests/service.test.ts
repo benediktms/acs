@@ -471,7 +471,7 @@ test("swarm launcher includes hardening flags", () => {
   });
   const script = readFileSync(swarm, "utf8");
   expect(script).toContain("ulimit -n 4096");
-  expect(script).toContain("--dangerously-bypass-hook-trust");
+  expect(script).toContain("exec 'acs' codex run -- \"$@\"");
   rmSync(root, { recursive: true });
 });
 

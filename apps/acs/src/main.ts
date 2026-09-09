@@ -134,11 +134,10 @@ async function main() {
               uid: required(process.getuid?.(), "user ID"),
               socketOccupied: () => socketListening(account.socket),
             });
-            installMcp(account.home);
           }
         }
         await waitForDaemon();
-        console.log("ACS login service and global Codex MCP are ready");
+        console.log("ACS login service is ready; swarm injects Codex MCP and hooks at launch");
       }
       console.log(`Initialized ACS at ${config.data}`);
     });
@@ -401,6 +400,25 @@ async function main() {
         [
           settings.codex.binary,
           "--dangerously-bypass-hook-trust",
+          "-c",
+          `mcp_servers.acs=${inlineToml({ command: selfCommand()[0], args: [...selfCommand().slice(1), "mcp", "codex"], env: { ...serviceEnvironment(), CODEX_HOME: home }, enabled: true })}`,
+          "-c",
+          "features.hooks=true",
+          "-c",
+          `hooks.SessionStart=${inlineToml([
+            {
+              matcher: "^(startup|resume|clear)$",
+              hooks: [
+                {
+                  type: "command",
+                  command:
+                    "printf '%s\\n' 'On the first model turn after this session starts or resumes, call acs_identity before handling the user request. If it reports an unbound state, choose a short unique lowercase logical-agent name and call acs_register with it immediately. If that name already exists, choose another and retry. Do not ask the user for a name or claim code.'",
+                  timeout: 5,
+                  statusMessage: "Loading ACS registration guidance",
+                },
+              ],
+            },
+          ])}`,
           "--remote",
           `unix://${account.socket}`,
           ...(hasCurrentDirectory ? [] : ["--cd", process.cwd()]),
@@ -568,45 +586,35 @@ function serviceEnvironment() {
   return persistentEnvironment(environment);
 }
 
-function installMcp(
-  codexHome = configuredCodexHome(),
-  options: { bypassHookTrust: boolean; dynamicHooks?: string[] } = { bypassHookTrust: true },
-) {
+function inlineToml(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(inlineToml).join(", ")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value)
+      .map(([key, item]) => `${JSON.stringify(key)} = ${inlineToml(item)}`)
+      .join(", ")}}`;
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number")
+    return JSON.stringify(value);
+  throw new Error("Unsupported inline TOML value");
+}
+
+function installMcp(codexHome = configuredCodexHome()) {
   const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
-    withBypass = [
-      settings.codex.binary,
-      ...(options.bypassHookTrust ? ["--dangerously-bypass-hook-trust"] : []),
-      "mcp",
-      "add",
-      "acs",
-      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-      ...(options.dynamicHooks ?? []),
-      "--",
-      ...selfCommand(),
-      "mcp",
-      "codex",
-    ],
     withoutBypass = [
       settings.codex.binary,
       "mcp",
       "add",
       "acs",
       ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-      ...(options.dynamicHooks ?? []),
       "--",
       ...selfCommand(),
       "mcp",
       "codex",
     ],
-    installed = Bun.spawnSync(withBypass, { env: { ...process.env, CODEX_HOME: codexHome } }),
-    error = installed.stderr.toString(),
-    finalInstallation = installed.success
-      ? installed
-      : options.bypassHookTrust && /unknown.*dangerously-bypass-hook-trust/i.test(error)
-        ? Bun.spawnSync(withoutBypass, { env: { ...process.env, CODEX_HOME: codexHome } })
-        : installed;
+    finalInstallation = Bun.spawnSync(withoutBypass, {
+      env: { ...process.env, CODEX_HOME: codexHome },
+    });
 
-  if (!finalInstallation.success) throw new Error(error || finalInstallation.stderr.toString());
+  if (!finalInstallation.success) throw new Error(finalInstallation.stderr.toString());
   process.stdout.write(finalInstallation.stdout);
 }
 

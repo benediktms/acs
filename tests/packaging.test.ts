@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -582,7 +583,24 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     env,
   });
   if (codexRun.exitCode !== 0) throw new Error(codexRun.stderr.toString());
-  expect(readFileSync(passedArgs, "utf8")).toBe(
+  const injected = readFileSync(passedArgs, "utf8").split("\n").slice(1, 7);
+  expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
+  const overrides = Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"));
+  expect(overrides).toMatchObject({
+    mcp_servers: { acs: { command: realpathSync(binary), args: ["mcp", "codex"], enabled: true } },
+    features: { hooks: true },
+    hooks: {
+      SessionStart: [
+        { hooks: [{ type: "command", command: expect.stringContaining("call acs_identity") }] },
+      ],
+    },
+  });
+  const passedLaunchArgs = () => {
+    const arguments_ = readFileSync(passedArgs, "utf8").split("\n");
+    expect(arguments_.filter((_, index) => [1, 3, 5].includes(index))).toEqual(["-c", "-c", "-c"]);
+    return [arguments_[0], ...arguments_.slice(7)].join("\n");
+  };
+  expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
   );
   const defaultHomeRun = Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
@@ -590,14 +608,14 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     env: { ...env, CODEX_HOME: undefined },
   });
   if (defaultHomeRun.exitCode !== 0) throw new Error(defaultHomeRun.stderr.toString());
-  expect(readFileSync(passedArgs, "utf8")).toBe(
+  expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n`,
   );
   const withDirectory = Bun.spawnSync([binary, "codex", "run", "--", "-C", "/chosen", "resume"], {
     env,
   });
   if (withDirectory.exitCode !== 0) throw new Error(withDirectory.stderr.toString());
-  expect(readFileSync(passedArgs, "utf8")).toBe(
+  expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n-C\n/chosen\nresume\n`,
   );
   const remote = Bun.spawnSync([binary, "codex", "run", "--", "--remote=unix:///other"], {
@@ -623,7 +641,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     env,
   });
   if (nestedRemote.exitCode !== 0) throw new Error(nestedRemote.stderr.toString());
-  expect(readFileSync(passedArgs, "utf8")).toBe(
+  expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n--remote\n`,
   );
   const nestedDirectory = Bun.spawnSync([binary, "codex", "run", "--", "--", "-C", "/chosen"], {
@@ -631,7 +649,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     env,
   });
   if (nestedDirectory.exitCode !== 0) throw new Error(nestedDirectory.stderr.toString());
-  expect(readFileSync(passedArgs, "utf8")).toBe(
+  expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
   );
 }, 15_000);
