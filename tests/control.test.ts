@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -657,12 +657,112 @@ describe("control protocol", () => {
       await (
         await call(
           "executor.task.acknowledge",
-          { evidence: callerEvidence, taskId: assigned.task.id, deliveryId: assigned.deliveryId },
+          {
+            evidence: callerEvidence,
+            taskId: assigned.task.id,
+            deliveryId: assigned.deliveryId,
+            activitySummary: "Reviewing the work",
+          },
           "1",
           bridgeToken,
         )
       ).json(),
     ).toMatchObject({ result: { task: { id: assigned.task.id, state: "working" } } });
+    expect(
+      await (await call("agents.get", { agent: "backend" }, "1", bridgeToken)).json(),
+    ).toMatchObject({
+      result: {
+        agent: {
+          currentActivity: {
+            state: "working",
+            summary: "Reviewing the work",
+            updatedAt: expect.any(String),
+            expiresAt: expect.any(String),
+          },
+        },
+      },
+    });
+    expect(
+      await (
+        await call(
+          "executor.task.activityUpdate",
+          {
+            evidence: callerEvidence,
+            taskId: assigned.task.id,
+            action: "refresh",
+            activitySummary: "Implementing the work",
+          },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ result: { task: { state: "working" } } });
+    expect(
+      await (await call("agents.list", { skill: "coding" }, "1", bridgeToken)).json(),
+    ).toMatchObject({
+      result: {
+        items: [
+          {
+            slug: "backend",
+            currentActivity: {
+              state: "working",
+              summary: "Implementing the work",
+              updatedAt: expect.any(String),
+              expiresAt: expect.any(String),
+            },
+          },
+        ],
+      },
+    });
+    expect(
+      await (
+        await call(
+          "executor.task.activityUpdate",
+          {
+            evidence: evidence("new-claimed-thread"),
+            taskId: assigned.task.id,
+            action: "refresh",
+          },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "TASK_NOT_ASSIGNED" } } });
+    expect(
+      await (
+        await call(
+          "executor.task.activityUpdate",
+          {
+            evidence: callerEvidence,
+            taskId: assigned.task.id,
+            action: "clear",
+            activitySummary: "must reject",
+          },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
+    await call(
+      "executor.task.activityUpdate",
+      { evidence: callerEvidence, taskId: assigned.task.id, action: "clear" },
+      "1",
+      bridgeToken,
+    );
+    const afterClear = record(
+      await (await call("agents.get", { agent: "backend" }, "1", bridgeToken)).json(),
+    );
+    expect(record(record(afterClear.result).agent)).not.toHaveProperty("currentActivity");
+    expect(
+      await (
+        await call(
+          "executor.task.activityUpdate",
+          { evidence: callerEvidence, taskId: assigned.task.id, action: "refresh" },
+          "1",
+          bridgeToken,
+        )
+      ).json(),
+    ).toMatchObject({ result: { task: { state: "working" } } });
     expect(
       store.db
         .query<{ state: string; state_reason: string }, [string]>(
@@ -1065,9 +1165,14 @@ describe("control protocol", () => {
         page(await (await request(method, params)).json());
     const beta = store.createAgent("beta");
     store.createAgent("delta");
+    const activityReads = spyOn(store, "currentActivity");
     const firstAgents = await call("agents.list", { limit: 1 });
+    expect(activityReads).toHaveBeenCalledTimes(1);
+    activityReads.mockClear();
     store.createAgent("alpha");
     const secondAgents = await call("agents.list", { limit: 1, cursor: firstAgents.nextCursor });
+    expect(activityReads).toHaveBeenCalledTimes(1);
+    activityReads.mockRestore();
     expect(slugs(firstAgents.items)).toEqual(["beta"]);
     expect(slugs(secondAgents.items)).toEqual(["delta"]);
     expect(slugs((await call("agents.list", { text: "ELT" })).items)).toEqual(["delta"]);
@@ -1087,6 +1192,9 @@ describe("control protocol", () => {
       },
     });
     expect(slugs((await call("agents.list", { skill: "data" })).items)).toEqual(["reports-agent"]);
+    expect(slugs((await call("agents.list", { skill: "Build reports" })).items)).toEqual([
+      "reports-agent",
+    ]);
 
     const betaOldBinding = store.bind(beta.id, "beta-old"),
       betaBinding = store.bind(beta.id, "beta-current", { revokeExisting: true }),

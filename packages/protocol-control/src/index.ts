@@ -67,6 +67,13 @@ const partSchema = z.discriminatedUnion("kind", [
       )
       .optional(),
     artifacts: z.array(artifactSchema).optional(),
+    action: z.enum(["refresh", "clear"]).optional(),
+    activitySummary: z
+      .string()
+      .refine((value) => [...value].length >= 1 && [...value].length <= 240, {
+        message: "activitySummary must be 1-240 Unicode characters",
+      })
+      .optional(),
     bindingEpoch: z.number().int().positive().optional(),
     bindingId: z.string().optional(),
     claimCode: z.string().optional(),
@@ -325,7 +332,9 @@ export function controlHandler(
         case "agents.get": {
           const agent = store.agent(required(p.agent, "agent"));
           if (!agent) throw new Error("AGENT_NOT_FOUND");
-          return ok(rpc.id, { agent: agentDto(store, agent) });
+          return ok(rpc.id, {
+            agent: { ...agentDto(store, agent), currentActivity: store.currentActivity(agent.id) },
+          });
         }
         case "agents.list": {
           const agentLimit = Math.min(p.limit ?? 50, 100),
@@ -353,7 +362,10 @@ export function controlHandler(
               "ascending",
             );
           return ok(rpc.id, {
-            items: page.items.map(({ dto }) => dto),
+            items: page.items.map(({ agent, dto }) => ({
+              ...dto,
+              currentActivity: store.currentActivity(agent.id),
+            })),
             nextCursor: page.nextCursor,
           });
         }
@@ -762,13 +774,29 @@ export function controlHandler(
           if (rpc.method.endsWith("complete"))
             store.completeTask(taskId, a.principalId, summary, (p.artifacts ?? []).map(toArtifact));
           else if (rpc.method.endsWith("acknowledge"))
-            store.acknowledgeTask(taskId, a.principalId, required(p.deliveryId, "deliveryId"));
+            store.acknowledgeTask(
+              taskId,
+              a.principalId,
+              required(p.deliveryId, "deliveryId"),
+              p.activitySummary,
+            );
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
               store.requireTaskAcknowledged(taskId, a.principalId);
               store.setTaskState(taskId, a.principalId, state, summary, details);
             });
           else store.setTaskState(taskId, a.principalId, state, summary, details);
+          return ok(rpc.id, {
+            task: taskDto(store, taskId),
+            eventSequence: store.eventSequence(taskId),
+          });
+        }
+        case "executor.task.activityUpdate": {
+          const a = await attest(p.evidence);
+          if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
+          const taskId = required(p.taskId, "taskId"),
+            action = required(p.action, "action");
+          store.updateTaskActivity(taskId, a.principalId, action, p.activitySummary);
           return ok(rpc.id, {
             task: taskDto(store, taskId),
             eventSequence: store.eventSequence(taskId),
@@ -1369,6 +1397,7 @@ function agentHasSkill(json: string, skill: string) {
       isRecord(item) &&
       (item.id === skill ||
         item.name === skill ||
+        item.description === skill ||
         (Array.isArray(item.tags) && item.tags.includes(skill))),
   );
 }

@@ -74,6 +74,12 @@ export interface LogicalAgentDto {
     readonly tags: readonly string[];
   }[];
   readonly availability: RuntimeAvailability;
+  readonly currentActivity?: {
+    readonly state: "working" | "input-required" | "auth-required";
+    readonly summary?: string;
+    readonly updatedAt: string;
+    readonly expiresAt: string;
+  };
   readonly binding?: {
     readonly id: string;
     readonly harnessId: string;
@@ -503,6 +509,16 @@ export interface ControlMethodMap {
   "executor.task.acknowledge": {
     readonly params: ExecutorTaskEvidence & {
       readonly taskId: string;
+      readonly activitySummary?: string;
+    };
+    readonly result: { readonly task: TaskDto; readonly eventSequence: number };
+  };
+
+  "executor.task.activityUpdate": {
+    readonly params: ExecutorTaskEvidence & {
+      readonly taskId: string;
+      readonly action: "refresh" | "clear";
+      readonly activitySummary?: string;
     };
     readonly result: { readonly task: TaskDto; readonly eventSequence: number };
   };

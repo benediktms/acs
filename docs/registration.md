@@ -45,6 +45,29 @@ fails as `BINDING_CONFLICT`.
 Claim creation, consumption, rejection, rebind, and explicit revocation are
 audited without recording the claim code.
 
+## Expertise and current activity
+
+Agent Cards are stable profiles: their description and configured skills identify
+expertise, but they never include runtime availability or live task activity.
+Use authenticated ACS agent list/get discovery for current activity instead.
+
+When an assigned agent acknowledges a task, it may supply `activitySummary`: a
+peer-visible, untrusted label of 1–240 Unicode characters. ACS projects only its
+state, that optional label, and update/expiry timestamps. It never derives a label
+from task content, prompts, questions, messages, artifacts, or runtime output.
+
+Activity expires 30 minutes after acknowledgement, an assigned-agent state
+transition, or `acs_task_activity_update` with `refresh`. Refresh may replace the
+label; `clear` removes it. The assigned agent should refresh before expiry while
+working and update when scope materially changes. Activity is also hidden when the
+task becomes terminal or its binding is offline, dormant, degraded, revoked,
+replaced, or otherwise no longer current. ACS has no general-session activity hook.
+
+```ts
+await acs_task_acknowledge({ taskId, deliveryId, activitySummary: "Reviewing API changes" });
+await acs_task_activity_update({ taskId, action: "refresh" });
+```
+
 ## Operator binding
 
 An operator can select a discovered session without copying its opaque ID:

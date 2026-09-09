@@ -253,6 +253,14 @@ export interface ControlStoragePort extends SqlPort {
   deleteAgent(value: string): void;
   agent(value: string): AgentRow | null;
   agents(): AgentRow[];
+  currentActivity(agentId: string):
+    | {
+        state: "working" | "input-required" | "auth-required";
+        summary?: string;
+        updatedAt: string;
+        expiresAt: string;
+      }
+    | undefined;
   createClaim(
     agent: string,
     principalId: string,
@@ -277,7 +285,18 @@ export interface ControlStoragePort extends SqlPort {
     task: StoredTask;
   }[];
   inboxTask(agentId: string, taskId: string): unknown;
-  acknowledgeTask(taskId: string, principalId: string, deliveryId: string): StoredTask;
+  acknowledgeTask(
+    taskId: string,
+    principalId: string,
+    deliveryId: string,
+    activitySummary?: string,
+  ): StoredTask;
+  updateTaskActivity(
+    taskId: string,
+    principalId: string,
+    action: "refresh" | "clear",
+    activitySummary?: string,
+  ): StoredTask;
   requireTaskAcknowledged(taskId: string, principalId: string): void;
   publishMessage(
     taskId: string,
