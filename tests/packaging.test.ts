@@ -82,7 +82,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     a2aToken = tokenStore.createToken().token;
   tokenStore.close();
 
-  const daemon = Bun.spawn([binary, "daemon", "start"], {
+  const daemon = Bun.spawn([binary, "daemon", "run"], {
     env,
     stdout: "pipe",
     stderr: "pipe",
@@ -96,7 +96,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const socket = join(root, "control.sock");
   await waitFor(() => existsSync(socket));
   expect(statSync(socket).mode & 0o777).toBe(0o600);
-  const duplicateDaemon = Bun.spawn([binary, "daemon", "start"], {
+  const duplicateDaemon = Bun.spawn([binary, "daemon", "run"], {
     env,
     stdout: "pipe",
     stderr: "pipe",

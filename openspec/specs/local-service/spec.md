@@ -23,6 +23,28 @@ On macOS, `acs init` SHALL install a login service named `local.acs.daemon`, log
 to `~/Library/Logs/acs.log`, and register the Codex MCP bridge using the same
 runtime paths. Persisted path overrides SHALL be absolute. `--no-service`
 SHALL initialize files without installing the service or MCP registration.
+The LaunchAgent's `ProgramArguments` SHALL invoke `acs daemon run`; that command
+is the foreground daemon. `acs daemon start` SHALL bootstrap an installed,
+unloaded LaunchAgent and wait for authenticated control readiness without
+restarting an already loaded healthy service. `acs daemon stop` SHALL boot out
+the supervisor before a bounded shutdown wait, using authenticated shutdown only
+for an unmanaged foreground daemon. Start and stop SHALL be idempotent, and
+restart SHALL stop then start. These lifecycle commands SHALL NOT mutate
+per-account Codex app-server services.
+
+#### Scenario: Service status
+
+- **WHEN** an operator runs `acs daemon status`
+- **THEN** it performs no lifecycle mutation and prints `control-ready` with exit 0
+  when authenticated control is ready, including an unmanaged foreground daemon
+- **AND** it prints `stopped` with exit 1 when neither control nor supervisor is running
+- **AND** it prints `supervisor-running/control-unavailable` with exit 2 when the
+  LaunchAgent is running but authenticated control is unavailable
+
+#### Scenario: Non-macOS lifecycle operations
+
+- **WHEN** an operator runs a daemon lifecycle command other than `run` outside macOS
+- **THEN** ACS directs the operator to run `acs daemon run` under their service manager
 
 #### Scenario: Rename an existing service
 

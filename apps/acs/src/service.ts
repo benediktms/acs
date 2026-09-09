@@ -24,7 +24,7 @@ export function launchAgent(options: {
 }) {
   return {
     Label: "local.acs.daemon",
-    ProgramArguments: [...options.command, "daemon", "start"],
+    ProgramArguments: [...options.command, "daemon", "run"],
     RunAtLoad: true,
     KeepAlive: true,
     ThrottleInterval: 10,
@@ -249,6 +249,92 @@ export async function installService(options: {
       await Bun.sleep(100);
     }
   } else requireSuccess(control(["kickstart", "-k", target]));
+}
+
+type DaemonLifecycleOptions = {
+  home: string;
+  uid: number;
+  launchctl?: typeof launchctl;
+  sleep?: (milliseconds: number) => Promise<void>;
+};
+
+export type DaemonServiceStatus = {
+  state: "control-ready" | "stopped" | "supervisor-running/control-unavailable";
+  exitCode: 0 | 1 | 2;
+};
+
+function daemonService(options: Pick<DaemonLifecycleOptions, "home" | "uid">) {
+  const domain = `gui/${options.uid}`,
+    label = "local.acs.daemon";
+  return {
+    domain,
+    target: `${domain}/${label}`,
+    path: `${options.home}/Library/LaunchAgents/${label}.plist`,
+  };
+}
+
+export async function startDaemonService(
+  options: DaemonLifecycleOptions & {
+    isSocketOccupied?: () => Promise<boolean>;
+    waitUntilReady: () => Promise<void>;
+  },
+) {
+  const control = options.launchctl ?? launchctl,
+    service = daemonService(options);
+  if (!control(["print", service.target]).success) {
+    if (options.isSocketOccupied && (await options.isSocketOccupied()))
+      throw new Error(
+        "ACS daemon is already running; stop the unmanaged daemon before starting the service",
+      );
+    if (!existsSync(service.path))
+      throw new Error(`ACS LaunchAgent is not installed: ${service.path}`);
+    requireSuccess(control(["bootstrap", service.domain, service.path]));
+  }
+  await options.waitUntilReady();
+  return service.target;
+}
+
+export async function stopDaemonService(
+  options: DaemonLifecycleOptions & {
+    stopUnmanagedDaemon: () => Promise<void>;
+    waitUntilStopped: () => Promise<void>;
+  },
+) {
+  const control = options.launchctl ?? launchctl,
+    service = daemonService(options),
+    loaded = control(["print", service.target]).success;
+  if (loaded) {
+    const result = control(["bootout", service.target]);
+    if (!result.success && control(["print", service.target]).success) requireSuccess(result);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (!control(["print", service.target]).success) break;
+      if (attempt === 49) throw new Error("ACS service did not unload");
+      await (options.sleep ?? Bun.sleep)(100);
+    }
+  } else await options.stopUnmanagedDaemon();
+  await options.waitUntilStopped();
+}
+
+export async function daemonServiceStatus(
+  options: DaemonLifecycleOptions & { isControlReady: () => Promise<boolean> },
+): Promise<DaemonServiceStatus> {
+  const control = options.launchctl ?? launchctl,
+    loaded = control(["print", daemonService(options).target]).success;
+  if (await options.isControlReady()) return { state: "control-ready", exitCode: 0 };
+  return loaded
+    ? { state: "supervisor-running/control-unavailable", exitCode: 2 }
+    : { state: "stopped", exitCode: 1 };
+}
+
+export async function restartDaemonService(
+  options: DaemonLifecycleOptions & {
+    stopUnmanagedDaemon: () => Promise<void>;
+    waitUntilStopped: () => Promise<void>;
+    waitUntilReady: () => Promise<void>;
+  },
+) {
+  await stopDaemonService(options);
+  return startDaemonService(options);
 }
 
 function launchctl(args: string[]) {
