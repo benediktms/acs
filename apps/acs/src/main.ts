@@ -622,7 +622,7 @@ async function daemon() {
             store?.close();
           } finally {
             try {
-              if (existsSync(config.runtime)) unlinkSync(config.runtime);
+              if (control && existsSync(config.runtime)) unlinkSync(config.runtime);
             } finally {
               releaseDaemonLock(lock);
             }

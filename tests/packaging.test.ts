@@ -548,6 +548,17 @@ test("compiled daemon ownership ignores listener overrides and releases after a 
   expect(Bun.spawnSync([binary, "agents", "list"], { env: winnerEnvironment }).exitCode).toBe(0);
   expect(statSync(join(home, "daemon.lock.db")).mode & 0o777).toBe(0o600);
 
+  const collidingHome = join(root, "colliding-home"),
+    collision = daemonEnvironment(
+      collidingHome,
+      Number(winnerEnvironment.ACS_A2A_PORT),
+      winnerEnvironment.ACS_CONTROL_SOCKET,
+      join(root, "collision.db"),
+    );
+  prepareDaemon(binary, collision);
+  expect(Bun.spawnSync([binary, "daemon", "run"], { env: collision }).exitCode).toBe(1);
+  expect(Bun.spawnSync([binary, "agents", "list"], { env: winnerEnvironment }).exitCode).toBe(0);
+
   const otherHome = join(root, "other-home"),
     other = daemonEnvironment(
       otherHome,
