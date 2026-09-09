@@ -1029,7 +1029,7 @@ async function accountInstallationId(
   do {
     const runtimes = recordValue(await call("runtimes.list", { limit: 100, cursor })),
       runtime = arrayValue(runtimes.runtimes).find((item) =>
-        isConfiguredCodexRuntime(item, account.label, account.home),
+        isConfiguredCodexRuntime(item, account.label, account.home, account.socket),
       );
     installationId = runtime ? recordValue(runtime).installationId : undefined;
     cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;
@@ -1102,7 +1102,7 @@ async function doctor() {
     accountHealth = await Promise.all(
       settings.codex.accounts.map(async (account) => {
         const runtime = runtimes.find((candidate) =>
-          isConfiguredCodexRuntime(candidate, account.label, account.home),
+          isConfiguredCodexRuntime(candidate, account.label, account.home, account.socket),
         );
         if (!runtime)
           return {
