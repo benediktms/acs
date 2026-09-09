@@ -536,6 +536,35 @@ test("swarm installation cleans up the legacy wrapper and preserves native codex
   }
 });
 
+test("swarm leaves an unowned command untouched", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-collision-")),
+    swarm = join(root, ".local/bin/swarm");
+  mkdirSync(dirname(swarm), { recursive: true });
+  writeFileSync(swarm, "unrelated");
+  try {
+    expect(() =>
+      syncSwarmLauncher({
+        enabled: true,
+        accountCount: 1,
+        home: root,
+        command: ["acs"],
+        codexBinary: "codex",
+      }),
+    ).toThrow("ACS_SWARM_LAUNCHER_COLLISION");
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+    syncSwarmLauncher({
+      enabled: false,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: "codex",
+    });
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 test("finds only the Codex listener owned by the configured account", () => {
   const inspect = {
     listenerPid: (socket: string) => (socket === "/tmp/account.sock" ? 42 : undefined),

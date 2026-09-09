@@ -70,6 +70,22 @@ async function main() {
     writeDefaultConfig();
     migrateCodexAccounts();
     initFiles(config);
+    if (!args.includes("--no-service")) {
+      const home = required(process.env.HOME, "HOME");
+      syncSwarmLauncher({
+        enabled: settings.codex.enabled,
+        accountCount: settings.codex.accounts.length,
+        home,
+        command: selfCommand(),
+        codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
+      });
+      if (
+        settings.codex.enabled &&
+        settings.codex.accounts.length &&
+        !process.env.PATH?.split(":").includes(`${home}/.local/bin`)
+      )
+        console.warn(`ACS: add ${home}/.local/bin to PATH to use swarm`);
+    }
     if (process.platform === "darwin" && !args.includes("--no-service")) {
       await installService({
         command: selfCommand(),
@@ -105,13 +121,6 @@ async function main() {
           installMcp(account.home);
         }
       }
-      syncSwarmLauncher({
-        enabled: settings.codex.enabled,
-        accountCount: settings.codex.accounts.length,
-        home: required(process.env.HOME, "HOME"),
-        command: selfCommand(),
-        codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
-      });
       await waitForDaemon();
       console.log("ACS login service and global Codex MCP are ready");
     }

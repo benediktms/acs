@@ -30,7 +30,10 @@ not alter per-account Codex app-server services; restart one explicitly with
 an existing service so rebuilt binaries take effect.
 
 With configured Codex accounts, `init` installs `~/.local/bin/swarm` and removes
-the legacy ACS zsh wrapper. Use `swarm` for managed interactive sessions:
+the legacy ACS zsh wrapper. Ensure `~/.local/bin` is in `PATH` (for example,
+`export PATH="$HOME/.local/bin:$PATH"`). After upgrading from the wrapper,
+start a new shell or run `unfunction codex` in zsh. Use `swarm` for managed
+interactive sessions:
 
 ```sh
 swarm "start a task"
