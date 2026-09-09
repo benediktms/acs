@@ -168,7 +168,6 @@ export type BridgeAttestationDto =
       readonly agentId: string;
       readonly principalId: string;
       readonly evidenceFingerprint: string;
-      readonly runtimeCwd?: string;
     }
   | {
       readonly kind: "unattested";

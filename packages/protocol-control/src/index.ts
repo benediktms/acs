@@ -681,13 +681,13 @@ export function controlHandler(
         }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);
-          return ok(rpc.id, a);
+          return ok(rpc.id, publicAttestation(a));
         }
         case "bridge.identity": {
           const a = await attest(p.evidence);
           const agent = a.kind === "attested" ? store.agent(a.agentId) : undefined;
           return ok(rpc.id, {
-            attestation: a,
+            attestation: publicAttestation(a),
             agent: agent ? agentDto(store, agent) : undefined,
           });
         }
@@ -998,6 +998,22 @@ export async function controlCall(
 function admin(kind: string) {
   if (kind !== "local-user") throw new Error("NOT_AUTHORIZED");
 }
+type BridgeAttestationContext =
+  | (Extract<BridgeAttestationDto, { kind: "attested" }> & { readonly runtimeCwd?: string })
+  | Extract<BridgeAttestationDto, { kind: "unattested" }>;
+function publicAttestation(context: BridgeAttestationContext): BridgeAttestationDto {
+  if (context.kind === "unattested") return context;
+  return {
+    kind: context.kind,
+    scheme: context.scheme,
+    session: context.session,
+    bindingId: context.bindingId,
+    bindingEpoch: context.bindingEpoch,
+    agentId: context.agentId,
+    principalId: context.principalId,
+    evidenceFingerprint: context.evidenceFingerprint,
+  };
+}
 async function attestEvidence(
   store: ControlStoragePort,
   adapters: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> | undefined,
@@ -1006,7 +1022,7 @@ async function attestEvidence(
     | ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor>
     | undefined,
   evidence: Params["evidence"],
-): Promise<BridgeAttestationDto> {
+): Promise<BridgeAttestationContext> {
   const callerEvidence = attestationEvidence(evidence);
   if (!callerEvidence?.metadata) return { kind: "unattested", reason: "missing-host-metadata" };
   const hostEvidence = hostInvocationEvidence(evidence);

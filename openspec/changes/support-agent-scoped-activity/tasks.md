@@ -11,7 +11,7 @@
 - [x] 2.2 Expose `acs_activity_update` through the Codex MCP bridge and extend common initialization instructions for substantive local work; verify focused MCP tests assert the tool schema, privacy-safe response, and publish/change/refresh/clear guidance.
 - [x] 2.3 Preserve existing task acknowledgement/activity behavior and A2A Agent Card exclusions; verify the affected control, MCP, scheduler, and A2A tests remain green.
 - [x] 2.4 Resolve the current thread cwd from the attested, installation-routed runtime snapshot and capture its attached Git branch for local activity refresh, task acknowledgement, and task activity refresh without model- or executor-controlled inputs; verify focused control tests cover workspace changes, attached branches, detached HEAD, non-worktrees, fail-closed Git errors or missing context, and context-free clear while MCP tests cover workspace-change guidance.
-- [x] 2.5 Keep workspace context restricted to authenticated control/MCP discovery and absent from both A2A Agent Card forms; verify focused control, MCP, and A2A privacy assertions.
+- [x] 2.5 Keep workspace context restricted to authenticated activity discovery and absent from bridge attestation responses and both A2A Agent Card forms; verify focused control, MCP, and A2A privacy assertions.
 
 ## 3. Documentation and validation
 

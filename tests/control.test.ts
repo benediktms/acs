@@ -437,9 +437,13 @@ describe("control protocol", () => {
         data: { code: "UNATTESTED_CALLER" },
       },
     });
-    expect(
+    const claimedIdentity = record(
       await (await call("bridge.identity", { evidence: evidence("claimed-thread") })).json(),
-    ).toMatchObject({ result: { agent: { slug: "claimed" }, attestation: { kind: "attested" } } });
+    );
+    expect(claimedIdentity).toMatchObject({
+      result: { agent: { slug: "claimed" }, attestation: { kind: "attested" } },
+    });
+    expect(record(record(claimedIdentity.result).attestation)).not.toHaveProperty("runtimeCwd");
 
     await call("agents.create", { slug: "expired" });
     const expiredClaim = record(
@@ -514,9 +518,10 @@ describe("control protocol", () => {
         )
         .get()?.count,
     ).toBeGreaterThanOrEqual(6);
-    expect(
+    const bridgeAttestation = record(
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
-    ).toMatchObject({
+    );
+    expect(bridgeAttestation).toMatchObject({
       result: {
         kind: "attested",
         bindingId: backendBinding.id,
@@ -525,6 +530,7 @@ describe("control protocol", () => {
         evidenceFingerprint: expect.any(String),
       },
     });
+    expect(record(bridgeAttestation.result)).not.toHaveProperty("runtimeCwd");
     expect(
       await (
         await call("bridge.attestCaller", {

@@ -152,3 +152,8 @@ The `currentActivity` projection MUST NOT contain task, context, message, reques
 
 - **WHEN** an authenticated ACS peer lists or gets an agent with current activity
 - **THEN** the peer receives only the activity state, optional explicitly designated summary, optional working directory and Git branch, update time, and expiry time
+
+#### Scenario: Bridge inspects identity before activity publication
+
+- **WHEN** a bridge client attests its caller or reads its ACS identity
+- **THEN** ACS does not include the runtime working directory or Git branch in the attestation response
