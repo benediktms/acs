@@ -296,6 +296,12 @@ export function daemonCommandRunsForeground(
   );
 }
 
+export function daemonCommandWaitsForHandover(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+) {
+  return environment.XPC_SERVICE_NAME === "local.acs.daemon";
+}
+
 export async function stopUnmanagedDaemon(
   isSocketOccupied: () => Promise<boolean>,
   shutdown: () => Promise<unknown>,

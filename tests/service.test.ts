@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import {
   codexAppServerLaunchAgent,
   daemonCommandRunsForeground,
+  daemonCommandWaitsForHandover,
   daemonControlPathsFromEnvironment,
   type DaemonServiceStatus,
   codexZshIntegration,
@@ -106,12 +107,15 @@ test("derives installed daemon control paths from persisted environment", () => 
 test("runs daemon start in the foreground only for its launchd service", () => {
   const launchd = { XPC_SERVICE_NAME: "local.acs.daemon" };
   expect(daemonCommandRunsForeground("run", {}, "linux")).toBe(true);
+  expect(daemonCommandRunsForeground("run", launchd, "darwin")).toBe(true);
   expect(daemonCommandRunsForeground("start", launchd, "darwin")).toBe(true);
   expect(daemonCommandRunsForeground("start", launchd, "linux")).toBe(false);
   expect(daemonCommandRunsForeground("start", {}, "darwin")).toBe(false);
   expect(
     daemonCommandRunsForeground("start", { XPC_SERVICE_NAME: "other.service" }, "darwin"),
   ).toBe(false);
+  expect(daemonCommandWaitsForHandover(launchd)).toBe(true);
+  expect(daemonCommandWaitsForHandover({})).toBe(false);
 });
 
 test("accepts a shutdown error only after the unmanaged socket vanishes", async () => {

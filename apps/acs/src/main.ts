@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
-import { chmodSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createConnection } from "node:net";
+import { Database } from "bun:sqlite";
 import { handleA2A } from "../../../packages/protocol-a2a/src/index";
 import { controlCall, controlHandler } from "../../../packages/protocol-control/src/index";
 import { isConfiguredCodexRuntime, runMcp } from "../../../packages/bridge-mcp-codex/src/index";
@@ -28,6 +30,7 @@ import {
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
   daemonCommandRunsForeground,
+  daemonCommandWaitsForHandover,
   type DaemonControlPaths,
   daemonServiceStatus,
   installCodexAppServer,
@@ -44,16 +47,25 @@ import {
   syncCodexZshIntegration,
 } from "./service";
 
-const args = Bun.argv.slice(2),
-  configFile = configPath();
-if (!(args[0] === "daemon" && args[1] === "status")) migrateCodexAccounts(configFile);
-const config = paths(),
-  settings = loadConfig(),
-  listen = parseListen(settings.daemon.a2aListen),
-  port = listen.port;
+const args = Bun.argv.slice(2);
+let config: ReturnType<typeof paths>,
+  settings: ReturnType<typeof loadConfig>,
+  listen: ReturnType<typeof parseListen>,
+  port: number;
 
 async function main() {
-  if (!args.length || args[0] === "--help" || args[0] === "help") return usage();
+  if (
+    !args.length ||
+    ["-h", "--help", "help"].includes(args[0] ?? "") ||
+    (args[0] === "init" && ["-h", "--help"].includes(args[1] ?? ""))
+  )
+    return usage();
+  const configFile = configPath();
+  if (!(args[0] === "daemon" && args[1] === "status")) migrateCodexAccounts(configFile);
+  config = paths();
+  settings = loadConfig();
+  listen = parseListen(settings.daemon.a2aListen);
+  port = listen.port;
   if (args[0] === "init") {
     writeDefaultConfig();
     migrateCodexAccounts();
@@ -458,121 +470,211 @@ function socketListening(path: string): Promise<boolean> {
 }
 
 async function daemon() {
-  const store = new Store(config, {
-      maxInlineContentBytes: settings.security.maxInlineContentBytes,
-      maxParts: settings.security.maxParts,
-      maxTextPartBytes: settings.security.maxTextPartBytes,
-      claimTtlSeconds: settings.security.claimTtlSeconds,
-      busyTimeoutMs: settings.storage.busyTimeoutMs,
-      durability: settings.storage.durability,
-      maxQueuedDeliveryIntents: settings.delivery.maxQueuedDeliveryIntents,
-    }),
-    startedAt = new Date().toISOString();
-  if (await socketListening(config.runtime))
-    throw new Error("ACS daemon is already running; use acs init to update its service");
-  let schedulers: DeliveryScheduler[] = [];
-  const a2a = Bun.serve({
-    hostname: listen.hostname,
-    port,
-    fetch: (request) =>
-      handleA2A(store, request, port, {
-        maxRequestBytes: settings.security.maxRequestBytes,
-        signalDelivery: () => schedulers.forEach((scheduler) => scheduler.signal()),
-        hostname: listen.hostname,
-        reportInternalError: ({ error, correlationId }) =>
-          log("error", "a2a.internal_error", String(process.pid), {
-            correlationId,
-            code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN",
-            message: error instanceof Error ? error.message : String(error),
-          }),
+  const lock = await acquireDaemonLock();
+  let store: Store | undefined,
+    a2a: ReturnType<typeof Bun.serve> | undefined,
+    control: ReturnType<typeof Bun.serve> | undefined,
+    schedulers: DeliveryScheduler[] = [];
+  try {
+    const daemonStore = new Store(config, {
+        maxInlineContentBytes: settings.security.maxInlineContentBytes,
+        maxParts: settings.security.maxParts,
+        maxTextPartBytes: settings.security.maxTextPartBytes,
+        claimTtlSeconds: settings.security.claimTtlSeconds,
+        busyTimeoutMs: settings.storage.busyTimeoutMs,
+        durability: settings.storage.durability,
+        maxQueuedDeliveryIntents: settings.delivery.maxQueuedDeliveryIntents,
       }),
-    error: (error) => sanitizedError(error, String(process.pid)),
-  });
-  if (existsSync(config.runtime)) unlinkSync(config.runtime);
-  let control: ReturnType<typeof Bun.serve>;
-  let finish: (() => void) | undefined;
-  const stopped = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-  const installations = store.syncCodexInstallations(
-      settings.codex.enabled ? settings.codex.accounts : [],
-    ),
-    adapters = new Map<`ins_${string}`, CodexRuntimeAdapter>(),
-    callerAttestors = new Map<`ins_${string}`, CodexCallerAttestor>();
-  if (settings.codex.enabled)
-    for (const account of settings.codex.accounts) {
-      const installation = required(
-        installations.find((candidate) => candidate.label === account.label),
-        `runtime installation ${account.label}`,
-      );
-      adapters.set(
-        installation.id,
-        new CodexRuntimeAdapter(account.socket, settings.codex.maxInFlightRequests, account.home),
-      );
-      callerAttestors.set(installation.id, new CodexCallerAttestor(installation.id));
-    }
-  const deliveryConcurrency = new DeliveryConcurrency(settings.delivery.workerConcurrency);
-  schedulers = [...adapters].map(
-    ([installationId, adapter]) =>
-      new DeliveryScheduler(
-        store,
-        adapter,
-        String(process.pid),
-        {
-          concurrency: settings.delivery.workerConcurrency,
-          leaseMs: settings.delivery.leaseSeconds * 1000,
-          retryBaseMs: settings.delivery.retryBaseMs,
-          retryCapMs: settings.delivery.retryCapMs,
-          reconnectMs: settings.codex.statusPollIntervalMs,
-        },
-        installationId,
-        deliveryConcurrency,
+      startedAt = new Date().toISOString();
+    store = daemonStore;
+    a2a = Bun.serve({
+      hostname: listen.hostname,
+      port,
+      fetch: (request) =>
+        handleA2A(daemonStore, request, port, {
+          maxRequestBytes: settings.security.maxRequestBytes,
+          signalDelivery: () => schedulers.forEach((scheduler) => scheduler.signal()),
+          hostname: listen.hostname,
+          reportInternalError: ({ error, correlationId }) =>
+            log("error", "a2a.internal_error", String(process.pid), {
+              correlationId,
+              code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN",
+              message: error instanceof Error ? error.message : String(error),
+            }),
+        }),
+      error: (error) => sanitizedError(error, String(process.pid)),
+    });
+    if (existsSync(config.runtime)) unlinkSync(config.runtime);
+    let finish: (() => void) | undefined;
+    const stopped = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const installations = daemonStore.syncCodexInstallations(
+        settings.codex.enabled ? settings.codex.accounts : [],
       ),
-  );
-  await Promise.all(schedulers.map((scheduler) => scheduler.start()));
-  let stopping = false;
-  const stop = () => {
-    if (stopping) return;
-    stopping = true;
-    void (async () => {
-      let forceTimer: Timer | undefined;
-      const serversStopped = Promise.all([a2a.stop(), control.stop()]),
-        forcedClosed = new Promise<void>((resolve) => {
-          forceTimer = setTimeout(() => {
-            void a2a.stop(true);
-            void control.stop(true);
-            resolve();
-          }, 1000);
-        });
-      try {
-        await Promise.all(schedulers.map((scheduler) => scheduler.stop()));
-        await Promise.race([serversStopped, forcedClosed]);
-      } catch (error) {
-        sanitizedError(
-          error instanceof Error ? error : new Error(String(error)),
-          String(process.pid),
+      adapters = new Map<`ins_${string}`, CodexRuntimeAdapter>(),
+      callerAttestors = new Map<`ins_${string}`, CodexCallerAttestor>();
+    if (settings.codex.enabled)
+      for (const account of settings.codex.accounts) {
+        const installation = required(
+          installations.find((candidate) => candidate.label === account.label),
+          `runtime installation ${account.label}`,
         );
-      } finally {
-        if (forceTimer) clearTimeout(forceTimer);
-        store.close();
-        if (existsSync(config.runtime)) unlinkSync(config.runtime);
-        finish?.();
+        adapters.set(
+          installation.id,
+          new CodexRuntimeAdapter(account.socket, settings.codex.maxInFlightRequests, account.home),
+        );
+        callerAttestors.set(installation.id, new CodexCallerAttestor(installation.id));
       }
-    })();
-  };
-  control = Bun.serve({
-    unix: config.runtime,
-    fetch: controlHandler(store, startedAt, stop, adapters, callerAttestors),
-    error: (error) => sanitizedError(error, String(process.pid)),
-  });
-  chmodSync(config.runtime, 0o600);
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
-  log("info", "daemon.started", String(process.pid), {
-    a2a: a2a.url.origin,
-    control: "ready",
-  });
-  await stopped;
+    const deliveryConcurrency = new DeliveryConcurrency(settings.delivery.workerConcurrency);
+    schedulers = [...adapters].map(
+      ([installationId, adapter]) =>
+        new DeliveryScheduler(
+          daemonStore,
+          adapter,
+          String(process.pid),
+          {
+            concurrency: settings.delivery.workerConcurrency,
+            leaseMs: settings.delivery.leaseSeconds * 1000,
+            retryBaseMs: settings.delivery.retryBaseMs,
+            retryCapMs: settings.delivery.retryCapMs,
+            reconnectMs: settings.codex.statusPollIntervalMs,
+          },
+          installationId,
+          deliveryConcurrency,
+        ),
+    );
+    await Promise.all(schedulers.map((scheduler) => scheduler.start()));
+    let stopping = false;
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      void (async () => {
+        let forceTimer: Timer | undefined;
+        const serversStopped = Promise.all([
+            required(a2a, "A2A server").stop(),
+            required(control, "control server").stop(),
+          ]),
+          forcedClosed = new Promise<void>((resolve) => {
+            forceTimer = setTimeout(() => {
+              void required(a2a, "A2A server").stop(true);
+              void required(control, "control server").stop(true);
+              resolve();
+            }, 1000);
+          });
+        try {
+          await Promise.all(schedulers.map((scheduler) => scheduler.stop()));
+          await Promise.race([serversStopped, forcedClosed]);
+        } catch (error) {
+          sanitizedError(
+            error instanceof Error ? error : new Error(String(error)),
+            String(process.pid),
+          );
+        } finally {
+          if (forceTimer) clearTimeout(forceTimer);
+          try {
+            try {
+              daemonStore.close();
+            } finally {
+              try {
+                if (existsSync(config.runtime)) unlinkSync(config.runtime);
+              } finally {
+                releaseDaemonLock(lock);
+              }
+            }
+          } catch (error) {
+            sanitizedError(
+              error instanceof Error ? error : new Error(String(error)),
+              String(process.pid),
+            );
+          } finally {
+            finish?.();
+          }
+        }
+      })();
+    };
+    control = Bun.serve({
+      unix: config.runtime,
+      fetch: controlHandler(daemonStore, startedAt, stop, adapters, callerAttestors),
+      error: (error) => sanitizedError(error, String(process.pid)),
+    });
+    chmodSync(config.runtime, 0o600);
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+    log("info", "daemon.started", String(process.pid), {
+      a2a: required(a2a, "A2A server").url.origin,
+      control: "ready",
+    });
+    await stopped;
+  } catch (error) {
+    try {
+      try {
+        await Promise.allSettled(schedulers.map((scheduler) => scheduler.stop()));
+      } finally {
+        try {
+          try {
+            void a2a?.stop(true);
+          } finally {
+            void control?.stop(true);
+          }
+        } finally {
+          try {
+            store?.close();
+          } finally {
+            try {
+              if (control && existsSync(config.runtime)) unlinkSync(config.runtime);
+            } finally {
+              releaseDaemonLock(lock);
+            }
+          }
+        }
+      }
+    } catch (cleanupError) {
+      sanitizedError(
+        cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+        String(process.pid),
+      );
+    }
+    throw error;
+  }
+}
+
+async function acquireDaemonLock() {
+  const path = `${dirname(config.token)}/daemon.lock.db`,
+    directory = dirname(path),
+    wait = daemonCommandWaitsForHandover(),
+    deadline = Date.now() + 10_000;
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const database = new Database(path, { create: true, strict: true });
+  chmodSync(path, 0o600);
+  for (;;) {
+    try {
+      database.exec(`PRAGMA busy_timeout=${wait ? 100 : 0}; BEGIN EXCLUSIVE`);
+      return database;
+    } catch (error) {
+      if (!isLockContention(error)) {
+        database.close();
+        throw error;
+      }
+      if (!wait || Date.now() >= deadline) {
+        database.close();
+        throw new Error("ACS daemon is already running; use acs init to update its service", {
+          cause: error,
+        });
+      }
+      await Bun.sleep(100);
+    }
+  }
+}
+
+function releaseDaemonLock(database: Database) {
+  if (database.inTransaction) database.exec("ROLLBACK");
+  database.close();
+}
+
+function isLockContention(error: unknown) {
+  return error instanceof Error && /database is (busy|locked)/i.test(error.message);
 }
 
 function sanitizedError(error: Error, instanceId: string) {
@@ -808,7 +910,7 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
 }
 function usage() {
   console.log(
-    `ACS 0.1.0\n\n  acs init\n  acs daemon run|start|stop|status|restart\n    status: control-ready (0), stopped (1), supervisor-running/control-unavailable (2)\n  acs agents create <slug> [--claim] [--name name] [--description text]\n  acs agents get|delete <agent>\n  acs agents update <agent> [--slug slug] [--name name] [--description text] [--enable|--disable]\n  acs agents list\n  acs codex sessions list\n  acs codex bind <agent> [--session <codex-thread-id>] [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings bind <agent> --session <codex-thread-id> [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings get|revoke <binding-id>\n  acs bindings list\n  acs runtimes list\n  acs inbox [agent]\n  acs deliveries list|get|retry|cancel <delivery-id>\n  acs deliveries resolve <delivery-id> --accepted|--not-accepted-and-retry|--not-accepted-and-cancel\n  acs token show\n  acs codex doctor\n  acs codex install-mcp\n  acs codex app-server restart <account-label>\n  acs mcp codex`,
+    `ACS 0.1.0\n\n  acs init\n  acs daemon run                         # foreground daemon\n  acs daemon start|stop|status|restart   # macOS LaunchAgent lifecycle\n    status: control-ready (0), stopped (1), supervisor-running/control-unavailable (2)\n  acs agents create <slug> [--claim] [--name name] [--description text]\n  acs agents get|delete <agent>\n  acs agents update <agent> [--slug slug] [--name name] [--description text] [--enable|--disable]\n  acs agents list\n  acs codex sessions list\n  acs codex bind <agent> [--session <codex-thread-id>] [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings bind <agent> --session <codex-thread-id> [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings get|revoke <binding-id>\n  acs bindings list\n  acs runtimes list\n  acs inbox [agent]\n  acs deliveries list|get|retry|cancel <delivery-id>\n  acs deliveries resolve <delivery-id> --accepted|--not-accepted-and-retry|--not-accepted-and-cancel\n  acs token show\n  acs codex doctor\n  acs codex install-mcp\n  acs codex app-server restart <account-label>\n  acs mcp codex`,
   );
 }
 

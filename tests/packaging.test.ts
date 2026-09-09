@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -400,6 +401,22 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   });
   expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
+  const idleBridge = await Promise.race([
+    mcp.exited.then(() => false),
+    Bun.sleep(100).then(() => true),
+  ]);
+  expect(idleBridge).toBe(true);
+  mcp.stdin.end();
+  expect(
+    await Promise.race([
+      mcp.exited,
+      Bun.sleep(5_000).then(() => {
+        throw new Error("MCP bridge did not exit after stdin EOF");
+      }),
+    ]),
+  ).toBe(0);
+  processes.splice(processes.indexOf(mcp), 1);
+
   const streamingTask = record(
       record(
         (
@@ -429,6 +446,161 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   expect(await daemon.exited).toBe(0);
   subscriptionReader.releaseLock();
   processes.splice(processes.indexOf(daemon), 1);
+}, 30_000);
+
+test("compiled daemon ownership ignores listener overrides and releases after a crash", async () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-daemon-lock-"));
+  roots.push(root);
+  const binary = join(root, "acs"),
+    built = Bun.spawnSync([
+      process.execPath,
+      "build",
+      "apps/acs/src/main.ts",
+      "--compile",
+      "--outfile",
+      binary,
+    ]);
+  expect(built.exitCode).toBe(0);
+
+  const helpHome = join(root, "help");
+  for (const args of [[], ["help"], ["-h"], ["--help"], ["init", "-h"], ["init", "--help"]]) {
+    const help = Bun.spawnSync([binary, ...args], {
+      env: { ...process.env, ACS_HOME: helpHome },
+    });
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout.toString()).toContain("foreground daemon");
+    expect(existsSync(helpHome)).toBe(false);
+  }
+
+  const freshHome = join(root, "fresh-home"),
+    freshConfig = join(root, "fresh-config.toml"),
+    fresh = {
+      ...daemonEnvironment(
+        freshHome,
+        availablePort(),
+        join(root, "fresh.sock"),
+        join(root, "fresh.db"),
+      ),
+      ACS_CONFIG_PATH: freshConfig,
+    };
+  writeFileSync(freshConfig, "[runtimes.codex]\nenabled = false\n");
+  expect(existsSync(freshHome)).toBe(false);
+  const freshDaemon = Bun.spawn([binary, "daemon", "run"], {
+    env: fresh,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  processes.push(freshDaemon);
+  expect(await readUntil(freshDaemon.stderr, "daemon.started")).toContain("daemon.started");
+  expect(existsSync(join(freshHome, "daemon.lock.db"))).toBe(true);
+  freshDaemon.kill("SIGTERM");
+  expect(await freshDaemon.exited).toBe(0);
+  processes.splice(processes.indexOf(freshDaemon), 1);
+
+  const passedArgs = join(root, "passed-args"),
+    codex = join(root, "codex"),
+    passthrough = join(root, "passthrough");
+  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_ARGS"\n');
+  chmodSync(codex, 0o700);
+  expect(
+    Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
+      env: {
+        ...process.env,
+        ACS_HOME: passthrough,
+        ACS_CODEX_BINARY: codex,
+        ACS_TEST_ARGS: passedArgs,
+      },
+    }).exitCode,
+  ).toBe(0);
+  expect(readFileSync(passedArgs, "utf8")).toBe("--help\n");
+
+  const home = join(root, "home"),
+    first = daemonEnvironment(
+      home,
+      availablePort(),
+      join(root, "first.sock"),
+      join(root, "first.db"),
+    ),
+    second = daemonEnvironment(
+      home,
+      availablePort(),
+      join(root, "second.sock"),
+      join(root, "second.db"),
+    );
+  prepareDaemon(binary, first);
+  const candidates = [
+      Bun.spawn([binary, "daemon", "run"], { env: first, stdout: "pipe", stderr: "pipe" }),
+      Bun.spawn([binary, "daemon", "run"], { env: second, stdout: "pipe", stderr: "pipe" }),
+    ],
+    loser = await Promise.race(
+      candidates.map(async (candidate) => ({ candidate, exitCode: await candidate.exited })),
+    ),
+    winner = required(
+      candidates.find((candidate) => candidate !== loser.candidate),
+      "winner",
+    );
+  expect(loser.exitCode).toBe(1);
+  expect(await new Response(loser.candidate.stderr).text()).toContain("already running");
+  processes.push(winner);
+  expect(await readUntil(winner.stderr, "daemon.started")).toContain("daemon.started");
+  const winnerEnvironment = winner === candidates[0] ? first : second;
+  expect(existsSync(winnerEnvironment.ACS_CONTROL_SOCKET)).toBe(true);
+  expect(Bun.spawnSync([binary, "agents", "list"], { env: winnerEnvironment }).exitCode).toBe(0);
+  expect(statSync(join(home, "daemon.lock.db")).mode & 0o777).toBe(0o600);
+
+  const collidingHome = join(root, "colliding-home"),
+    collision = daemonEnvironment(
+      collidingHome,
+      Number(winnerEnvironment.ACS_A2A_PORT),
+      winnerEnvironment.ACS_CONTROL_SOCKET,
+      join(root, "collision.db"),
+    );
+  prepareDaemon(binary, collision);
+  expect(Bun.spawnSync([binary, "daemon", "run"], { env: collision }).exitCode).toBe(1);
+  expect(Bun.spawnSync([binary, "agents", "list"], { env: winnerEnvironment }).exitCode).toBe(0);
+
+  const otherHome = join(root, "other-home"),
+    other = daemonEnvironment(
+      otherHome,
+      availablePort(),
+      join(root, "other.sock"),
+      join(root, "other.db"),
+    );
+  prepareDaemon(binary, other);
+  const independent = Bun.spawn([binary, "daemon", "run"], {
+    env: other,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  processes.push(independent);
+  expect(await readUntil(independent.stderr, "daemon.started")).toContain("daemon.started");
+
+  const handover = Bun.spawn([binary, "daemon", "run"], {
+    env: { ...winnerEnvironment, XPC_SERVICE_NAME: "local.acs.daemon" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  processes.push(handover);
+  expect(
+    await Promise.race([handover.exited.then(() => false), Bun.sleep(100).then(() => true)]),
+  ).toBe(true);
+  winner.kill("SIGTERM");
+  await winner.exited;
+  processes.splice(processes.indexOf(winner), 1);
+  expect(await readUntil(handover.stderr, "daemon.started")).toContain("daemon.started");
+
+  handover.kill("SIGKILL");
+  await handover.exited;
+  processes.splice(processes.indexOf(handover), 1);
+  expect(existsSync(winnerEnvironment.ACS_CONTROL_SOCKET)).toBe(true);
+  const recovered = Bun.spawn([binary, "daemon", "run"], {
+    env: winnerEnvironment,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  processes.push(recovered);
+  expect(await readUntil(recovered.stderr, "daemon.started")).toContain("daemon.started");
+  expect(Bun.spawnSync([binary, "agents", "list"], { env: winnerEnvironment }).exitCode).toBe(0);
 }, 30_000);
 
 function fakeCodex(path: string, codexHome: string) {
@@ -523,6 +695,31 @@ async function waitFor(done: () => boolean) {
     await Bun.sleep(25);
   }
   throw new Error("service did not become ready");
+}
+
+function availablePort() {
+  const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
+    port = required(reservation.port, "reserved port");
+  reservation.stop(true);
+  return port;
+}
+
+function daemonEnvironment(home: string, port: number, runtime: string, data: string) {
+  return {
+    ...process.env,
+    ACS_HOME: home,
+    ACS_A2A_PORT: String(port),
+    ACS_CONTROL_SOCKET: runtime,
+    ACS_STORAGE_PATH: data,
+    ACS_LOG_FORMAT: "json",
+    CODEX_HOME: join(home, "codex"),
+  };
+}
+
+function prepareDaemon(binary: string, environment: Record<string, string | undefined>) {
+  expect(Bun.spawnSync([binary, "init", "--no-service"], { env: environment }).exitCode).toBe(0);
+  const config = join(required(environment.ACS_HOME, "ACS_HOME"), "config.toml");
+  writeFileSync(config, readFileSync(config, "utf8").replace("enabled = true", "enabled = false"));
 }
 
 async function readUntil(stream: ReadableStream<Uint8Array>, needle: string) {
