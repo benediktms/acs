@@ -203,17 +203,6 @@ export function mcpMessageIdentity(
   };
 }
 
-export function workspaceContext(cwd?: string) {
-  try {
-    cwd ??= process.cwd();
-    const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"]),
-      gitBranch = git.success ? git.stdout.toString().trim() : "";
-    return { cwd, ...(gitBranch ? { gitBranch } : {}) };
-  } catch {
-    return cwd === undefined ? undefined : { cwd };
-  }
-}
-
 export async function runMcp(port = 7432) {
   const config = paths(),
     call = (method: string, params: unknown = {}) =>
@@ -565,10 +554,9 @@ export async function runMcp(port = 7432) {
     async (args, extra) =>
       execute(async () => {
         await attest(extra);
-        const workspace = workspaceContext();
         const acknowledged = await typedCall(
           "executor.task.acknowledge",
-          { ...args, workspace, evidence: evidence(extra) },
+          { ...args, evidence: evidence(extra) },
           executorResultSchema,
         );
         return {
@@ -588,10 +576,9 @@ export async function runMcp(port = 7432) {
     async (args, extra) =>
       execute(async () => {
         await attest(extra);
-        const workspace = workspaceContext();
         const updated = await typedCall(
           "executor.task.activityUpdate",
-          { ...args, workspace, evidence: evidence(extra) },
+          { ...args, evidence: evidence(extra) },
           executorResultSchema,
         );
         return {
@@ -611,10 +598,9 @@ export async function runMcp(port = 7432) {
     async (args, extra) =>
       execute(async () => {
         await attest(extra);
-        const workspace = workspaceContext();
         const updated = await typedCall(
           "executor.activity.update",
-          { ...args, workspace, evidence: evidence(extra) },
+          { ...args, evidence: evidence(extra) },
           activityResultSchema,
         );
         return { currentActivity: updated.currentActivity };

@@ -2,7 +2,7 @@
 
 ### Requirement: Bound agents maintain activity for local work
 
-ACS SHALL provide an authenticated task-independent operation through which the currently bound agent can publish, replace, refresh, or clear its own peer-visible activity. An initial publication MUST include a non-empty summary of at most 240 Unicode characters; a refresh MAY retain or replace that summary. ACS SHALL derive the target agent and binding fence from the attested caller rather than accepting them from tool input. The Codex MCP bridge SHALL attach its full absolute working directory and SHALL attach the current Git branch when the working directory is on an attached branch, without accepting either value from model tool input.
+ACS SHALL provide an authenticated task-independent operation through which the currently bound agent can publish, replace, refresh, or clear its own peer-visible activity. An initial publication MUST include a non-empty summary of at most 240 Unicode characters; a refresh MAY retain or replace that summary. ACS SHALL derive the target agent and binding fence from the attested caller rather than accepting them from tool input. For Codex MCP calls, ACS SHALL resolve the full absolute working directory from the attested runtime thread and SHALL resolve its current Git branch when attached, without accepting either value from model or executor input.
 
 #### Scenario: Agent begins locally assigned work
 
@@ -53,6 +53,11 @@ ACS SHALL provide an authenticated task-independent operation through which the 
 
 - **WHEN** the agent changes working directory or branch and then refreshes its activity
 - **THEN** ACS replaces the activity's workspace context with the newly captured values
+
+#### Scenario: Current workspace cannot be resolved
+
+- **WHEN** ACS cannot freshly resolve an absolute working directory while publishing, acknowledging, or refreshing activity
+- **THEN** ACS rejects that activity mutation without changing the existing activity, while an explicit clear remains permitted
 
 ## MODIFIED Requirements
 

@@ -53,11 +53,11 @@ Extend the common MCP instructions and the new tool description to tell bound ag
 
 This is intentionally instruction-driven: ACS stores only an explicit agent publication and never scans or derives a summary from local conversation content. Add a harness hook only if conformance testing shows that MCP instructions are not reliably available to agents handling local work.
 
-### Capture workspace context at the MCP bridge boundary
+### Capture workspace context from attested runtime state
 
-For `acs_activity_update`, `acs_task_acknowledge`, and `acs_task_activity_update`, the Codex MCP bridge adds `process.cwd()` as an absolute `cwd` and resolves the attached branch with the local Git executable. It omits `gitBranch` when Git reports no branch, including a non-worktree directory and detached HEAD. These fields are internal bridge inputs rather than model tool arguments.
+For `acs_activity_update`, `acs_task_acknowledge`, and `acs_task_activity_update`, the control handler uses the installation-routed `thread/read` snapshot already obtained during caller attestation as the authoritative absolute `cwd`, then resolves the attached branch with the local Git executable. It omits `gitBranch` when Git reports no branch, including a non-worktree directory and detached HEAD. These values are derived after ownership checks rather than accepted as model or executor inputs.
 
-Persist the captured values on the same binding- or task-scoped activity marker. A refresh from the MCP bridge replaces both values; task lifecycle updates that do not carry fresh workspace context retain the marker's existing values. The selected `currentActivity` projects optional `cwd` and `gitBranch` fields through authenticated control and MCP discovery only.
+Persist the captured values on the same binding- or task-scoped activity marker. Explicit publication, acknowledgement, and refresh fail with retryable `RUNTIME_UNAVAILABLE` when a fresh absolute runtime cwd is unavailable; clear remains permitted because it needs no workspace context. A successful refresh replaces both values, while task lifecycle updates without a fresh context retain the marker's existing values. The selected `currentActivity` projects optional `cwd` and `gitBranch` fields through authenticated control and MCP discovery only.
 
 Alternatives considered:
 

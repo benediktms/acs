@@ -780,7 +780,7 @@ export function controlHandler(
               a.principalId,
               required(p.deliveryId, "deliveryId"),
               p.activitySummary,
-              activityWorkspace(p.workspace),
+              activityWorkspace(a.runtimeCwd),
             );
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
@@ -803,7 +803,7 @@ export function controlHandler(
             a.principalId,
             action,
             p.activitySummary,
-            activityWorkspace(p.workspace),
+            action === "clear" ? undefined : activityWorkspace(a.runtimeCwd),
           );
           return ok(rpc.id, {
             task: taskDto(store, taskId),
@@ -820,7 +820,7 @@ export function controlHandler(
               a.principalId,
               action,
               p.activitySummary,
-              activityWorkspace(p.workspace),
+              action === "clear" ? undefined : activityWorkspace(a.runtimeCwd),
             );
           return ok(rpc.id, { currentActivity });
         }
@@ -1022,7 +1022,8 @@ async function attestEvidence(
   if (proof.kind !== "attested") return proof;
   const before = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);
   if (before.kind !== "attested") return before;
-  let verified = false;
+  let verified = false,
+    runtimeCwd: string | undefined;
   const adapter = isAdapterMap(adapters) ? adapters.get(before.session.installationId) : adapters;
   if (adapter)
     try {
@@ -1030,6 +1031,7 @@ async function attestEvidence(
       if (snapshot.availability !== "offline") {
         store.observeSession(snapshot.session, snapshot.availability);
         verified = true;
+        runtimeCwd = snapshot.attributes.cwdHint;
       }
     } catch {}
   const binding = store.binding(before.bindingId);
@@ -1042,7 +1044,7 @@ async function attestEvidence(
   return current.kind === "attested" &&
     current.bindingId === before.bindingId &&
     current.bindingEpoch === before.bindingEpoch
-    ? current
+    ? { ...current, ...(runtimeCwd === undefined ? {} : { runtimeCwd }) }
     : { kind: "unattested", reason: "stale-binding" };
 }
 
@@ -1404,23 +1406,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasUnexpectedActivityParam(value: object) {
-  return Object.keys(value).some(
-    (key) => !["evidence", "action", "activitySummary", "workspace"].includes(key),
-  );
+  return Object.keys(value).some((key) => !["evidence", "action", "activitySummary"].includes(key));
 }
-function activityWorkspace(value: unknown) {
-  if (value === undefined) return undefined;
-  if (
-    !isRecord(value) ||
-    typeof value.cwd !== "string" ||
-    !isAbsolute(value.cwd) ||
-    (value.gitBranch !== undefined && typeof value.gitBranch !== "string")
-  )
-    throw new Error("VALIDATION_FAILED: invalid workspace");
-  return {
-    cwd: value.cwd,
-    ...(typeof value.gitBranch === "string" ? { gitBranch: value.gitBranch } : {}),
-  };
+function activityWorkspace(cwd: string | undefined) {
+  if (!cwd || !isAbsolute(cwd))
+    throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
+  try {
+    const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"]),
+      gitBranch = git.success ? git.stdout.toString().trim() : "";
+    return { cwd, ...(gitBranch ? { gitBranch } : {}) };
+  } catch {
+    return { cwd };
+  }
 }
 function runtimeSessionCursor(value: unknown) {
   if (!isRecord(value) || typeof value.runtimeSessionCursor !== "string")

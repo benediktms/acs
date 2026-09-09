@@ -10,7 +10,7 @@
 - [x] 2.1 Implement the authenticated control operation by resolving the logical agent and current binding exclusively from caller attestation; verify targeted control tests reject missing, foreign, and stale ownership and return the updated projection without identifiers.
 - [x] 2.2 Expose `acs_activity_update` through the Codex MCP bridge and extend common initialization instructions for substantive local work; verify focused MCP tests assert the tool schema, privacy-safe response, and publish/change/refresh/clear guidance.
 - [x] 2.3 Preserve existing task acknowledgement/activity behavior and A2A Agent Card exclusions; verify the affected control, MCP, scheduler, and A2A tests remain green.
-- [x] 2.4 Capture `process.cwd()` and the current attached Git branch inside the MCP bridge for local activity refresh, task acknowledgement, and task activity refresh without adding model-controlled inputs; verify focused MCP tests cover attached branches, detached HEAD, non-worktree directories, and workspace-change guidance.
+- [x] 2.4 Resolve the current thread cwd from the attested, installation-routed runtime snapshot and capture its attached Git branch for local activity refresh, task acknowledgement, and task activity refresh without model- or executor-controlled inputs; verify focused control tests cover workspace changes, attached branches, fail-closed missing context, and context-free clear while MCP tests cover workspace-change guidance.
 - [x] 2.5 Keep workspace context restricted to authenticated control/MCP discovery and absent from both A2A Agent Card forms; verify focused control, MCP, and A2A privacy assertions.
 
 ## 3. Documentation and validation

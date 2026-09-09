@@ -9,6 +9,10 @@ import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
 
 const roots: string[] = [];
+function git(...args: string[]) {
+  const result = Bun.spawnSync(["git", ...args]);
+  if (!result.success) throw new Error(result.stderr.toString());
+}
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true });
 });
@@ -192,6 +196,7 @@ describe("control protocol", () => {
   test("requires protocol version and authenticates standalone bindings", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-"));
     roots.push(root);
+    git("init", "--initial-branch=feature/control", root);
     const paths: Paths = {
       data: join(root, "acs.db"),
       runtime: join(root, "control.sock"),
@@ -213,7 +218,7 @@ describe("control protocol", () => {
         session,
         availability: "idle",
         observedAt: new Date().toISOString(),
-        attributes: {},
+        attributes: { cwdHint: root },
       };
     };
     const installation = required(
@@ -676,6 +681,8 @@ describe("control protocol", () => {
           currentActivity: {
             state: "working",
             summary: "Reviewing the work",
+            cwd: root,
+            gitBranch: "feature/control",
             updatedAt: expect.any(String),
             expiresAt: expect.any(String),
           },
@@ -1120,6 +1127,7 @@ describe("control protocol", () => {
   test("updates only the attested caller's binding-scoped activity", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-activity-"));
     roots.push(root);
+    git("init", "--initial-branch=feature/local", root);
     const paths: Paths = {
         data: join(root, "acs.db"),
         runtime: join(root, "control.sock"),
@@ -1136,11 +1144,12 @@ describe("control protocol", () => {
       ),
       agent = store.createAgent("local-activity"),
       binding = store.bind(agent.id, "local-activity-thread"),
+      adapter = new FakeRuntimeAdapter(),
       handler = controlHandler(
         store,
         new Date().toISOString(),
         () => {},
-        undefined,
+        adapter,
         new CodexCallerAttestor(installation.id),
       ),
       bridgeToken = readFileSync(paths.bridgeToken, "utf8"),
@@ -1161,6 +1170,13 @@ describe("control protocol", () => {
             }),
           }),
         );
+    let cwdHint: string | undefined = root;
+    adapter.inspectSession = async (session) => ({
+      session,
+      availability: "idle",
+      observedAt: new Date().toISOString(),
+      attributes: cwdHint === undefined ? {} : { cwdHint },
+    });
     store.db
       .query(
         "UPDATE runtime_bindings SET last_observed_availability='idle',last_observed_at_ms=? WHERE id=?",
@@ -1172,7 +1188,6 @@ describe("control protocol", () => {
           evidence: evidence("local-activity-thread"),
           action: "refresh",
           activitySummary: "Local work",
-          workspace: { cwd: "/workspace/local", gitBranch: "feature/local" },
         })
       ).json(),
     ).toMatchObject({
@@ -1180,7 +1195,7 @@ describe("control protocol", () => {
         currentActivity: {
           state: "working",
           summary: "Local work",
-          cwd: "/workspace/local",
+          cwd: root,
           gitBranch: "feature/local",
         },
       },
@@ -1191,6 +1206,7 @@ describe("control protocol", () => {
       { fromBindingId: "bnd_from" },
       { toBindingId: "bnd_to" },
       { deliveryIds: ["int_1"] },
+      { workspace: { cwd: root } },
     ])
       expect(
         await (
@@ -1202,15 +1218,53 @@ describe("control protocol", () => {
         ).json(),
       ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
     expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Local work" });
+    const moved = mkdtempSync(join(tmpdir(), "acs-control-activity-moved-"));
+    roots.push(moved);
+    git("init", "--initial-branch=feature/moved", moved);
+    cwdHint = moved;
     expect(
-      await (
-        await call({
-          evidence: evidence("local-activity-thread"),
-          action: "refresh",
-          workspace: { cwd: "relative" },
-        })
-      ).json(),
-    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
+      await (await call({ evidence: evidence("local-activity-thread"), action: "refresh" })).json(),
+    ).toMatchObject({
+      result: { currentActivity: { cwd: moved, gitBranch: "feature/moved" } },
+    });
+    git("-C", moved, "config", "user.email", "test@example.com");
+    git("-C", moved, "config", "user.name", "Test");
+    writeFileSync(join(moved, "README.md"), "test\n");
+    git("-C", moved, "add", "README.md");
+    git("-C", moved, "-c", "commit.gpgSign=false", "commit", "-m", "test");
+    git("-C", moved, "checkout", "--detach");
+    const detached = record(
+      record(
+        await (
+          await call({ evidence: evidence("local-activity-thread"), action: "refresh" })
+        ).json(),
+      ).result,
+    ).currentActivity;
+    expect(detached).toMatchObject({ cwd: moved });
+    expect(record(detached)).not.toHaveProperty("gitBranch");
+    cwdHint = undefined;
+    expect(
+      await (await call({ evidence: evidence("local-activity-thread"), action: "refresh" })).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE", retryable: true } } });
+    expect(store.currentActivity(agent.id)).toMatchObject({ cwd: moved });
+    await call({ evidence: evidence("local-activity-thread"), action: "clear" });
+    expect(store.currentActivity(agent.id)).toBeUndefined();
+    const outside = mkdtempSync(join(tmpdir(), "acs-control-activity-outside-"));
+    roots.push(outside);
+    cwdHint = outside;
+    const nonRepository = record(
+      record(
+        await (
+          await call({
+            evidence: evidence("local-activity-thread"),
+            action: "refresh",
+            activitySummary: "Outside work",
+          })
+        ).json(),
+      ).result,
+    ).currentActivity;
+    expect(nonRepository).toMatchObject({ cwd: outside });
+    expect(record(nonRepository)).not.toHaveProperty("gitBranch");
     expect(
       await (await call({ action: "refresh", activitySummary: "must not write" })).json(),
     ).toMatchObject({ error: { data: { code: "UNATTESTED_CALLER" } } });

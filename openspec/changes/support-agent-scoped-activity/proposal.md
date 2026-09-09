@@ -7,7 +7,7 @@
 - Add a bound-agent activity operation that publishes, refreshes, replaces, or clears the caller's own peer-visible activity without requiring a task or delivery identifier.
 - Prompt bound agents through MCP initialization instructions to maintain activity for substantive local work as well as ACS-delivered work.
 - Define how explicit agent-scoped publications and task-linked publications select one `currentActivity` without allowing an older task lifecycle event to erase newer activity.
-- Include the publishing session's full absolute working directory and, when attached, current Git branch in authenticated activity discovery, captured automatically by the Codex MCP bridge.
+- Include the publishing session's full absolute working directory and, when attached, current Git branch in authenticated activity discovery, resolved automatically from the attested Codex runtime thread.
 - Preserve the 30-minute TTL, current-binding fence, restricted projection, and exclusion from A2A Agent Cards.
 
 ## Capabilities
