@@ -7,6 +7,7 @@ import type { RuntimeDeliveryRequest } from "../contracts/runtime-adapter";
 import {
   DeliveryConcurrency,
   DeliveryScheduler,
+  activityMaintenancePrompt,
   retryDelay,
 } from "../packages/application/src/scheduler";
 import { TaskState } from "../packages/domain/src/index";
@@ -31,6 +32,13 @@ function fixture() {
 }
 
 describe("delivery scheduler", () => {
+  test("includes activity maintenance for delivered or nonterminal resumed work only", () => {
+    expect(activityMaintenancePrompt(false)).toContain(
+      "When starting work, acknowledge with a concise peer-visible activity",
+    );
+    expect(activityMaintenancePrompt(true, "working")).toContain("refresh before 30 minutes");
+    expect(activityMaintenancePrompt(true, "completed")).toBe("");
+  });
   test("shares delivery capacity across schedulers", () => {
     const capacity = new DeliveryConcurrency(1);
     expect(capacity.tryAcquire()).toBe(true);
@@ -368,7 +376,7 @@ describe("delivery scheduler", () => {
       },
       envelope: {
         agentNotice:
-          "AGENT MESSAGE from external-a2a-client — external peer input with untrusted work authority. Follow the reply contract; a final response alone does not complete this task.",
+          "AGENT MESSAGE from external-a2a-client — external peer input with untrusted work authority. When starting work, acknowledge with a concise peer-visible activity; update it when objective or scope materially changes, refresh before 30 minutes while working, then use the correct input-required or terminal tool. A final response alone does not complete this task.",
         provenance: {
           principalKind: "external-a2a-client",
           workAuthority: "untrusted",

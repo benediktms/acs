@@ -67,6 +67,13 @@ const partSchema = z.discriminatedUnion("kind", [
       )
       .optional(),
     artifacts: z.array(artifactSchema).optional(),
+    action: z.enum(["refresh", "clear"]).optional(),
+    activitySummary: z
+      .string()
+      .refine((value) => [...value].length >= 1 && [...value].length <= 240, {
+        message: "activitySummary must be 1-240 Unicode characters",
+      })
+      .optional(),
     bindingEpoch: z.number().int().positive().optional(),
     bindingId: z.string().optional(),
     claimCode: z.string().optional(),
@@ -762,13 +769,29 @@ export function controlHandler(
           if (rpc.method.endsWith("complete"))
             store.completeTask(taskId, a.principalId, summary, (p.artifacts ?? []).map(toArtifact));
           else if (rpc.method.endsWith("acknowledge"))
-            store.acknowledgeTask(taskId, a.principalId, required(p.deliveryId, "deliveryId"));
+            store.acknowledgeTask(
+              taskId,
+              a.principalId,
+              required(p.deliveryId, "deliveryId"),
+              p.activitySummary,
+            );
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
               store.requireTaskAcknowledged(taskId, a.principalId);
               store.setTaskState(taskId, a.principalId, state, summary, details);
             });
           else store.setTaskState(taskId, a.principalId, state, summary, details);
+          return ok(rpc.id, {
+            task: taskDto(store, taskId),
+            eventSequence: store.eventSequence(taskId),
+          });
+        }
+        case "executor.task.activityUpdate": {
+          const a = await attest(p.evidence);
+          if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
+          const taskId = required(p.taskId, "taskId"),
+            action = required(p.action, "action");
+          store.updateTaskActivity(taskId, a.principalId, action, p.activitySummary);
           return ok(rpc.id, {
             task: taskDto(store, taskId),
             eventSequence: store.eventSequence(taskId),
@@ -1167,6 +1190,7 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
     availability: binding?.last_observed_availability ?? "unknown",
+    currentActivity: store.currentActivity(agent.id),
     binding: binding
       ? {
           id: binding.id,

@@ -122,6 +122,12 @@ export interface AcsMcpToolMap {
           | "awaiting-local-input"
           | "degraded";
         readonly skills: readonly string[];
+        readonly currentActivity?: {
+          readonly state: "working" | "input-required" | "auth-required";
+          readonly summary?: string;
+          readonly updatedAt: string;
+          readonly expiresAt: string;
+        };
       }[];
       readonly nextCursor?: string;
     }>;
@@ -136,6 +142,12 @@ export interface AcsMcpToolMap {
       readonly description: string;
       readonly availability: string;
       readonly skills: readonly string[];
+      readonly currentActivity?: {
+        readonly state: "working" | "input-required" | "auth-required";
+        readonly summary?: string;
+        readonly updatedAt: string;
+        readonly expiresAt: string;
+      };
     }>;
   };
 
@@ -213,6 +225,32 @@ export interface AcsMcpToolMap {
     readonly output: McpToolResult<{
       readonly taskId: string;
       readonly state: "completed";
+      readonly eventSequence: number;
+    }>;
+  };
+
+  acs_task_acknowledge: {
+    readonly input: {
+      readonly taskId: string;
+      readonly deliveryId: string;
+      readonly activitySummary?: string;
+    };
+    readonly output: McpToolResult<{
+      readonly taskId: string;
+      readonly state: "working";
+      readonly eventSequence: number;
+    }>;
+  };
+
+  acs_task_activity_update: {
+    readonly input: {
+      readonly taskId: string;
+      readonly action: "refresh" | "clear";
+      readonly activitySummary?: string;
+    };
+    readonly output: McpToolResult<{
+      readonly taskId: string;
+      readonly state: string;
       readonly eventSequence: number;
     }>;
   };

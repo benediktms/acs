@@ -530,7 +530,7 @@ export class DeliveryScheduler {
       ? (parties.actor_slug ?? parties.actor_display_name ?? "external")
       : (parties.requester_slug ?? parties.display_name);
     const envelope: RuntimeDeliveryEnvelopeV1 = {
-      agentNotice: `${notification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${notification ? "" : " Follow the reply contract; a final response alone does not complete this task."}`,
+      agentNotice: `${notification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(notification, "state" in payload ? payload.state : undefined)}`,
       schema: "urn:agent-communications:runtime-envelope:v1",
       deliveryId: intent.id,
       kind: notification ? "a2a-task-event" : "a2a-message",
@@ -1073,6 +1073,14 @@ export class DeliveryScheduler {
       )
       .run(now, now, session.installationId, session.opaqueId);
   }
+}
+
+export function activityMaintenancePrompt(notification: boolean, state?: string) {
+  if (!notification)
+    return " When starting work, acknowledge with a concise peer-visible activity; update it when objective or scope materially changes, refresh before 30 minutes while working, then use the correct input-required or terminal tool. A final response alone does not complete this task.";
+  return state && !["completed", "failed", "canceled", "rejected"].includes(state)
+    ? " If this resumes assigned work, update its concise peer-visible activity when objective or scope materially changes and refresh before 30 minutes."
+    : "";
 }
 
 function deliveryProvenance(

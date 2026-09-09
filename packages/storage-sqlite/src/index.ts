@@ -147,6 +147,8 @@ const taskStates: Record<TaskState, number> = {
   "auth-required": 8,
 };
 const deliveryStatus = "urn:agent-communications:delivery-status:v1";
+const taskActivityMetadata = "urn:agent-communications:task-activity:v1";
+const taskActivityTtlMs = 30 * 60 * 1000;
 const taskEventTypes: Record<TaskState, string> = {
   submitted: "task-created",
   working: "task-working",
@@ -170,6 +172,7 @@ interface TaskRow {
   state_version: number;
   next_event_sequence: number;
   a2a_snapshot_json: string;
+  metadata_json: string;
 }
 export function initFiles(target = paths()): string {
   mkdirSync(dirname(target.data), { recursive: true, mode: 0o700 });
@@ -612,6 +615,62 @@ export class Store {
     return this.db
       .query<AgentRow, []>("SELECT * FROM agents WHERE deleted_at_ms IS NULL ORDER BY slug")
       .all();
+  }
+  currentActivity(agentId: string):
+    | {
+        state: "working" | "input-required" | "auth-required";
+        summary?: string;
+        updatedAt: string;
+        expiresAt: string;
+      }
+    | undefined {
+    const now = Date.now();
+    const rows = this.db
+      .query<
+        {
+          id: string;
+          state: TaskState;
+          metadata_json: string;
+          binding_id: string;
+          binding_epoch: number;
+        },
+        [string]
+      >(
+        "SELECT t.id,t.state,t.metadata_json,b.id binding_id,b.epoch binding_epoch FROM a2a_tasks t JOIN runtime_bindings b ON b.agent_id=t.target_agent_id AND b.status='active' WHERE t.target_agent_id=? AND b.last_observed_availability IN ('idle','busy','awaiting-local-input') AND t.state IN ('working','input-required','auth-required') ORDER BY t.id DESC",
+      )
+      .all(agentId);
+    const activities = rows.flatMap((row) => {
+      if (
+        row.state !== TaskState.Working &&
+        row.state !== TaskState.InputRequired &&
+        row.state !== TaskState.AuthRequired
+      )
+        return [];
+      const marker = taskActivity(row.metadata_json);
+      if (!marker || marker.expiresAtMs <= now) return [];
+      if (marker.bindingId !== row.binding_id || marker.bindingEpoch !== row.binding_epoch)
+        return [];
+      return [{ row, marker }];
+    });
+    activities.sort(
+      (left, right) =>
+        right.marker.updatedAtMs - left.marker.updatedAtMs ||
+        right.row.id.localeCompare(left.row.id),
+    );
+    const selected = activities[0];
+    return selected
+      ? {
+          state:
+            selected.row.state === TaskState.Working
+              ? "working"
+              : selected.row.state === TaskState.InputRequired
+                ? "input-required"
+                : "auth-required",
+          summary: selected.marker.summary,
+          updatedAt: new Date(selected.marker.updatedAtMs).toISOString(),
+          expiresAt: new Date(selected.marker.expiresAtMs).toISOString(),
+        }
+      : undefined;
   }
   bind(agentValue: string, sessionId: string, options: BindingOptions = {}) {
     const agent = this.agent(agentValue);
@@ -1421,7 +1480,12 @@ export class Store {
       this.transitionTask(taskId, principalId, next, summary, details),
     );
   }
-  acknowledgeTask(taskId: string, principalId: string, deliveryId: string) {
+  acknowledgeTask(
+    taskId: string,
+    principalId: string,
+    deliveryId: string,
+    activitySummary?: string,
+  ) {
     return this.write(() => {
       const row = this.assignedTask(taskId, principalId);
       const observed = this.db
@@ -1482,7 +1546,30 @@ export class Store {
       this.db
         .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
         .run(taskId);
+      this.writeTaskActivity(row, principalId, TaskState.Working, activitySummary, true);
       return task;
+    });
+  }
+  updateTaskActivity(
+    taskId: string,
+    principalId: string,
+    action: "refresh" | "clear",
+    activitySummary?: string,
+  ) {
+    return this.write(() => {
+      const row = this.currentAssignedTask(taskId, principalId);
+      if (terminalTaskState(row.state) || row.state === TaskState.Submitted)
+        throw new Error("TASK_STATE_CONFLICT");
+      if (action === "clear") {
+        if (activitySummary !== undefined)
+          throw new Error("VALIDATION_FAILED: clear does not accept activitySummary");
+        const metadata = taskMetadata(row.metadata_json);
+        delete metadata[taskActivityMetadata];
+        this.db
+          .query("UPDATE a2a_tasks SET metadata_json=? WHERE id=?")
+          .run(JSON.stringify(metadata), taskId);
+      } else this.writeTaskActivity(row, principalId, row.state, activitySummary, false);
+      return parseTask(row.a2a_snapshot_json);
     });
   }
   requireTaskAcknowledged(taskId: string, principalId: string) {
@@ -1596,6 +1683,12 @@ export class Store {
       this.db
         .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
         .run(taskId);
+      if (
+        !terminalTaskState(state) &&
+        row.requester_principal_id !== principalId &&
+        [TaskState.Working, TaskState.InputRequired, TaskState.AuthRequired].includes(state)
+      )
+        this.refreshTaskActivity(row, principalId);
       const subscriptions = this.db
         .query<
           {
@@ -1870,6 +1963,96 @@ export class Store {
     if (!row) throw new Error("TASK_NOT_ASSIGNED");
     return row;
   }
+  private currentAssignedTask(taskId: string, principalId: string) {
+    const row = this.db
+      .query<TaskRow, [string, string]>(
+        "SELECT t.* FROM a2a_tasks t JOIN principals p ON p.id=? AND p.agent_id=t.target_agent_id JOIN runtime_bindings b ON b.id=p.binding_id AND b.status='active' WHERE t.id=? AND p.disabled_at_ms IS NULL",
+      )
+      .get(principalId, taskId);
+    if (!row) throw new Error("TASK_NOT_ASSIGNED");
+    return row;
+  }
+  private taskBinding(principalId: string) {
+    return must(
+      this.db
+        .query<{ id: string; epoch: number }, [string]>(
+          "SELECT b.id,b.epoch FROM principals p JOIN runtime_bindings b ON b.id=p.binding_id AND b.status='active' WHERE p.id=? AND p.disabled_at_ms IS NULL",
+        )
+        .get(principalId),
+      "TASK_NOT_ASSIGNED",
+    );
+  }
+  private writeTaskActivity(
+    row: TaskRow,
+    principalId: string,
+    state: TaskState,
+    activitySummary: string | undefined,
+    replaceSummary: boolean,
+  ) {
+    if (activitySummary !== undefined) validateActivitySummary(activitySummary);
+    const binding = this.taskBinding(principalId),
+      previous = taskActivity(row.metadata_json),
+      summary = replaceSummary ? activitySummary : (activitySummary ?? previous?.summary),
+      now = Date.now(),
+      metadata = taskMetadata(row.metadata_json);
+    metadata[taskActivityMetadata] = {
+      bindingId: binding.id,
+      bindingEpoch: binding.epoch,
+      ...(summary === undefined ? {} : { summary }),
+      updatedAtMs: now,
+      expiresAtMs: now + taskActivityTtlMs,
+    };
+    this.db
+      .query("UPDATE a2a_tasks SET metadata_json=? WHERE id=?")
+      .run(JSON.stringify(metadata), row.id);
+  }
+  private refreshTaskActivity(row: TaskRow, principalId: string) {
+    const marker = taskActivity(row.metadata_json),
+      binding = this.taskBinding(principalId);
+    if (marker && marker.bindingId === binding.id && marker.bindingEpoch === binding.epoch)
+      this.writeTaskActivity(row, principalId, row.state, undefined, false);
+  }
+}
+
+interface TaskActivityMarker {
+  bindingId: string;
+  bindingEpoch: number;
+  summary?: string;
+  updatedAtMs: number;
+  expiresAtMs: number;
+}
+function taskMetadata(json: string) {
+  const value: unknown = JSON.parse(json);
+  if (!isRecord(value)) throw new Error("STORAGE_CORRUPT: invalid task metadata");
+  return value;
+}
+function taskActivity(json: string): TaskActivityMarker | undefined {
+  const value = taskMetadata(json)[taskActivityMetadata];
+  if (
+    !isRecord(value) ||
+    typeof value.bindingId !== "string" ||
+    typeof value.bindingEpoch !== "number"
+  )
+    return undefined;
+  if (
+    typeof value.updatedAtMs !== "number" ||
+    !Number.isSafeInteger(value.updatedAtMs) ||
+    typeof value.expiresAtMs !== "number" ||
+    !Number.isSafeInteger(value.expiresAtMs) ||
+    (value.summary !== undefined && typeof value.summary !== "string")
+  )
+    return undefined;
+  return {
+    bindingId: value.bindingId,
+    bindingEpoch: value.bindingEpoch,
+    ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
+    updatedAtMs: value.updatedAtMs,
+    expiresAtMs: value.expiresAtMs,
+  };
+}
+function validateActivitySummary(summary: string) {
+  if ([...summary].length < 1 || [...summary].length > 240)
+    throw new Error("VALIDATION_FAILED: activitySummary must be 1-240 Unicode characters");
 }
 
 function stringArray(json: string) {

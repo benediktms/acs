@@ -40,6 +40,105 @@ function authenticated(store: Store) {
   return principal;
 }
 
+test("projects only current binding-fenced acknowledged task activity", () => {
+  const store = fixture(),
+    agent = store.createAgent("activity-worker"),
+    binding = store.bind(agent.id, "activity-session"),
+    requester = authenticated(store),
+    first = store.accept(agent.id, requester.id, requestMessage("activity-first"), {}),
+    second = store.accept(agent.id, requester.id, requestMessage("activity-second"), {});
+  const activityTimes = (taskId: string) => {
+      const row = store.db
+        .query<{ updated: number; expires: number }, [string]>(
+          "SELECT json_extract(metadata_json, '$.urn:agent-communications:task-activity:v1.updatedAtMs') updated,json_extract(metadata_json, '$.urn:agent-communications:task-activity:v1.expiresAtMs') expires FROM a2a_tasks WHERE id=?",
+        )
+        .get(taskId);
+      if (!row) throw new Error("missing activity");
+      return row;
+    },
+    setActivityTimes = (taskId: string, updated: number, expires: number) => {
+      store.db
+        .query(
+          "UPDATE a2a_tasks SET metadata_json=json_set(metadata_json, '$.urn:agent-communications:task-activity:v1.updatedAtMs', ?, '$.urn:agent-communications:task-activity:v1.expiresAtMs', ?) WHERE id=?",
+        )
+        .run(updated, expires, taskId);
+    };
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.acknowledgeTask(first.task.id, binding.principalId, first.deliveryId, "Reviewing the plan");
+  store.acknowledgeTask(second.task.id, binding.principalId, second.deliveryId, "Second task");
+  const fixed = Date.now() - 10_000;
+  setActivityTimes(first.task.id, fixed, fixed + 1_800_000);
+  setActivityTimes(second.task.id, fixed + 1, fixed + 1_800_000);
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Second task" });
+  setActivityTimes(first.task.id, fixed, fixed + 1_800_000);
+  setActivityTimes(second.task.id, fixed, fixed + 1_800_000);
+  expect(store.currentActivity(agent.id)).toMatchObject({
+    summary: first.task.id > second.task.id ? "Reviewing the plan" : "Second task",
+  });
+  expect(() => store.updateTaskActivity(first.task.id, requester.id, "clear")).toThrow(
+    "TASK_NOT_ASSIGNED",
+  );
+  expect(() =>
+    store.updateTaskActivity(first.task.id, binding.principalId, "clear", "must reject"),
+  ).toThrow("VALIDATION_FAILED");
+  expect(() =>
+    store.updateTaskActivity(first.task.id, binding.principalId, "refresh", "x".repeat(241)),
+  ).toThrow("VALIDATION_FAILED");
+  const beforeTransition = activityTimes(first.task.id);
+  store.setTaskState(first.task.id, binding.principalId, TaskState.InputRequired, "Need input");
+  const afterTransition = activityTimes(first.task.id);
+  expect(afterTransition.expires - afterTransition.updated).toBe(1_800_000);
+  expect(afterTransition.updated).toBeGreaterThan(beforeTransition.updated);
+  expect(store.currentActivity(agent.id)).toMatchObject({
+    state: "input-required",
+    summary: "Reviewing the plan",
+  });
+  const beforeRequesterUpdate = activityTimes(first.task.id);
+  store.accept(
+    agent.id,
+    requester.id,
+    Message.fromJSON({
+      messageId: "requester-followup",
+      taskId: first.task.id,
+      contextId: first.task.contextId,
+      role: Role.ROLE_USER,
+      parts: [{ text: "requester update" }],
+    }),
+    {},
+  );
+  expect(activityTimes(first.task.id)).toEqual(beforeRequesterUpdate);
+  store.updateTaskActivity(first.task.id, binding.principalId, "clear");
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Second task" });
+  for (const availability of ["unknown", "offline", "dormant", "degraded"]) {
+    store.db
+      .query("UPDATE runtime_bindings SET last_observed_availability=? WHERE id=?")
+      .run(availability, binding.id);
+    expect(store.currentActivity(agent.id)).toBeUndefined();
+  }
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Second task" });
+  setActivityTimes(second.task.id, fixed, 0);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.updateTaskActivity(second.task.id, binding.principalId, "refresh");
+  const replacement = store.bind(agent.id, "replacement-session", { revokeExisting: true });
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(replacement.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.updateTaskActivity(second.task.id, replacement.principalId, "refresh", "Taking over");
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Taking over" });
+  store.revokeBinding(replacement.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.requestCancellation(second.task.id, requester.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.close();
+});
+
 test("preserves removed Codex installations as offline records", () => {
   const store = fixture();
   store.syncCodexInstallations([
