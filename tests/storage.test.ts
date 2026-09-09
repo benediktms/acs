@@ -139,6 +139,101 @@ test("projects only current binding-fenced acknowledged task activity", () => {
   store.close();
 });
 
+test("projects binding-scoped activity through its current binding lifecycle", () => {
+  const store = fixture(),
+    agent = store.createAgent("local-activity"),
+    binding = store.bind(agent.id, "local-activity-session"),
+    requester = authenticated(store),
+    task = store.accept(agent.id, requester.id, requestMessage("local-activity-task"), {});
+  store.db
+    .query(
+      "UPDATE runtime_bindings SET last_observed_availability='idle',metadata_json='{\"keep\":true}' WHERE id=?",
+    )
+    .run(binding.id);
+  expect(() => store.updateActivity(binding.principalId, "refresh")).toThrow("VALIDATION_FAILED");
+  expect(
+    store.updateActivity(binding.principalId, "refresh", "Implementing issue 42", {
+      cwd: "/workspace/issue-42",
+      gitBranch: "feature/42",
+    }),
+  ).toMatchObject({
+    state: "working",
+    summary: "Implementing issue 42",
+    cwd: "/workspace/issue-42",
+    gitBranch: "feature/42",
+  });
+  expect(store.updateActivity(binding.principalId, "refresh")).toMatchObject({
+    summary: "Implementing issue 42",
+    cwd: "/workspace/issue-42",
+    gitBranch: "feature/42",
+  });
+  expect(
+    store.updateActivity(binding.principalId, "refresh", "Reviewing issue 43", {
+      cwd: "/workspace/issue-43",
+    }),
+  ).toMatchObject({ summary: "Reviewing issue 43", cwd: "/workspace/issue-43" });
+  expect(() => store.updateActivity(binding.principalId, "clear", "must reject")).toThrow(
+    "VALIDATION_FAILED",
+  );
+  const metadata = store.db
+    .query<{ metadata_json: string }, [string]>(
+      "SELECT metadata_json FROM runtime_bindings WHERE id=?",
+    )
+    .get(binding.id)?.metadata_json;
+  expect(metadata).toContain("keep");
+  store.acknowledgeTask(task.task.id, binding.principalId, task.deliveryId, "Older task", {
+    cwd: "/workspace/task",
+    gitBranch: "feature/task",
+  });
+  store.setTaskState(task.task.id, binding.principalId, TaskState.InputRequired, "Need input");
+  expect(store.currentActivity(agent.id)).toMatchObject({
+    cwd: "/workspace/task",
+    gitBranch: "feature/task",
+  });
+  store.updateActivity(binding.principalId, "refresh", "New local focus");
+  const localUpdatedAt = Date.now() + 1_000;
+  store.db
+    .query(
+      "UPDATE runtime_bindings SET metadata_json=json_set(metadata_json, '$.urn:agent-communications:binding-activity:v1.updatedAtMs', ?, '$.urn:agent-communications:binding-activity:v1.expiresAtMs', ?) WHERE id=?",
+    )
+    .run(localUpdatedAt, localUpdatedAt + 1_800_000, binding.id);
+  store.setTaskState(task.task.id, binding.principalId, TaskState.Working, "Resumed work");
+  store.setTaskState(task.task.id, binding.principalId, TaskState.Completed, "done");
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "New local focus" });
+  store.db
+    .query(
+      "UPDATE runtime_bindings SET metadata_json=json_set(metadata_json, '$.urn:agent-communications:binding-activity:v1.expiresAtMs', 0) WHERE id=?",
+    )
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.updateActivity(binding.principalId, "refresh", "Resumed local focus");
+  for (const availability of ["offline", "dormant"]) {
+    store.db
+      .query("UPDATE runtime_bindings SET last_observed_availability=? WHERE id=?")
+      .run(availability, binding.id);
+    expect(store.currentActivity(agent.id)).toBeUndefined();
+  }
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Resumed local focus" });
+  const replacement = store.bind(agent.id, "local-activity-replacement", { revokeExisting: true });
+  store.db
+    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .run(replacement.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  expect(() => store.updateActivity(binding.principalId, "refresh", "stale")).toThrow(
+    "STALE_BINDING",
+  );
+  store.updateActivity(replacement.principalId, "refresh", "Replacement local focus");
+  expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Replacement local focus" });
+  expect(store.updateActivity(replacement.principalId, "clear")).toBeUndefined();
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.revokeBinding(replacement.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.close();
+});
+
 test("preserves removed Codex installations as offline records", () => {
   const store = fixture();
   store.syncCodexInstallations([

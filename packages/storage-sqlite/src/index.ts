@@ -28,6 +28,7 @@ import { paths } from "../../config/src/index";
 import type { CodexAccount } from "../../config/src/index";
 import { telemetry } from "../../observability/src/index";
 import type {
+  ActivityWorkspace,
   AgentRow,
   BindingOptions,
   BindingRow,
@@ -148,6 +149,7 @@ const taskStates: Record<TaskState, number> = {
 };
 const deliveryStatus = "urn:agent-communications:delivery-status:v1";
 const taskActivityMetadata = "urn:agent-communications:task-activity:v1";
+const bindingActivityMetadata = "urn:agent-communications:binding-activity:v1";
 const taskActivityTtlMs = 30 * 60 * 1000;
 const taskEventTypes: Record<TaskState, string> = {
   submitted: "task-created",
@@ -620,11 +622,23 @@ export class Store {
     | {
         state: "working" | "input-required" | "auth-required";
         summary?: string;
+        cwd?: string;
+        gitBranch?: string;
         updatedAt: string;
         expiresAt: string;
       }
     | undefined {
-    const now = Date.now();
+    const now = Date.now(),
+      binding = this.db
+        .query<BindingRow, [string]>(
+          "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
+        )
+        .get(agentId);
+    if (
+      !binding ||
+      !["idle", "busy", "awaiting-local-input"].includes(binding.last_observed_availability ?? "")
+    )
+      return undefined;
     const rows = this.db
       .query<
         {
@@ -636,37 +650,46 @@ export class Store {
         },
         [string]
       >(
-        "SELECT t.id,t.state,t.metadata_json,b.id binding_id,b.epoch binding_epoch FROM a2a_tasks t JOIN runtime_bindings b ON b.agent_id=t.target_agent_id AND b.status='active' WHERE t.target_agent_id=? AND b.last_observed_availability IN ('idle','busy','awaiting-local-input') AND t.state IN ('working','input-required','auth-required') ORDER BY t.id DESC",
+        "SELECT id,state,metadata_json FROM a2a_tasks WHERE target_agent_id=? AND state IN ('working','input-required','auth-required') ORDER BY id DESC",
       )
       .all(agentId);
-    const activities = rows.flatMap((row) => {
-      if (
-        row.state !== TaskState.Working &&
-        row.state !== TaskState.InputRequired &&
-        row.state !== TaskState.AuthRequired
-      )
-        return [];
-      const marker = taskActivity(row.metadata_json);
-      if (!marker || marker.expiresAtMs <= now) return [];
-      if (marker.bindingId !== row.binding_id || marker.bindingEpoch !== row.binding_epoch)
-        return [];
-      return [{ row, marker }];
-    });
+    const activities: { sourceKey: string; state: TaskState; marker: ActivityMarker }[] =
+      rows.flatMap((row) => {
+        if (
+          row.state !== TaskState.Working &&
+          row.state !== TaskState.InputRequired &&
+          row.state !== TaskState.AuthRequired
+        )
+          return [];
+        const marker = taskActivity(row.metadata_json);
+        if (!marker || marker.expiresAtMs <= now) return [];
+        if (marker.bindingId !== binding.id || marker.bindingEpoch !== binding.epoch) return [];
+        return [{ sourceKey: `task:${row.id}`, state: row.state, marker }];
+      });
+    const local = bindingActivity(binding.metadata_json);
+    if (local && local.expiresAtMs > now)
+      activities.push({
+        sourceKey: `binding:${binding.id}`,
+        state: TaskState.Working,
+        marker: local,
+      });
     activities.sort(
       (left, right) =>
         right.marker.updatedAtMs - left.marker.updatedAtMs ||
-        right.row.id.localeCompare(left.row.id),
+        right.sourceKey.localeCompare(left.sourceKey),
     );
     const selected = activities[0];
     return selected
       ? {
           state:
-            selected.row.state === TaskState.Working
+            selected.state === TaskState.Working
               ? "working"
-              : selected.row.state === TaskState.InputRequired
+              : selected.state === TaskState.InputRequired
                 ? "input-required"
                 : "auth-required",
           summary: selected.marker.summary,
+          cwd: selected.marker.cwd,
+          gitBranch: selected.marker.gitBranch,
           updatedAt: new Date(selected.marker.updatedAtMs).toISOString(),
           expiresAt: new Date(selected.marker.expiresAtMs).toISOString(),
         }
@@ -1485,6 +1508,7 @@ export class Store {
     principalId: string,
     deliveryId: string,
     activitySummary?: string,
+    workspace?: ActivityWorkspace,
   ) {
     return this.write(() => {
       const row = this.assignedTask(taskId, principalId);
@@ -1546,7 +1570,7 @@ export class Store {
       this.db
         .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
         .run(taskId);
-      this.writeTaskActivity(row, principalId, TaskState.Working, activitySummary, true);
+      this.writeTaskActivity(row, principalId, TaskState.Working, activitySummary, true, workspace);
       return task;
     });
   }
@@ -1555,6 +1579,7 @@ export class Store {
     principalId: string,
     action: "refresh" | "clear",
     activitySummary?: string,
+    workspace?: ActivityWorkspace,
   ) {
     return this.write(() => {
       const row = this.currentAssignedTask(taskId, principalId);
@@ -1568,8 +1593,43 @@ export class Store {
         this.db
           .query("UPDATE a2a_tasks SET metadata_json=? WHERE id=?")
           .run(JSON.stringify(metadata), taskId);
-      } else this.writeTaskActivity(row, principalId, row.state, activitySummary, false);
+      } else this.writeTaskActivity(row, principalId, row.state, activitySummary, false, workspace);
       return parseTask(row.a2a_snapshot_json);
+    });
+  }
+  updateActivity(
+    principalId: string,
+    action: "refresh" | "clear",
+    activitySummary?: string,
+    workspace?: ActivityWorkspace,
+  ) {
+    return this.write(() => {
+      if (action !== "refresh" && action !== "clear") throw new Error("VALIDATION_FAILED: action");
+      const binding = this.currentBinding(principalId),
+        metadata = bindingMetadata(binding.metadata_json);
+      if (action === "clear") {
+        if (activitySummary !== undefined)
+          throw new Error("VALIDATION_FAILED: clear does not accept activitySummary");
+        delete metadata[bindingActivityMetadata];
+      } else {
+        if (activitySummary !== undefined) validateActivitySummary(activitySummary);
+        const previous = bindingActivity(binding.metadata_json),
+          summary = activitySummary ?? previous?.summary;
+        if (summary === undefined)
+          throw new Error("VALIDATION_FAILED: activitySummary is required for initial refresh");
+        const now = Date.now();
+        metadata[bindingActivityMetadata] = {
+          version: 1,
+          summary,
+          ...(workspace === undefined ? workspaceFields(previous) : workspaceFields(workspace)),
+          updatedAtMs: now,
+          expiresAtMs: now + taskActivityTtlMs,
+        };
+      }
+      this.db
+        .query("UPDATE runtime_bindings SET metadata_json=? WHERE id=?")
+        .run(JSON.stringify(metadata), binding.id);
+      return this.currentActivity(binding.agent_id);
     });
   }
   requireTaskAcknowledged(taskId: string, principalId: string) {
@@ -1982,12 +2042,23 @@ export class Store {
       "TASK_NOT_ASSIGNED",
     );
   }
+  private currentBinding(principalId: string) {
+    return must(
+      this.db
+        .query<BindingRow, [string]>(
+          "SELECT b.* FROM principals p JOIN runtime_bindings b ON b.id=p.binding_id AND b.status='active' WHERE p.id=? AND p.disabled_at_ms IS NULL",
+        )
+        .get(principalId),
+      "STALE_BINDING",
+    );
+  }
   private writeTaskActivity(
     row: TaskRow,
     principalId: string,
     state: TaskState,
     activitySummary: string | undefined,
     replaceSummary: boolean,
+    workspace?: ActivityWorkspace,
   ) {
     if (activitySummary !== undefined) validateActivitySummary(activitySummary);
     const binding = this.taskBinding(principalId),
@@ -1999,6 +2070,7 @@ export class Store {
       bindingId: binding.id,
       bindingEpoch: binding.epoch,
       ...(summary === undefined ? {} : { summary }),
+      ...(workspace === undefined ? workspaceFields(previous) : workspaceFields(workspace)),
       updatedAtMs: now,
       expiresAtMs: now + taskActivityTtlMs,
     };
@@ -2014,12 +2086,19 @@ export class Store {
   }
 }
 
-interface TaskActivityMarker {
-  bindingId: string;
-  bindingEpoch: number;
+interface ActivityMarker {
   summary?: string;
+  cwd?: string;
+  gitBranch?: string;
   updatedAtMs: number;
   expiresAtMs: number;
+}
+interface TaskActivityMarker extends ActivityMarker {
+  bindingId: string;
+  bindingEpoch: number;
+}
+interface BindingActivityMarker extends ActivityMarker {
+  summary: string;
 }
 function taskMetadata(json: string) {
   const value: unknown = JSON.parse(json);
@@ -2039,15 +2118,52 @@ function taskActivity(json: string): TaskActivityMarker | undefined {
     !Number.isSafeInteger(value.updatedAtMs) ||
     typeof value.expiresAtMs !== "number" ||
     !Number.isSafeInteger(value.expiresAtMs) ||
-    (value.summary !== undefined && typeof value.summary !== "string")
+    (value.summary !== undefined && typeof value.summary !== "string") ||
+    (value.cwd !== undefined && typeof value.cwd !== "string") ||
+    (value.gitBranch !== undefined && typeof value.gitBranch !== "string")
   )
     return undefined;
   return {
     bindingId: value.bindingId,
     bindingEpoch: value.bindingEpoch,
     ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
+    ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+    ...(typeof value.gitBranch === "string" ? { gitBranch: value.gitBranch } : {}),
     updatedAtMs: value.updatedAtMs,
     expiresAtMs: value.expiresAtMs,
+  };
+}
+function bindingMetadata(json: string) {
+  const value: unknown = JSON.parse(json);
+  if (!isRecord(value)) throw new Error("STORAGE_CORRUPT: invalid binding metadata");
+  return value;
+}
+function bindingActivity(json: string): BindingActivityMarker | undefined {
+  const value = bindingMetadata(json)[bindingActivityMetadata];
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    typeof value.summary !== "string" ||
+    typeof value.updatedAtMs !== "number" ||
+    !Number.isSafeInteger(value.updatedAtMs) ||
+    typeof value.expiresAtMs !== "number" ||
+    !Number.isSafeInteger(value.expiresAtMs) ||
+    (value.cwd !== undefined && typeof value.cwd !== "string") ||
+    (value.gitBranch !== undefined && typeof value.gitBranch !== "string")
+  )
+    return undefined;
+  return {
+    summary: value.summary,
+    ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+    ...(typeof value.gitBranch === "string" ? { gitBranch: value.gitBranch } : {}),
+    updatedAtMs: value.updatedAtMs,
+    expiresAtMs: value.expiresAtMs,
+  };
+}
+function workspaceFields(workspace: ActivityWorkspace | ActivityMarker | undefined) {
+  return {
+    ...(workspace?.cwd === undefined ? {} : { cwd: workspace.cwd }),
+    ...(workspace?.gitBranch === undefined ? {} : { gitBranch: workspace.gitBranch }),
   };
 }
 function validateActivitySummary(summary: string) {

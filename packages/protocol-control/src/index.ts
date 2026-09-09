@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
 import type {
   AgentRow,
   BindingRow,
@@ -779,6 +780,7 @@ export function controlHandler(
               a.principalId,
               required(p.deliveryId, "deliveryId"),
               p.activitySummary,
+              activityWorkspace(p.workspace),
             );
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
@@ -796,11 +798,31 @@ export function controlHandler(
           if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
           const taskId = required(p.taskId, "taskId"),
             action = required(p.action, "action");
-          store.updateTaskActivity(taskId, a.principalId, action, p.activitySummary);
+          store.updateTaskActivity(
+            taskId,
+            a.principalId,
+            action,
+            p.activitySummary,
+            activityWorkspace(p.workspace),
+          );
           return ok(rpc.id, {
             task: taskDto(store, taskId),
             eventSequence: store.eventSequence(taskId),
           });
+        }
+        case "executor.activity.update": {
+          const a = await attest(p.evidence);
+          if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
+          if (hasUnexpectedActivityParam(p))
+            throw new Error("VALIDATION_FAILED: activity is self-scoped");
+          const action = required(p.action, "action"),
+            currentActivity = store.updateActivity(
+              a.principalId,
+              action,
+              p.activitySummary,
+              activityWorkspace(p.workspace),
+            );
+          return ok(rpc.id, { currentActivity });
         }
         case "executor.task.publishMessage": {
           const a = await attest(p.evidence);
@@ -1380,6 +1402,25 @@ function required<T>(value: T | null | undefined, name: string): T {
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hasUnexpectedActivityParam(value: object) {
+  return Object.keys(value).some(
+    (key) => !["evidence", "action", "activitySummary", "workspace"].includes(key),
+  );
+}
+function activityWorkspace(value: unknown) {
+  if (value === undefined) return undefined;
+  if (
+    !isRecord(value) ||
+    typeof value.cwd !== "string" ||
+    !isAbsolute(value.cwd) ||
+    (value.gitBranch !== undefined && typeof value.gitBranch !== "string")
+  )
+    throw new Error("VALIDATION_FAILED: invalid workspace");
+  return {
+    cwd: value.cwd,
+    ...(typeof value.gitBranch === "string" ? { gitBranch: value.gitBranch } : {}),
+  };
 }
 function runtimeSessionCursor(value: unknown) {
   if (!isRecord(value) || typeof value.runtimeSessionCursor !== "string")

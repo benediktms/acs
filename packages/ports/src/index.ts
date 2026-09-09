@@ -87,11 +87,17 @@ export interface BindingRow {
   status: BindingState;
   continuity_policy: "follow-pending" | "strict";
   delivery_policy_json: string;
+  metadata_json: string;
   created_at_ms: number;
   activated_at_ms: number | null;
   revoked_at_ms: number | null;
   last_observed_availability: string | null;
   last_observed_at_ms: number | null;
+}
+
+export interface ActivityWorkspace {
+  readonly cwd: string;
+  readonly gitBranch?: string;
 }
 
 export interface DeliveryIntentRow {
@@ -257,6 +263,8 @@ export interface ControlStoragePort extends SqlPort {
     | {
         state: "working" | "input-required" | "auth-required";
         summary?: string;
+        cwd?: string;
+        gitBranch?: string;
         updatedAt: string;
         expiresAt: string;
       }
@@ -290,13 +298,30 @@ export interface ControlStoragePort extends SqlPort {
     principalId: string,
     deliveryId: string,
     activitySummary?: string,
+    workspace?: ActivityWorkspace,
   ): StoredTask;
   updateTaskActivity(
     taskId: string,
     principalId: string,
     action: "refresh" | "clear",
     activitySummary?: string,
+    workspace?: ActivityWorkspace,
   ): StoredTask;
+  updateActivity(
+    principalId: string,
+    action: "refresh" | "clear",
+    activitySummary?: string,
+    workspace?: ActivityWorkspace,
+  ):
+    | {
+        state: "working" | "input-required" | "auth-required";
+        summary?: string;
+        cwd?: string;
+        gitBranch?: string;
+        updatedAt: string;
+        expiresAt: string;
+      }
+    | undefined;
   requireTaskAcknowledged(taskId: string, principalId: string): void;
   publishMessage(
     taskId: string,

@@ -52,20 +52,31 @@ expertise, but they never include runtime availability or live task activity.
 Use authenticated ACS agent list/get discovery for current activity instead.
 
 When an assigned agent acknowledges a task, it may supply `activitySummary`: a
-peer-visible, untrusted label of 1–240 Unicode characters. ACS projects only its
-state, that optional label, and update/expiry timestamps. It never derives a label
-from task content, prompts, questions, messages, artifacts, or runtime output.
+peer-visible, untrusted label of 1–240 Unicode characters. A bound agent can also
+publish task-independent local work with `acs_activity_update`; its first
+`refresh` needs a summary, later refreshes may retain or replace it, and `clear`
+accepts no summary. ACS projects only state, that optional label, and update/expiry
+timestamps. It never derives a label from task content, prompts, questions,
+messages, artifacts, or runtime output.
+
+For activity updates made through the Codex MCP tools, ACS also records the
+publishing session's full absolute working directory and, when attached, its Git
+branch. These values are visible only to authenticated ACS peers through agent
+list/get discovery, never either Agent Card. Refresh after changing directory or
+branch; a refresh replaces the workspace context and it expires with the activity.
 
 Activity expires 30 minutes after acknowledgement, an assigned-agent state
-transition, or `acs_task_activity_update` with `refresh`. Refresh may replace the
-label; `clear` removes it. The assigned agent should refresh before expiry while
-working and update when scope materially changes. Activity is also hidden when the
-task becomes terminal or its binding is offline, dormant, degraded, revoked,
-replaced, or otherwise no longer current. ACS has no general-session activity hook.
+transition, or either activity tool with `refresh`. Refresh may replace the label;
+`clear` removes it. The assigned agent should refresh before expiry while working
+and update when scope materially changes. Discovery selects the newest eligible
+task-linked or local activity. Activity is also hidden when a task becomes terminal
+or its binding is offline, dormant, degraded, revoked, replaced, or otherwise no
+longer current. ACS has no general-session activity hook.
 
 ```ts
 await acs_task_acknowledge({ taskId, deliveryId, activitySummary: "Reviewing API changes" });
 await acs_task_activity_update({ taskId, action: "refresh" });
+await acs_activity_update({ action: "refresh", activitySummary: "Implementing issue 42" });
 ```
 
 ## Operator binding

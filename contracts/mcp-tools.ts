@@ -125,6 +125,8 @@ export interface AcsMcpToolMap {
         readonly currentActivity?: {
           readonly state: "working" | "input-required" | "auth-required";
           readonly summary?: string;
+          readonly cwd?: string;
+          readonly gitBranch?: string;
           readonly updatedAt: string;
           readonly expiresAt: string;
         };
@@ -145,6 +147,8 @@ export interface AcsMcpToolMap {
       readonly currentActivity?: {
         readonly state: "working" | "input-required" | "auth-required";
         readonly summary?: string;
+        readonly cwd?: string;
+        readonly gitBranch?: string;
         readonly updatedAt: string;
         readonly expiresAt: string;
       };
@@ -252,6 +256,23 @@ export interface AcsMcpToolMap {
       readonly taskId: string;
       readonly state: string;
       readonly eventSequence: number;
+    }>;
+  };
+
+  acs_activity_update: {
+    readonly input: {
+      readonly action: "refresh" | "clear";
+      readonly activitySummary?: string;
+    };
+    readonly output: McpToolResult<{
+      readonly currentActivity?: {
+        readonly state: "working" | "input-required" | "auth-required";
+        readonly summary?: string;
+        readonly cwd?: string;
+        readonly gitBranch?: string;
+        readonly updatedAt: string;
+        readonly expiresAt: string;
+      };
     }>;
   };
 

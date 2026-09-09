@@ -1117,6 +1117,121 @@ describe("control protocol", () => {
     ).toBe(2);
     store.close();
   });
+  test("updates only the attested caller's binding-scoped activity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-activity-"));
+    roots.push(root);
+    const paths: Paths = {
+        data: join(root, "acs.db"),
+        runtime: join(root, "control.sock"),
+        token: join(root, "control.token"),
+        bridgeToken: join(root, "bridge.token"),
+        secret: join(root, "secret.key"),
+      },
+      store = new Store(paths),
+      installation = required(
+        store.db
+          .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+          .get(),
+        "installation",
+      ),
+      agent = store.createAgent("local-activity"),
+      binding = store.bind(agent.id, "local-activity-thread"),
+      handler = controlHandler(
+        store,
+        new Date().toISOString(),
+        () => {},
+        undefined,
+        new CodexCallerAttestor(installation.id),
+      ),
+      bridgeToken = readFileSync(paths.bridgeToken, "utf8"),
+      call = async (params: unknown) =>
+        handler(
+          new Request("http://localhost", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${bridgeToken}`,
+              "ACS-Control-Version": "1",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: "activity",
+              method: "executor.activity.update",
+              params,
+            }),
+          }),
+        );
+    store.db
+      .query(
+        "UPDATE runtime_bindings SET last_observed_availability='idle',last_observed_at_ms=? WHERE id=?",
+      )
+      .run(Date.now(), binding.id);
+    expect(
+      await (
+        await call({
+          evidence: evidence("local-activity-thread"),
+          action: "refresh",
+          activitySummary: "Local work",
+          workspace: { cwd: "/workspace/local", gitBranch: "feature/local" },
+        })
+      ).json(),
+    ).toMatchObject({
+      result: {
+        currentActivity: {
+          state: "working",
+          summary: "Local work",
+          cwd: "/workspace/local",
+          gitBranch: "feature/local",
+        },
+      },
+    });
+    for (const selector of [
+      { agent: "another" },
+      { targetAgent: "another" },
+      { fromBindingId: "bnd_from" },
+      { toBindingId: "bnd_to" },
+      { deliveryIds: ["int_1"] },
+    ])
+      expect(
+        await (
+          await call({
+            evidence: evidence("local-activity-thread"),
+            action: "refresh",
+            ...selector,
+          })
+        ).json(),
+      ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
+    expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Local work" });
+    expect(
+      await (
+        await call({
+          evidence: evidence("local-activity-thread"),
+          action: "refresh",
+          workspace: { cwd: "relative" },
+        })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
+    expect(
+      await (await call({ action: "refresh", activitySummary: "must not write" })).json(),
+    ).toMatchObject({ error: { data: { code: "UNATTESTED_CALLER" } } });
+    const replacement = store.bind(agent.id, "local-activity-replacement", {
+      revokeExisting: true,
+    });
+    store.db
+      .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+      .run(replacement.id);
+    expect(
+      await (
+        await call({
+          evidence: evidence("local-activity-thread"),
+          action: "refresh",
+          activitySummary: "stale",
+        })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "UNATTESTED_CALLER" } } });
+    expect(store.currentActivity(agent.id)).toBeUndefined();
+    store.close();
+  });
   test("filters stable keyset pages for control-plane lists", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-pages-"));
     roots.push(root);
