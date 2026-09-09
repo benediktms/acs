@@ -1101,10 +1101,9 @@ async function doctor() {
     } while (cursor);
     accountHealth = await Promise.all(
       settings.codex.accounts.map(async (account) => {
-        const runtime = runtimes.find((candidate) => {
-          const value = recordValue(candidate);
-          return value.harnessId === "codex" && value.label === account.label;
-        });
+        const runtime = runtimes.find((candidate) =>
+          isConfiguredCodexRuntime(candidate, account.label, account.home),
+        );
         if (!runtime)
           return {
             label: account.label,
