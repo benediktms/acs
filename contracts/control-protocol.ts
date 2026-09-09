@@ -77,6 +77,8 @@ export interface LogicalAgentDto {
   readonly currentActivity?: {
     readonly state: "working" | "input-required" | "auth-required";
     readonly summary?: string;
+    readonly cwd?: string;
+    readonly gitBranch?: string;
     readonly updatedAt: string;
     readonly expiresAt: string;
   };
@@ -521,6 +523,14 @@ export interface ControlMethodMap {
       readonly activitySummary?: string;
     };
     readonly result: { readonly task: TaskDto; readonly eventSequence: number };
+  };
+
+  "executor.activity.update": {
+    readonly params: ExecutorTaskEvidence & {
+      readonly action: "refresh" | "clear";
+      readonly activitySummary?: string;
+    };
+    readonly result: { readonly currentActivity?: LogicalAgentDto["currentActivity"] };
   };
 
   "inbox.list": {

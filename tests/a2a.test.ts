@@ -281,6 +281,8 @@ describe("A2A JSON-RPC", () => {
       publicCard = AgentCard.fromJSON(publicCardJson);
     expect(publicCardJson).not.toHaveProperty("availability");
     expect(publicCardJson).not.toHaveProperty("currentActivity");
+    expect(publicCardJson).not.toHaveProperty("cwd");
+    expect(publicCardJson).not.toHaveProperty("gitBranch");
     expect(publicCard.supportedInterfaces.at(0)?.url).toBe(
       "http://127.0.0.1:7432/agents/backend/a2a",
     );
@@ -337,6 +339,8 @@ describe("A2A JSON-RPC", () => {
     expect(extendedCard.result?.name).toBe("backend");
     expect(extendedCard.result).not.toHaveProperty("availability");
     expect(extendedCard.result).not.toHaveProperty("currentActivity");
+    expect(extendedCard.result).not.toHaveProperty("cwd");
+    expect(extendedCard.result).not.toHaveProperty("gitBranch");
     const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
       tracestate = "vendor=value",
       sent = await call(

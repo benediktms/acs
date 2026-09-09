@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
 import type {
   AgentRow,
   BindingRow,
@@ -680,13 +681,13 @@ export function controlHandler(
         }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);
-          return ok(rpc.id, a);
+          return ok(rpc.id, publicAttestation(a));
         }
         case "bridge.identity": {
           const a = await attest(p.evidence);
           const agent = a.kind === "attested" ? store.agent(a.agentId) : undefined;
           return ok(rpc.id, {
-            attestation: a,
+            attestation: publicAttestation(a),
             agent: agent ? agentDto(store, agent) : undefined,
           });
         }
@@ -779,6 +780,7 @@ export function controlHandler(
               a.principalId,
               required(p.deliveryId, "deliveryId"),
               p.activitySummary,
+              activityWorkspace(a.runtimeCwd),
             );
           else if (rpc.method.endsWith("fail") || rpc.method.endsWith("requestInput"))
             store.write(() => {
@@ -796,11 +798,31 @@ export function controlHandler(
           if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
           const taskId = required(p.taskId, "taskId"),
             action = required(p.action, "action");
-          store.updateTaskActivity(taskId, a.principalId, action, p.activitySummary);
+          store.updateTaskActivity(
+            taskId,
+            a.principalId,
+            action,
+            p.activitySummary,
+            action === "clear" ? undefined : activityWorkspace(a.runtimeCwd),
+          );
           return ok(rpc.id, {
             task: taskDto(store, taskId),
             eventSequence: store.eventSequence(taskId),
           });
+        }
+        case "executor.activity.update": {
+          const a = await attest(p.evidence);
+          if (a.kind !== "attested") throw new Error("UNATTESTED_CALLER");
+          if (hasUnexpectedActivityParam(p))
+            throw new Error("VALIDATION_FAILED: activity is self-scoped");
+          const action = required(p.action, "action"),
+            currentActivity = store.updateActivity(
+              a.principalId,
+              action,
+              p.activitySummary,
+              action === "clear" ? undefined : activityWorkspace(a.runtimeCwd),
+            );
+          return ok(rpc.id, { currentActivity });
         }
         case "executor.task.publishMessage": {
           const a = await attest(p.evidence);
@@ -976,6 +998,22 @@ export async function controlCall(
 function admin(kind: string) {
   if (kind !== "local-user") throw new Error("NOT_AUTHORIZED");
 }
+type BridgeAttestationContext =
+  | (Extract<BridgeAttestationDto, { kind: "attested" }> & { readonly runtimeCwd?: string })
+  | Extract<BridgeAttestationDto, { kind: "unattested" }>;
+function publicAttestation(context: BridgeAttestationContext): BridgeAttestationDto {
+  if (context.kind === "unattested") return context;
+  return {
+    kind: context.kind,
+    scheme: context.scheme,
+    session: context.session,
+    bindingId: context.bindingId,
+    bindingEpoch: context.bindingEpoch,
+    agentId: context.agentId,
+    principalId: context.principalId,
+    evidenceFingerprint: context.evidenceFingerprint,
+  };
+}
 async function attestEvidence(
   store: ControlStoragePort,
   adapters: RuntimeAdapter | ReadonlyMap<RuntimeInstallationId, RuntimeAdapter> | undefined,
@@ -984,7 +1022,7 @@ async function attestEvidence(
     | ReadonlyMap<RuntimeInstallationId, RuntimeCallerAttestor>
     | undefined,
   evidence: Params["evidence"],
-): Promise<BridgeAttestationDto> {
+): Promise<BridgeAttestationContext> {
   const callerEvidence = attestationEvidence(evidence);
   if (!callerEvidence?.metadata) return { kind: "unattested", reason: "missing-host-metadata" };
   const hostEvidence = hostInvocationEvidence(evidence);
@@ -1000,7 +1038,8 @@ async function attestEvidence(
   if (proof.kind !== "attested") return proof;
   const before = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);
   if (before.kind !== "attested") return before;
-  let verified = false;
+  let verified = false,
+    runtimeCwd: string | undefined;
   const adapter = isAdapterMap(adapters) ? adapters.get(before.session.installationId) : adapters;
   if (adapter)
     try {
@@ -1008,6 +1047,7 @@ async function attestEvidence(
       if (snapshot.availability !== "offline") {
         store.observeSession(snapshot.session, snapshot.availability);
         verified = true;
+        runtimeCwd = snapshot.attributes.cwdHint;
       }
     } catch {}
   const binding = store.binding(before.bindingId);
@@ -1020,7 +1060,7 @@ async function attestEvidence(
   return current.kind === "attested" &&
     current.bindingId === before.bindingId &&
     current.bindingEpoch === before.bindingEpoch
-    ? current
+    ? { ...current, ...(runtimeCwd === undefined ? {} : { runtimeCwd }) }
     : { kind: "unattested", reason: "stale-binding" };
 }
 
@@ -1380,6 +1420,28 @@ function required<T>(value: T | null | undefined, name: string): T {
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function hasUnexpectedActivityParam(value: object) {
+  return Object.keys(value).some((key) => !["evidence", "action", "activitySummary"].includes(key));
+}
+function activityWorkspace(cwd: string | undefined) {
+  if (!cwd || !isAbsolute(cwd))
+    throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
+  try {
+    const options = { env: { ...process.env, LC_ALL: "C" } },
+      worktree = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], options);
+    if (!worktree.success) {
+      if (worktree.stderr.toString().includes("not a git repository")) return { cwd };
+      throw new Error("git workspace lookup failed");
+    }
+    if (worktree.stdout.toString().trim() !== "true") return { cwd };
+    const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"], options);
+    if (!git.success) throw new Error("git branch lookup failed");
+    const gitBranch = git.stdout.toString().trim();
+    return { cwd, ...(gitBranch ? { gitBranch } : {}) };
+  } catch {
+    throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
+  }
 }
 function runtimeSessionCursor(value: unknown) {
   if (!isRecord(value) || typeof value.runtimeSessionCursor !== "string")
