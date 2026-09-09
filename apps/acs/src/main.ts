@@ -669,9 +669,7 @@ async function acquireDaemonLock() {
 }
 
 function releaseDaemonLock(database: Database) {
-  try {
-    database.exec("ROLLBACK");
-  } catch {}
+  if (database.inTransaction) database.exec("ROLLBACK");
   database.close();
 }
 
