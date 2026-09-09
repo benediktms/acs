@@ -10,13 +10,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createServer } from "node:net";
 import {
   codexAppServerLaunchAgent,
   daemonCommandRunsForeground,
   daemonCommandWaitsForHandover,
   daemonControlPathsFromEnvironment,
   type DaemonServiceStatus,
-  codexZshIntegration,
   daemonServiceStatus,
   installCodexAppServer,
   installService,
@@ -31,7 +31,8 @@ import {
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
-  syncCodexZshIntegration,
+  swarmLauncher,
+  syncSwarmLauncher,
 } from "../apps/acs/src/service";
 
 test("persistent runtime paths are absolute", () => {
@@ -395,7 +396,7 @@ test("reports daemon service status without lifecycle commands", async () => {
   }
 });
 
-test("Codex account service and zsh integration are account-scoped", () => {
+test("Codex account service is account-scoped", () => {
   const agent = codexAppServerLaunchAgent({
     binary: "/opt/homebrew/bin/codex",
     home: "/Users/example/.codex/accounts/personal",
@@ -413,136 +414,127 @@ test("Codex account service and zsh integration are account-scoped", () => {
   expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
-  const integration = codexZshIntegration(
-    ["/Applications/acs", "/work/acs/main.ts"],
-    "/Applications/Codex O'Brien/codex",
-  );
-  expect(integration).toContain("--acs-standalone");
-  expect(integration).toContain("--remote requires --acs-standalone");
-  expect(integration).toContain("--remote=*)");
-  expect(integration).not.toContain('" $* "');
-  expect(integration).toContain("codex socket");
-  expect(integration).toContain('"${acs_bin[@]}"');
-  expect(integration).toContain("-C|--cd) has_cwd=true");
-  expect(integration).toContain("routed_argv");
-  expect(integration).toContain("session_command");
-  expect(integration).toContain("exec|e|review|login|logout");
-  expect(integration).toContain(`local codex_bin='/Applications/Codex O'\\''Brien/codex'`);
-  expect(integration).not.toContain("command codex");
 });
 
-test.skipIf(!Bun.which("zsh"))(
-  "Codex zsh integration treats prompt text as a managed session",
-  () => {
-    const root = mkdtempSync(join(tmpdir(), "acs-zsh-")),
-      bin = join(root, "bin"),
-      acs = join(bin, "acs"),
-      codex = join(root, "Codex Binary"),
-      output = join(root, "args");
-    mkdirSync(bin);
-    writeFileSync(acs, "#!/bin/sh\nprintf '/tmp/acs.sock\\n'\n");
-    writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
-    chmodSync(acs, 0o755);
-    chmodSync(codex, 0o755);
-    try {
-      const managed = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex 'fix --remote tests'`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(managed.exitCode).toBe(0);
+test("swarm routes interactive new, resume, and fork sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-")),
+    bin = join(root, "bin"),
+    acs = join(bin, "acs"),
+    codex = join(bin, "codex"),
+    swarm = join(root, ".local/bin/swarm"),
+    socket = join(root, "codex.sock"),
+    output = join(root, "args"),
+    configuredHome = join(root, "account"),
+    workingDirectory = join(root, "work");
+  mkdirSync(bin);
+  mkdirSync(configuredHome);
+  mkdirSync(workingDirectory);
+  const effectiveWorkingDirectory = Bun.spawnSync(["/bin/pwd"], { cwd: workingDirectory })
+    .stdout.toString()
+    .trim();
+  writeFileSync(
+    acs,
+    `#!/bin/sh\n[ "$CODEX_HOME" = ${JSON.stringify(configuredHome)} ] || exit 1\nprintf '%s\\n' ${JSON.stringify(socket)}\n`,
+  );
+  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
+  chmodSync(acs, 0o755);
+  chmodSync(codex, 0o755);
+  const listener = createServer();
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(socket, resolve);
+  });
+  try {
+    syncSwarmLauncher({
+      enabled: true,
+      accountCount: 1,
+      home: root,
+      command: [acs],
+      codexBinary: codex,
+    });
+    const run = (arguments_: string[], home = configuredHome) =>
+      Bun.spawnSync([swarm, ...arguments_], {
+        cwd: workingDirectory,
+        env: { ...process.env, HOME: root, CODEX_HOME: home, ACS_TEST_OUTPUT: output },
+      });
+    for (const arguments_ of [
+      ["new prompt"],
+      ["--model", "test", "resume", "session-id", "continue"],
+      ["fork", "session-id"],
+    ]) {
+      expect(run(arguments_).exitCode).toBe(0);
       expect(readFileSync(output, "utf8")).toBe(
-        `--remote\nunix:///tmp/acs.sock\n--cd\n${process.cwd()}\nfix --remote tests\n`,
+        `--remote\nunix://${socket}\n--cd\n${effectiveWorkingDirectory}\n${arguments_.join("\n")}\n`,
       );
-      const explicitCwd = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --cd /explicit task`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(explicitCwd.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe(
-        "--remote\nunix:///tmp/acs.sock\n--cd\n/explicit\ntask\n",
-      );
-      const direct = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex exec test`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(direct.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
-      const directStandalone = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone exec task`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(directStandalone.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe("exec\ntask\n");
-      const directRemote = Bun.spawnSync(
-        [
-          "zsh",
-          "-fc",
-          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other exec task`,
-        ],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(directRemote.exitCode).toBe(2);
-      const standaloneTerminator = Bun.spawnSync(
-        [
-          "zsh",
-          "-fc",
-          `${codexZshIntegration([acs], codex)}\ncodex --acs-standalone -- '--remote'`,
-        ],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(standaloneTerminator.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe("--\n--remote\n");
-      const resumeStandalone = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex resume --acs-standalone`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(resumeStandalone.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe("resume\n");
-      const resumeRemote = Bun.spawnSync(
-        [
-          "zsh",
-          "-fc",
-          `${codexZshIntegration([acs], codex)}\ncodex resume --remote=unix:///tmp/other`,
-        ],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(resumeRemote.exitCode).toBe(2);
-      const optionValue = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex -c --acs-standalone resume`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(optionValue.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe(
-        `--remote\nunix:///tmp/acs.sock\n--cd\n${process.cwd()}\n-c\n--acs-standalone\nresume\n`,
-      );
-      for (const option of ["-c", "-p", "-s", "-a"]) {
-        const shortOption = Bun.spawnSync(
-          ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex ${option} value exec test`],
-          { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-        );
-        expect(shortOption.exitCode).toBe(0);
-        expect(readFileSync(output, "utf8")).toBe(`${option}\nvalue\nexec\ntest\n`);
-      }
-      const remote = Bun.spawnSync(
-        ["zsh", "-fc", `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other`],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(remote.exitCode).toBe(2);
-      const standalone = Bun.spawnSync(
-        [
-          "zsh",
-          "-fc",
-          `${codexZshIntegration([acs], codex)}\ncodex --remote=unix:///tmp/other --acs-standalone`,
-        ],
-        { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ACS_TEST_OUTPUT: output } },
-      );
-      expect(standalone.exitCode).toBe(0);
-      expect(readFileSync(output, "utf8")).toBe("--remote=unix:///tmp/other\n");
-    } finally {
-      rmSync(root, { recursive: true });
     }
-  },
-);
+    expect(run(["--cd", "/explicit", "resume", "session-id"]).exitCode).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(
+      "--remote\nunix://" + socket + "\n--cd\n/explicit\nresume\nsession-id\n",
+    );
+    const remote = run(["--remote=unix:///tmp/other", "resume"]);
+    expect(remote.exitCode).toBe(2);
+    expect(remote.stderr.toString()).toContain("swarm owns --remote");
+    const lateRemote = run(["resume", "session-id", "--remote", "unix:///tmp/other"]);
+    expect(lateRemote.exitCode).toBe(2);
+    expect(lateRemote.stderr.toString()).toContain("swarm owns --remote");
+    const unsupported = run(["exec", "test"]);
+    expect(unsupported.exitCode).toBe(2);
+    expect(unsupported.stderr.toString()).toContain("use codex exec");
+    const unconfigured = run(["resume"], join(root, "other-account"));
+    expect(unconfigured.exitCode).toBe(2);
+    expect(unconfigured.stderr.toString()).toContain("configure CODEX_HOME");
+    rmSync(socket);
+    const unavailable = run(["resume"]);
+    expect(unavailable.exitCode).toBe(2);
+    expect(unavailable.stderr.toString()).toContain("app-server is unavailable");
+  } finally {
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("swarm installation cleans up the legacy wrapper and preserves native codex", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-install-")),
+    integration = join(root, ".zshrc.d", "acs-codex.zsh"),
+    zshrc = join(root, ".zshrc"),
+    bin = join(root, "bin"),
+    codex = join(bin, "codex"),
+    output = join(root, "args");
+  mkdirSync(dirname(integration), { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(integration, "legacy");
+  writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
+  writeFileSync(codex, '#!/bin/sh\nprintf "%s\\n" "$@" > "$ACS_TEST_OUTPUT"\n');
+  chmodSync(codex, 0o755);
+  try {
+    syncSwarmLauncher({
+      enabled: true,
+      accountCount: 1,
+      home: root,
+      command: ["acs"],
+      codexBinary: codex,
+    });
+    expect(existsSync(integration)).toBe(false);
+    expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
+    expect(readFileSync(join(root, ".local/bin/swarm"), "utf8")).toBe(
+      swarmLauncher(["acs"], codex),
+    );
+    expect(
+      Bun.spawnSync([codex, "exec", "test"], { env: { ACS_TEST_OUTPUT: output } }).exitCode,
+    ).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("exec\ntest\n");
+    syncSwarmLauncher({
+      enabled: false,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: codex,
+    });
+    expect(existsSync(join(root, ".local/bin/swarm"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
 
 test("finds only the Codex listener owned by the configured account", () => {
   const inspect = {
@@ -591,7 +583,7 @@ test("intersects lsof's Unix-socket and path selectors", () => {
   ]);
 });
 
-test("enabled Codex with no accounts removes the zsh integration", () => {
+test("disabled Codex removes swarm and the legacy integration", () => {
   const root = mkdtempSync(join(tmpdir(), "acs-zsh-empty-")),
     integration = join(root, ".zshrc.d", "acs-codex.zsh"),
     zshrc = join(root, ".zshrc");
@@ -599,7 +591,7 @@ test("enabled Codex with no accounts removes the zsh integration", () => {
   writeFileSync(integration, "stale");
   writeFileSync(zshrc, `before\n\n# acs-codex-routing\nsource "${integration}"\n`);
   try {
-    syncCodexZshIntegration({
+    syncSwarmLauncher({
       enabled: true,
       accountCount: 0,
       home: root,
@@ -607,6 +599,7 @@ test("enabled Codex with no accounts removes the zsh integration", () => {
       codexBinary: "codex",
     });
     expect(existsSync(integration)).toBe(false);
+    expect(existsSync(join(root, ".local/bin/swarm"))).toBe(false);
     expect(readFileSync(zshrc, "utf8")).toBe("before\n\n");
   } finally {
     rmSync(root, { recursive: true });

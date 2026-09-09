@@ -6,14 +6,14 @@ One ACS daemon currently assumes a single Codex app-server and therefore cannot 
 
 - Add explicit Codex account configuration with validated labels and canonical homes.
 - Install and supervise one owner-only app-server LaunchAgent per configured account.
-- Route session-aware shell commands to the account selected by `CODEX_HOME`.
+- Install an explicit `swarm` executable that routes interactive new, resume, and fork sessions to the account selected by `CODEX_HOME` while leaving native `codex` commands untouched.
 - Register each configured runtime installation independently and route delivery, inspection, and caller attestation by installation.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `codex-app-server-management`: Explicit per-account Codex app-server configuration, supervision, and shell routing.
+- `codex-app-server-management`: Explicit per-account Codex app-server configuration, supervision, and opt-in `swarm` routing.
 
 ### Modified Capabilities
 
@@ -23,4 +23,4 @@ One ACS daemon currently assumes a single Codex app-server and therefore cannot 
 
 ## Impact
 
-Changes configuration parsing, the macOS service installer, CLI startup, Codex runtime registration, the scheduler/control bridge, MCP startup, tests, and operator specifications.
+Changes configuration parsing, the macOS service installer, CLI startup, Codex runtime registration, the scheduler/control bridge, MCP startup, launcher installation, tests, and operator specifications. Removes ACS-owned zsh masking of the native `codex` executable.

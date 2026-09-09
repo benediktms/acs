@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  existsSync,
+  writeFileSync,
+  rmSync,
+  readdirSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export function persistentEnvironment(environment: Record<string, string>, cwd = process.cwd()) {
@@ -136,27 +144,11 @@ export function ownedCodexAppServerPid(
   return pid;
 }
 
-export function codexZshIntegration(command: readonly string[], codexBinary = "codex") {
-  return `# acs-codex-routing\ncodex() {\n  local -a acs_bin=(${command.map(shellQuote).join(" ")}) argv=("$@") routed_argv=()\n  local codex_bin=${shellQuote(codexBinary)} acs_home="\${ACS_HOME:-$HOME/Library/Application Support/acs}" config="\${ACS_CONFIG_PATH:-$acs_home/config.toml}" session_command="" index=1 standalone=false remote=false direct=false has_cwd=false\n  while (( index <= $# )); do\n    case "\${argv[index]}" in\n      --acs-standalone) standalone=true; (( index += 1 ));;\n      --remote) remote=true; routed_argv+=("\${argv[index]}" "\${argv[index + 1]}"); (( index += 2 ));;\n      --remote=*) remote=true; routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n      -C|--cd) has_cwd=true; routed_argv+=("\${argv[index]}" "\${argv[index + 1]}"); (( index += 2 ));;\n      -c|-m|-p|-s|-a|--model|--config|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable) routed_argv+=("\${argv[index]}" "\${argv[index + 1]}"); (( index += 2 ));;\n      --) routed_argv+=("\${argv[@]:$index}"); break;;\n      -*) routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n      *)\n        if [[ -z "$session_command" ]]; then\n          session_command="\${argv[index]}"\n          case "$session_command" in exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|migrate-rollouts|cloud|exec-server|features|help) direct=true; routed_argv+=("\${argv[@]:$index}"); break;; esac\n        fi\n        routed_argv+=("\${argv[index]}"); (( index += 1 ));;\n    esac\n  done\n  if $standalone; then\n    print -u2 -- "ACS: standalone Codex is unavailable for direct delivery"\n    command "$codex_bin" "\${routed_argv[@]}"; return\n  fi\n  if $remote; then print -u2 -- "ACS: --remote requires --acs-standalone"; return 2; fi\n  if $direct; then command "$codex_bin" "$@"; return; fi\n  local home="\${CODEX_HOME:-$HOME/.codex}" socket\n  socket=$(CODEX_HOME="$home" "\${acs_bin[@]}" codex socket 2>/dev/null) || { print -u2 -- "ACS: configure CODEX_HOME in $config or use --acs-standalone"; return 2; }\n  if $has_cwd; then\n    command "$codex_bin" --remote "unix://$socket" "$@"\n  else\n    command "$codex_bin" --remote "unix://$socket" --cd "$PWD" "$@"\n  fi\n}\n`;
+export function swarmLauncher(command: readonly string[], codexBinary = "codex") {
+  return `#!/bin/sh\nset -eu\nfor argument in "$@"; do\n  case "$argument" in\n    --) break ;;\n    --remote|--remote=*) printf '%s\\n' 'ACS: swarm owns --remote; remove it and retry' >&2; exit 2 ;;\n  esac\ndone\nhas_cwd=false\nskip_value=false\nfor argument in "$@"; do\n  if $skip_value; then\n    skip_value=false\n    continue\n  fi\n  case "$argument" in\n    --) break ;;\n    -C|--cd) has_cwd=true; skip_value=true ;;\n    -C?*|--cd=*) has_cwd=true ;;\n    -c|-i|-m|-p|-s|-a|--config|--image|--model|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable|--local-provider|--remote-auth-token-env) skip_value=true ;;\n    -*) ;;\n    exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|agents) printf '%s\\n' "ACS: swarm only starts interactive sessions; use codex $argument" >&2; exit 2 ;;\n    *) break ;;\n  esac\ndone\nhome="\${CODEX_HOME:-$HOME/.codex}"\nsocket=$(CODEX_HOME="$home" ${command.map(shellQuote).join(" ")} codex socket 2>/dev/null) || { printf '%s\\n' 'ACS: configure CODEX_HOME for a managed account, then run acs init' >&2; exit 2; }\nif [ ! -S "$socket" ]; then\n  printf '%s\\n' 'ACS: managed Codex app-server is unavailable; run acs init or acs codex app-server restart <account-label>' >&2\n  exit 2\nfi\nif $has_cwd; then\n  exec ${shellQuote(codexBinary)} --remote "unix://$socket" "$@"\nfi\nexec ${shellQuote(codexBinary)} --remote "unix://$socket" --cd "$PWD" "$@"\n`;
 }
 
-export function installCodexZshIntegration(
-  home: string,
-  command: readonly string[],
-  codexBinary = "codex",
-) {
-  const directory = `${home}/.zshrc.d`,
-    path = `${directory}/acs-codex.zsh`,
-    zshrc = `${home}/.zshrc`,
-    source = `\n# acs-codex-routing\nsource "${path}"\n`;
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  writeFileSync(path, codexZshIntegration(command, codexBinary), { mode: 0o600 });
-  const current = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
-  if (!current.includes(`source "${path}"`))
-    writeFileSync(zshrc, current + source, { mode: 0o600 });
-}
-
-export function removeCodexZshIntegration(home: string) {
+function removeCodexZshIntegration(home: string) {
   const path = `${home}/.zshrc.d/acs-codex.zsh`,
     zshrc = `${home}/.zshrc`,
     source = `\n# acs-codex-routing\nsource "${path}"\n`;
@@ -164,16 +156,20 @@ export function removeCodexZshIntegration(home: string) {
   if (existsSync(zshrc)) writeFileSync(zshrc, readFileSync(zshrc, "utf8").replace(source, "\n"));
 }
 
-export function syncCodexZshIntegration(options: {
+export function syncSwarmLauncher(options: {
   enabled: boolean;
   accountCount: number;
   home: string;
   command: readonly string[];
   codexBinary: string;
 }) {
-  if (options.enabled && options.accountCount)
-    installCodexZshIntegration(options.home, options.command, options.codexBinary);
-  else removeCodexZshIntegration(options.home);
+  const path = `${options.home}/.local/bin/swarm`;
+  removeCodexZshIntegration(options.home);
+  if (options.enabled && options.accountCount) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, swarmLauncher(options.command, options.codexBinary), { mode: 0o755 });
+    chmodSync(path, 0o755);
+  } else rmSync(path, { force: true });
 }
 
 function shellQuote(value: string) {

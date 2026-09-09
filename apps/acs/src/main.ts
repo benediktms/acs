@@ -44,7 +44,7 @@ import {
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
-  syncCodexZshIntegration,
+  syncSwarmLauncher,
 } from "./service";
 
 const args = Bun.argv.slice(2);
@@ -105,7 +105,7 @@ async function main() {
           installMcp(account.home);
         }
       }
-      syncCodexZshIntegration({
+      syncSwarmLauncher({
         enabled: settings.codex.enabled,
         accountCount: settings.codex.accounts.length,
         home: required(process.env.HOME, "HOME"),

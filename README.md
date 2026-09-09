@@ -29,13 +29,29 @@ not alter per-account Codex app-server services; restart one explicitly with
 `init` migrates a running foreground daemon to the login service and restarts
 an existing service so rebuilt binaries take effect.
 
+With configured Codex accounts, `init` installs `~/.local/bin/swarm` and removes
+the legacy ACS zsh wrapper. Use `swarm` for managed interactive sessions:
+
+```sh
+swarm "start a task"
+swarm resume <session-id>
+swarm fork <session-id>
+```
+
+`swarm` selects the configured account from `CODEX_HOME`, connects only through
+that account's managed app-server, and adds the current directory unless `-C` or
+`--cd` is supplied. It rejects `--remote` and administrative or non-interactive
+subcommands; use native `codex` unchanged for `codex exec`, `codex review`, and
+all other non-interactive commands. Disabling Codex or configuring no accounts
+removes `swarm` on the next `acs init`.
+
 ### Receiving messages in independently launched sessions
 
 MCP registration and runtime delivery are separate connections. A successful
 `acs_identity` proves identity, not that ACS's app-server hosts the live session.
 Standalone sessions can register, send, and poll without being loaded on that
 app-server. Launch/resume the recipient through the shared endpoint
-(`codex --remote unix:// resume <session-id>`) only when automatic delivery is required.
+(`swarm resume <session-id>`) only when automatic delivery is required.
 ACS never resumes an unreachable thread on a second app-server.
 
 Peer messages use direct native input: Codex receives empty local-user input
