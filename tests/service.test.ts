@@ -18,6 +18,7 @@ import {
   persistentEnvironment,
   removeCodexAppServers,
   removeLegacySwarmLauncher,
+  syncSwarmLauncher,
   restartCodexAppServer,
   restartDaemonService,
   startDaemonService,
@@ -427,6 +428,51 @@ test("initialization removes only the legacy ACS launcher and integration", () =
   } finally {
     rmSync(root, { recursive: true });
   }
+});
+
+test("swarm launcher sync preserves unowned executables", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-collision-")),
+    swarm = join(root, ".local/bin/swarm");
+  mkdirSync(dirname(swarm), { recursive: true });
+  writeFileSync(swarm, "unrelated");
+  try {
+    expect(() =>
+      syncSwarmLauncher({
+        enabled: true,
+        accountCount: 1,
+        home: root,
+        command: ["acs"],
+        codexBinary: "codex",
+      }),
+    ).toThrow("ACS_SWARM_LAUNCHER_COLLISION");
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+    syncSwarmLauncher({
+      enabled: false,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: "codex",
+    });
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("swarm launcher includes hardening flags", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-flags-")),
+    swarm = join(root, ".local/bin/swarm");
+  syncSwarmLauncher({
+    enabled: true,
+    accountCount: 1,
+    home: root,
+    command: ["acs"],
+    codexBinary: "codex",
+  });
+  const script = readFileSync(swarm, "utf8");
+  expect(script).toContain("ulimit -n 4096");
+  expect(script).toContain("--dangerously-bypass-hook-trust");
+  rmSync(root, { recursive: true });
 });
 
 test("finds only the Codex listener owned by the configured account", () => {

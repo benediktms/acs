@@ -40,9 +40,9 @@ import {
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
+  syncSwarmLauncher,
   restartDaemonService,
   restartCodexAppServer,
-  removeLegacySwarmLauncher,
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
@@ -86,7 +86,22 @@ async function main() {
       writeDefaultConfig();
       migrateCodexAccounts();
       initFiles(config);
-      removeLegacySwarmLauncher(required(process.env.HOME, "HOME"));
+      if (!args.includes("--no-service")) {
+        const home = required(process.env.HOME, "HOME");
+        syncSwarmLauncher({
+          enabled: settings.codex.enabled,
+          accountCount: settings.codex.accounts.length,
+          home,
+          command: selfCommand(),
+          codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
+        });
+        if (
+          settings.codex.enabled &&
+          settings.codex.accounts.length &&
+          !process.env.PATH?.split(":").includes(`${home}/.local/bin`)
+        )
+          console.warn(`ACS: add ${home}/.local/bin to PATH to use swarm`);
+      }
       if (process.platform === "darwin" && options.service !== false) {
         await installService({
           command: selfCommand(),
@@ -385,6 +400,7 @@ async function main() {
       const child = Bun.spawn(
         [
           settings.codex.binary,
+          "--dangerously-bypass-hook-trust",
           "--remote",
           `unix://${account.socket}`,
           ...(hasCurrentDirectory ? [] : ["--cd", process.cwd()]),
@@ -552,25 +568,46 @@ function serviceEnvironment() {
   return persistentEnvironment(environment);
 }
 
-function installMcp(codexHome = configuredCodexHome()) {
+function installMcp(
+  codexHome = configuredCodexHome(),
+  options: { bypassHookTrust: boolean; dynamicHooks?: string[] } = { bypassHookTrust: true },
+) {
   const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
-    installed = Bun.spawnSync(
-      [
-        settings.codex.binary,
-        "mcp",
-        "add",
-        "acs",
-        ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-        "--",
-        ...selfCommand(),
-        "mcp",
-        "codex",
-      ],
-      { env: { ...process.env, CODEX_HOME: codexHome } },
-    );
-  if (!installed.success)
-    throw new Error(installed.stderr.toString().trim() || "Codex MCP installation failed");
-  process.stdout.write(installed.stdout);
+    withBypass = [
+      settings.codex.binary,
+      ...(options.bypassHookTrust ? ["--dangerously-bypass-hook-trust"] : []),
+      "mcp",
+      "add",
+      "acs",
+      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      ...(options.dynamicHooks ?? []),
+      "--",
+      ...selfCommand(),
+      "mcp",
+      "codex",
+    ],
+    withoutBypass = [
+      settings.codex.binary,
+      "mcp",
+      "add",
+      "acs",
+      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      ...(options.dynamicHooks ?? []),
+      "--",
+      ...selfCommand(),
+      "mcp",
+      "codex",
+    ],
+    installed = Bun.spawnSync(withBypass, { env: { ...process.env, CODEX_HOME: codexHome } }),
+    error = installed.stderr.toString(),
+    finalInstallation = installed.success
+      ? installed
+      : options.bypassHookTrust && /unknown.*dangerously-bypass-hook-trust/i.test(error)
+        ? Bun.spawnSync(withoutBypass, { env: { ...process.env, CODEX_HOME: codexHome } })
+        : installed;
+
+  if (!finalInstallation.success) throw new Error(error || finalInstallation.stderr.toString());
+  process.stdout.write(finalInstallation.stdout);
 }
 
 function configuredCodexHome() {

@@ -583,7 +583,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   });
   if (codexRun.exitCode !== 0) throw new Error(codexRun.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
-    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
+    `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
   );
   const defaultHomeRun = Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
     cwd,
@@ -591,14 +591,14 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   });
   if (defaultHomeRun.exitCode !== 0) throw new Error(defaultHomeRun.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
-    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n`,
+    `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n`,
   );
   const withDirectory = Bun.spawnSync([binary, "codex", "run", "--", "-C", "/chosen", "resume"], {
     env,
   });
   if (withDirectory.exitCode !== 0) throw new Error(withDirectory.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
-    `--remote\nunix://${socket}\n-C\n/chosen\nresume\n`,
+    `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n-C\n/chosen\nresume\n`,
   );
   const remote = Bun.spawnSync([binary, "codex", "run", "--", "--remote=unix:///other"], {
     env,
@@ -624,7 +624,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   });
   if (nestedRemote.exitCode !== 0) throw new Error(nestedRemote.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
-    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n--remote\n`,
+    `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n--remote\n`,
   );
   const nestedDirectory = Bun.spawnSync([binary, "codex", "run", "--", "--", "-C", "/chosen"], {
     cwd,
@@ -632,7 +632,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   });
   if (nestedDirectory.exitCode !== 0) throw new Error(nestedDirectory.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
-    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
+    `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
   );
 }, 15_000);
 

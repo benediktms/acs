@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   readFileSync,
   existsSync,
@@ -144,6 +145,15 @@ export function ownedCodexAppServerPid(
   return pid;
 }
 
+function shellQuote(value: string) {
+  if (!value.includes("'")) return `'${value}'`;
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
+}
+
+function swarmLauncher(command: readonly string[], codexBinary = "codex") {
+  return `#!/bin/sh\n# acs-swarm-launcher\nset -eu\nulimit -n 4096 > /dev/null 2>&1 || true\nfor argument in "$@"; do\n  case "$argument" in\n    --) break ;;\n    --remote|--remote=*) printf '%s\\n' 'ACS: swarm owns --remote; remove it and retry' >&2; exit 2 ;;\n  esac\ndone\nhas_cwd=false\nskip_value=false\nfor argument in "$@"; do\n  if $skip_value; then\n    skip_value=false\n    continue\n  fi\n  case "$argument" in\n    --) break ;;\n    -C|--cd) has_cwd=true; skip_value=true ;;\n    -C?*|--cd=*) has_cwd=true ;;\n    -c|-i|-m|-p|-s|-a|--config|--image|--model|--profile|--sandbox|--ask-for-approval|--add-dir|--enable|--disable|--local-provider|--remote-auth-token-env) skip_value=true ;;\n    -*) ;;\n    exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help|agents) printf '%s\\n' "ACS: swarm only starts interactive sessions; use codex $argument" >&2; exit 2 ;;\n    *) break ;;\n  esac\ndone\nhome="\${CODEX_HOME:-$HOME/.codex}"\nsocket=$(CODEX_HOME="$home" ${shellQuote(command.join(" "))} codex socket 2>/dev/null) || { printf '%s\\n' 'ACS: configure CODEX_HOME for a managed account, then run acs init' >&2; exit 2; }\nif [ ! -S "$socket" ]; then\n  printf '%s\\n' 'ACS: managed Codex app-server is unavailable; run acs init or acs codex app-server restart <account-label>' >&2\n  exit 2\nfi\nif $has_cwd; then\n  exec ${shellQuote(codexBinary)} --dangerously-bypass-hook-trust --remote "unix://$socket" "$@"\nfi\nexec ${shellQuote(codexBinary)} --dangerously-bypass-hook-trust --remote "unix://$socket" --cd "$PWD" "$@"\n`;
+}
+
 function swarmLauncherOwnership(path: string) {
   const details = lstatSync(path, { throwIfNoEntry: false });
   if (!details) return undefined;
@@ -164,6 +174,25 @@ export function removeLegacySwarmLauncher(home: string) {
   const path = `${home}/.local/bin/swarm`;
   if (swarmLauncherOwnership(path)) rmSync(path);
   removeCodexZshIntegration(home);
+}
+
+export function syncSwarmLauncher(options: {
+  enabled: boolean;
+  accountCount: number;
+  home: string;
+  command: readonly string[];
+  codexBinary: string;
+}) {
+  const path = `${options.home}/.local/bin/swarm`,
+    owned = swarmLauncherOwnership(path);
+  if (options.enabled && options.accountCount && owned === false)
+    throw new Error(`ACS_SWARM_LAUNCHER_COLLISION: ${path}`);
+  removeCodexZshIntegration(options.home);
+  if (options.enabled && options.accountCount) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, swarmLauncher(options.command, options.codexBinary), { mode: 0o755 });
+    chmodSync(path, 0o755);
+  } else if (owned) rmSync(path);
 }
 
 export function listenerPidCommand(socket: string) {

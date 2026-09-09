@@ -29,9 +29,11 @@ not alter per-account Codex app-server services; restart one explicitly with
 `init` migrates a running foreground daemon to the login service and restarts
 an existing service so rebuilt binaries take effect.
 
-`acs init` removes only the legacy ACS-owned `~/.local/bin/swarm` and zsh
-integration; it never changes native `codex` or shell aliases. For a personal
-shortcut, define an alias yourself:
+With configured Codex accounts, `init` installs `~/.local/bin/swarm` and removes
+the legacy ACS-owned `~/.local/bin/swarm` and zsh integration. Ensure
+`~/.local/bin` is in `PATH` (for example, `export PATH="$HOME/.local/bin:$PATH"`).
+After upgrading from the wrapper, start a new shell or run `unfunction codex` in zsh.
+Use `swarm` for managed interactive sessions:
 
 ```sh
 alias swarm='acs codex run --'
@@ -42,7 +44,9 @@ swarm resume <session-id>
 `acs codex run --` selects the configured account from `CODEX_HOME`, connects
 only through that account's managed app-server, and adds the current directory
 unless `-C` or `--cd` is supplied. It rejects `--remote`; native `codex` remains
-unchanged for every other use.
+unchanged for every other use. ACS adds
+`--dangerously-bypass-hook-trust` for managed sessions to run trusted project hooks
+without first approving repository hook trust.
 
 ### Receiving messages in independently launched sessions
 
