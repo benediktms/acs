@@ -223,7 +223,7 @@ export async function runMcp(port = 7432) {
     if (!isRecord(runtimes) || !Array.isArray(runtimes.runtimes))
       throw new Error("RUNTIME_UNAVAILABLE");
     runtime = runtimes.runtimes.find((candidate) =>
-      isConfiguredCodexRuntime(candidate, account.label, account.home),
+      isConfiguredCodexRuntime(candidate, account.label, account.home, account.socket),
     );
     cursor = typeof runtimes.nextCursor === "string" ? runtimes.nextCursor : undefined;
   } while (!runtime && cursor);
@@ -709,11 +709,13 @@ export function isConfiguredCodexRuntime(
   candidate: unknown,
   label: string,
   home: string,
+  socket: string,
 ): candidate is Record<string, unknown> {
   if (!isRecord(candidate) || candidate.harnessId !== "codex" || candidate.label !== label)
     return false;
   const endpoint = candidate.endpoint;
-  if (!isRecord(endpoint) || typeof endpoint.home !== "string") return false;
+  if (!isRecord(endpoint) || typeof endpoint.home !== "string" || endpoint.socket !== socket)
+    return false;
   try {
     return canonicalCodexHome(endpoint.home) === canonicalCodexHome(home);
   } catch {
