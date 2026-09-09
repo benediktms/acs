@@ -32,7 +32,7 @@ function fixture() {
 }
 
 describe("delivery scheduler", () => {
-  test("includes activity maintenance for delivered or nonterminal resumed work only", () => {
+  test("includes activity maintenance for messages or nonterminal resumed work only", () => {
     expect(activityMaintenancePrompt(false)).toContain(
       "When starting work, acknowledge with a concise peer-visible activity",
     );

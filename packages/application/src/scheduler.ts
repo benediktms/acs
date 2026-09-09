@@ -474,17 +474,20 @@ export class DeliveryScheduler {
             .get(intent.target_agent_id);
     if (!binding) return this.defer(intent.id, "offline", 30_000);
     const payload: DeliveryPayload = JSON.parse(intent.payload_json),
-      notification = intent.kind === "task-event-notification",
+      isTaskEventNotification = intent.kind === "task-event-notification",
       parties = required(
         this.store
           .query<PartiesRow, [number, `tsk_${string}`]>(
             "SELECT p.display_name,p.kind requester_principal_kind,actor.kind actor_principal_kind,actor_agent.id actor_agent_id,actor_agent.slug actor_slug,actor.display_name actor_display_name,a.id requester_agent_id,a.slug requester_slug FROM a2a_tasks t JOIN principals p ON p.id=t.requester_principal_id LEFT JOIN agents a ON a.id=t.requester_agent_id LEFT JOIN task_events e ON e.task_id=t.id AND e.sequence=? LEFT JOIN principals actor ON actor.id=e.actor_principal_id LEFT JOIN agents actor_agent ON actor_agent.id=actor.agent_id WHERE t.id=?",
           )
-          .get(notification && "sequence" in payload ? payload.sequence : -1, intent.task_id),
+          .get(
+            isTaskEventNotification && "sequence" in payload ? payload.sequence : -1,
+            intent.task_id,
+          ),
         "delivery parties",
       ),
       provenance = deliveryProvenance(
-        notification ? parties.actor_principal_kind : parties.requester_principal_kind,
+        isTaskEventNotification ? parties.actor_principal_kind : parties.requester_principal_kind,
       );
     if (!provenance) return this.failTerminal(intent.id, "unsupported-requester-principal");
     const attempt = id("atm"),
@@ -526,15 +529,15 @@ export class DeliveryScheduler {
       return true;
     });
     if (!startedAttempt) return;
-    const senderName = notification
+    const senderName = isTaskEventNotification
       ? (parties.actor_slug ?? parties.actor_display_name ?? "external")
       : (parties.requester_slug ?? parties.display_name);
     const envelope: RuntimeDeliveryEnvelopeV1 = {
-      agentNotice: `${notification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(notification, "state" in payload ? payload.state : undefined)}`,
+      agentNotice: `${isTaskEventNotification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(isTaskEventNotification, "state" in payload ? payload.state : undefined)}`,
       schema: "urn:agent-communications:runtime-envelope:v1",
       deliveryId: intent.id,
-      kind: notification ? "a2a-task-event" : "a2a-message",
-      from: notification
+      kind: isTaskEventNotification ? "a2a-task-event" : "a2a-message",
+      from: isTaskEventNotification
         ? { agentId: parties.actor_agent_id ?? "external", name: senderName }
         : {
             agentId: parties.requester_agent_id ?? "external",
@@ -546,7 +549,7 @@ export class DeliveryScheduler {
         contextId: payload.contextId,
         state: "state" in payload ? payload.state : "submitted",
       },
-      ...(notification
+      ...(isTaskEventNotification
         ? {
             event:
               "sequence" in payload
@@ -699,7 +702,7 @@ export class DeliveryScheduler {
     }
     if (
       result.outcome === "accepted" &&
-      !notification &&
+      !isTaskEventNotification &&
       result.execution?.relationship === "started" &&
       this.capabilities.cancelOwnedExecution &&
       interruptOnCancel(binding.delivery_policy_json)
@@ -1075,8 +1078,8 @@ export class DeliveryScheduler {
   }
 }
 
-export function activityMaintenancePrompt(notification: boolean, state?: string) {
-  if (!notification)
+export function activityMaintenancePrompt(isTaskEventNotification: boolean, state?: string) {
+  if (!isTaskEventNotification)
     return " When starting work, acknowledge with a concise peer-visible activity; update it when objective or scope materially changes, refresh before 30 minutes while working, then use the correct input-required or terminal tool. A final response alone does not complete this task.";
   return state && !["completed", "failed", "canceled", "rejected"].includes(state)
     ? " If this resumes assigned work, update its concise peer-visible activity when objective or scope materially changes and refresh before 30 minutes."
