@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-test("automatically registers started and resumed sessions with ACS", () => {
+test("automatically registers started, resumed, and cleared sessions with ACS", () => {
   const config = JSON.parse(readFileSync(".codex/hooks.json", "utf8"));
 
   expect(config.hooks.SessionStart).toEqual([
     {
-      matcher: "^(startup|resume)$",
+      matcher: "^(startup|resume|clear)$",
       hooks: [
         expect.objectContaining({
           type: "command",
