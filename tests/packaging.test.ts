@@ -463,7 +463,12 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
       binary,
     ]),
     stateHome = join(root, "state-home"),
-    environment = { ...process.env, HOME: join(root, "user-home"), ACS_HOME: stateHome };
+    environment = {
+      ...process.env,
+      HOME: join(root, "user-home"),
+      ACS_HOME: stateHome,
+      ACS_CONTROL_SOCKET: join(root, "runtime", "control.sock"),
+    };
   expect(built.exitCode).toBe(0);
 
   for (const path of [
@@ -533,8 +538,14 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     expect(result.stderr.toString()).toContain("error:");
     expect(existsSync(stateHome)).toBe(false);
   }
+  const invalidHelp = Bun.spawnSync([binary, "help", "codex", "missing"], {
+    env: environment,
+  });
+  expect(invalidHelp.exitCode).not.toBe(0);
+  expect(invalidHelp.stderr.toString()).toContain("Usage: acs codex");
+  expect(existsSync(stateHome)).toBe(false);
 
-  const codexHome = join(root, "codex"),
+  const codexHome = join(environment.HOME, ".codex"),
     bin = join(root, "bin"),
     codex = join(bin, "codex"),
     passedArgs = join(root, "passed-args"),
@@ -573,6 +584,14 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   if (codexRun.exitCode !== 0) throw new Error(codexRun.stderr.toString());
   expect(readFileSync(passedArgs, "utf8")).toBe(
     `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
+  );
+  const defaultHomeRun = Bun.spawnSync([binary, "codex", "run", "--", "--help"], {
+    cwd,
+    env: { ...env, CODEX_HOME: undefined },
+  });
+  if (defaultHomeRun.exitCode !== 0) throw new Error(defaultHomeRun.stderr.toString());
+  expect(readFileSync(passedArgs, "utf8")).toBe(
+    `--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n`,
   );
   const withDirectory = Bun.spawnSync([binary, "codex", "run", "--", "-C", "/chosen", "resume"], {
     env,

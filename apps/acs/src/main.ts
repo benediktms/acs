@@ -71,7 +71,7 @@ async function main() {
       let command = program;
       for (const name of path) {
         const child = command.commands.find((candidate) => candidate.name() === name);
-        if (!child) throw new Error(`Unknown command: ${path.join(" ")}`);
+        if (!child) return command.error(`error: unknown command '${name}'`);
         command = child;
       }
       command.outputHelp();
@@ -361,8 +361,10 @@ async function main() {
         throw new Error("ACS: codex run owns --remote; remove it and retry");
       }
       await loadSettingsResources();
-      const home = process.env.CODEX_HOME && canonicalCodexHome(process.env.CODEX_HOME),
-        account = home && settings.codex.accounts.find((candidate) => candidate.home === home);
+      const home = canonicalCodexHome(
+          process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+        ),
+        account = settings.codex.accounts.find((candidate) => candidate.home === home);
       if (!account) {
         process.exitCode = 2;
         throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
