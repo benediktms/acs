@@ -497,6 +497,28 @@ test("swarm launcher includes hardening flags", () => {
   rmSync(root, { recursive: true });
 });
 
+test("swarm launcher preserves source command and user argument boundaries", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-source-")),
+    source = join(root, "agent's source.ts"),
+    prompt = "a prompt with spaces and 'quotes'";
+  try {
+    writeFileSync(source, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+    syncSwarmLauncher({
+      enabled: true,
+      accountCount: 1,
+      home: root,
+      command: [process.execPath, source],
+      codexBinary: "codex",
+    });
+    const result = Bun.spawnSync([join(root, ".local/bin/swarm"), prompt]);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toEqual(["codex", "run", "--", prompt]);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 test("finds only the Codex listener owned by the configured account", () => {
   const inspect = {
     listenerPid: (socket: string) => (socket === "/tmp/account.sock" ? 42 : undefined),
