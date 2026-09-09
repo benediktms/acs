@@ -29,24 +29,20 @@ not alter per-account Codex app-server services; restart one explicitly with
 `init` migrates a running foreground daemon to the login service and restarts
 an existing service so rebuilt binaries take effect.
 
-With configured Codex accounts, `init` installs `~/.local/bin/swarm` and removes
-the legacy ACS zsh wrapper. Ensure `~/.local/bin` is in `PATH` (for example,
-`export PATH="$HOME/.local/bin:$PATH"`). After upgrading from the wrapper,
-start a new shell or run `unfunction codex` in zsh. Use `swarm` for managed
-interactive sessions:
+`acs init` removes only the legacy ACS-owned `~/.local/bin/swarm` and zsh
+integration; it never changes native `codex` or shell aliases. For a personal
+shortcut, define an alias yourself:
 
 ```sh
+alias swarm='acs codex run --'
 swarm "start a task"
 swarm resume <session-id>
-swarm fork <session-id>
 ```
 
-`swarm` selects the configured account from `CODEX_HOME`, connects only through
-that account's managed app-server, and adds the current directory unless `-C` or
-`--cd` is supplied. It rejects `--remote` and administrative or non-interactive
-subcommands; use native `codex` unchanged for `codex exec`, `codex review`, and
-all other non-interactive commands. Disabling Codex or configuring no accounts
-removes `swarm` on the next `acs init`.
+`acs codex run --` selects the configured account from `CODEX_HOME`, connects
+only through that account's managed app-server, and adds the current directory
+unless `-C` or `--cd` is supplied. It rejects `--remote`; native `codex` remains
+unchanged for every other use.
 
 ### Receiving messages in independently launched sessions
 
@@ -54,7 +50,7 @@ MCP registration and runtime delivery are separate connections. A successful
 `acs_identity` proves identity, not that ACS's app-server hosts the live session.
 Standalone sessions can register, send, and poll without being loaded on that
 app-server. Launch/resume the recipient through the shared endpoint
-(`swarm resume <session-id>`) only when automatic delivery is required.
+(`acs codex run -- resume <session-id>`) only when automatic delivery is required.
 ACS never resumes an unreachable thread on a second app-server.
 
 Peer messages use direct native input: Codex receives empty local-user input

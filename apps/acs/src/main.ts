@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createConnection } from "node:net";
 import { Database } from "bun:sqlite";
+import { Command, Option } from "commander";
 import { handleA2A } from "../../../packages/protocol-a2a/src/index";
 import { controlCall, controlHandler } from "../../../packages/protocol-control/src/index";
 import { isConfiguredCodexRuntime, runMcp } from "../../../packages/bridge-mcp-codex/src/index";
@@ -41,10 +42,10 @@ import {
   removeCodexAppServers,
   restartDaemonService,
   restartCodexAppServer,
+  removeLegacySwarmLauncher,
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
-  syncSwarmLauncher,
 } from "./service";
 
 const args = Bun.argv.slice(2);
@@ -54,117 +55,470 @@ let config: ReturnType<typeof paths>,
   port: number;
 
 async function main() {
-  if (
-    !args.length ||
-    ["-h", "--help", "help"].includes(args[0] ?? "") ||
-    (args[0] === "init" && ["-h", "--help"].includes(args[1] ?? ""))
-  )
-    return usage();
-  const configFile = configPath();
-  if (!(args[0] === "daemon" && args[1] === "status")) migrateCodexAccounts(configFile);
+  const program = new Command()
+    .name("acs")
+    .description("Agent Communications Service")
+    .addHelpText(
+      "after",
+      "\nDaemon status exits 0 when control-ready, 1 when stopped, and 2 when unavailable.",
+    )
+    .showHelpAfterError();
+
+  program
+    .command("help [command...]")
+    .description("display help for command")
+    .action((path: string[] = []) => {
+      let command = program;
+      for (const name of path) {
+        const child = command.commands.find((candidate) => candidate.name() === name);
+        if (!child) return command.error(`error: unknown command '${name}'`);
+        command = child;
+      }
+      command.outputHelp();
+    });
+
+  program
+    .command("init")
+    .description("initialize ACS configuration and local files")
+    .option("--no-service", "skip macOS LaunchAgent installation")
+    .action(async (options: { service?: boolean }) => {
+      await loadSettingsResources();
+      writeDefaultConfig();
+      migrateCodexAccounts();
+      initFiles(config);
+      removeLegacySwarmLauncher(required(process.env.HOME, "HOME"));
+      if (process.platform === "darwin" && options.service !== false) {
+        await installService({
+          command: selfCommand(),
+          environment: serviceEnvironment(),
+          home: required(process.env.HOME, "HOME"),
+          uid: required(process.getuid?.(), "user ID"),
+          stopUnmanagedDaemon: async () => {
+            await stopUnmanagedDaemonAt();
+            await waitForDaemonStop();
+          },
+        });
+        removeCodexAppServers({
+          labels: settings.codex.enabled
+            ? settings.codex.accounts.map((account) => account.label)
+            : [],
+          userHome: required(process.env.HOME, "HOME"),
+          uid: required(process.getuid?.(), "user ID"),
+        });
+        if (settings.codex.enabled && settings.codex.accounts.length) {
+          for (const account of settings.codex.accounts) {
+            await installCodexAppServer({
+              binary: required(
+                Bun.which(settings.codex.binary) ?? settings.codex.binary,
+                "Codex binary",
+              ),
+              home: account.home,
+              socket: account.socket,
+              label: account.label,
+              userHome: required(process.env.HOME, "HOME"),
+              uid: required(process.getuid?.(), "user ID"),
+              socketOccupied: () => socketListening(account.socket),
+            });
+            installMcp(account.home);
+          }
+        }
+        await waitForDaemon();
+        console.log("ACS login service and global Codex MCP are ready");
+      }
+      console.log(`Initialized ACS at ${config.data}`);
+    });
+
+  const daemonGroup = program.command("daemon").description("run and control the ACS daemon");
+  daemonGroup
+    .command("run")
+    .description("run the daemon in the foreground")
+    .action(async () => {
+      await loadRuntimeResources();
+      await daemon();
+    });
+  for (const command of ["start", "stop", "status", "restart"] as const)
+    daemonGroup
+      .command(command)
+      .description(`${command} the macOS LaunchAgent daemon`)
+      .action(async () => {
+        if (daemonCommandRunsForeground(command)) await loadRuntimeResources();
+        else loadControlPaths();
+        if (daemonCommandRunsForeground(command)) return daemon();
+        await daemonLifecycle(command);
+      });
+
+  const agents = program.command("agents").description("manage ACS agents");
+  agents
+    .command("create <slug>")
+    .description("create an agent")
+    .option("--claim", "create a claim code")
+    .option("--name <name>", "display name")
+    .option("--description <text>", "agent description")
+    .action(
+      async (slug: string, options: { claim?: boolean; name?: string; description?: string }) => {
+        const call = await controlClient(),
+          created = await call("agents.create", {
+            slug,
+            displayName: options.name,
+            description: options.description,
+          });
+        print(
+          options.claim
+            ? { created, claim: await call("agents.createClaim", { agent: slug }) }
+            : created,
+        );
+      },
+    );
+  agents
+    .command("get <agent>")
+    .description("get an agent")
+    .action(async (agent: string) => print(await (await controlClient())("agents.get", { agent })));
+  agents
+    .command("update <agent>")
+    .description("update an agent")
+    .option("--slug <slug>", "new slug")
+    .option("--name <name>", "display name")
+    .option("--description <text>", "agent description")
+    .addOption(new Option("--enable", "enable the agent").conflicts("disable"))
+    .addOption(new Option("--disable", "disable the agent").conflicts("enable"))
+    .action(
+      async (
+        agent: string,
+        options: {
+          slug?: string;
+          name?: string;
+          description?: string;
+          enable?: boolean;
+          disable?: boolean;
+        },
+      ) =>
+        print(
+          await (
+            await controlClient()
+          )("agents.update", {
+            agent,
+            slug: options.slug,
+            displayName: options.name,
+            description: options.description,
+            enabled: options.enable ? true : options.disable ? false : undefined,
+          }),
+        ),
+    );
+  agents
+    .command("delete <agent>")
+    .description("delete an agent")
+    .action(async (agent: string) =>
+      print(await (await controlClient())("agents.delete", { agent })),
+    );
+  agents
+    .command("list")
+    .description("list agents")
+    .action(async () => print(await (await controlClient())("agents.list")));
+
+  const bindings = program.command("bindings").description("manage agent bindings");
+  bindingOptions(
+    bindings.command("bind <agent>").description("bind an agent to a Codex session"),
+    true,
+  ).action(async (agent: string, options: BindingOptions) => {
+    await loadSettingsResources();
+    const call = await controlClient();
+    print(
+      await call(
+        "bindings.bind",
+        bindingParams(
+          agent,
+          required(options.session, "--session"),
+          await accountInstallationId(call, options.account),
+          options,
+        ),
+      ),
+    );
+  });
+  bindings
+    .command("get <binding-id>")
+    .description("get a binding")
+    .action(async (bindingId: string) =>
+      print(await (await controlClient())("bindings.get", { bindingId })),
+    );
+  bindings
+    .command("revoke <binding-id>")
+    .description("revoke a binding")
+    .option("--reason <text>", "revocation reason")
+    .action(async (bindingId: string, options: { reason?: string }) =>
+      print(
+        await (
+          await controlClient()
+        )("bindings.revoke", { bindingId, reason: options.reason }),
+      ),
+    );
+  bindings
+    .command("list")
+    .description("list bindings")
+    .action(async () => print(await (await controlClient())("bindings.list")));
+
+  program
+    .command("runtimes")
+    .description("inspect runtimes")
+    .command("list")
+    .description("list runtimes")
+    .action(async () => print(await (await controlClient())("runtimes.list")));
+  program
+    .command("inbox [agent]")
+    .description("list inbox tasks")
+    .action(async (agent?: string) =>
+      print(await (await controlClient())("inbox.list", { agent })),
+    );
+
+  const deliveries = program.command("deliveries").description("manage deliveries");
+  deliveries
+    .command("list")
+    .description("list deliveries")
+    .action(async () => print(await (await controlClient())("deliveries.list")));
+  for (const command of ["get", "retry"] as const)
+    deliveries
+      .command(`${command} <delivery-id>`)
+      .description(`${command} a delivery`)
+      .action(async (deliveryId: string) =>
+        print(await (await controlClient())(`deliveries.${command}`, { deliveryId })),
+      );
+  deliveries
+    .command("cancel <delivery-id>")
+    .description("cancel a delivery")
+    .option("--reason <text>", "cancellation reason")
+    .action(async (deliveryId: string, options: { reason?: string }) =>
+      print(
+        await (
+          await controlClient()
+        )("deliveries.cancel", { deliveryId, reason: options.reason }),
+      ),
+    );
+  deliveries
+    .command("resolve <delivery-id>")
+    .description("resolve an unknown delivery")
+    .addOption(
+      new Option("--accepted", "mark accepted").conflicts([
+        "notAcceptedAndRetry",
+        "notAcceptedAndCancel",
+      ]),
+    )
+    .addOption(
+      new Option("--not-accepted-and-retry", "mark not accepted and retry").conflicts([
+        "accepted",
+        "notAcceptedAndCancel",
+      ]),
+    )
+    .addOption(
+      new Option("--not-accepted-and-cancel", "mark not accepted and cancel").conflicts([
+        "accepted",
+        "notAcceptedAndRetry",
+      ]),
+    )
+    .action(async (deliveryId: string, options: ResolutionOptions) => {
+      const resolution = resolutionOption(options);
+      print(await (await controlClient())("deliveries.resolveUnknown", { deliveryId, resolution }));
+    });
+
+  program
+    .command("token")
+    .description("manage access tokens")
+    .command("show")
+    .description("show the control token")
+    .action(async () => {
+      loadControlPaths();
+      console.log(readFileSync(config.token, "utf8"));
+    });
+  program
+    .command("mcp")
+    .description("run MCP transports")
+    .command("codex")
+    .description("run the Codex MCP server")
+    .action(async () => {
+      await loadRuntimeResources();
+      await runMcp(port);
+    });
+
+  const codex = program
+    .command("codex")
+    .description("manage Codex integration")
+    .enablePositionalOptions();
+  codex
+    .command("run")
+    .description("run Codex with arguments after --")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .passThroughOptions()
+    .action(async (_options: Record<string, never>, command: Command) => {
+      if (args[2] !== "--") throw new Error("Usage: acs codex run -- <codex arguments>");
+      const tail = command.args,
+        boundary = tail.indexOf("--"),
+        launchArguments = boundary < 0 ? tail : tail.slice(0, boundary);
+      if (
+        launchArguments.some(
+          (argument) => argument === "--remote" || argument.startsWith("--remote="),
+        )
+      ) {
+        process.exitCode = 2;
+        throw new Error("ACS: codex run owns --remote; remove it and retry");
+      }
+      await loadSettingsResources();
+      const home = canonicalCodexHome(
+          process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+        ),
+        account = settings.codex.accounts.find((candidate) => candidate.home === home);
+      if (!account) {
+        process.exitCode = 2;
+        throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
+      }
+      if (!(await socketListening(account.socket))) {
+        process.exitCode = 2;
+        throw new Error(
+          "ACS: managed Codex app-server is unavailable; run acs init or acs codex app-server restart <account-label>",
+        );
+      }
+      const hasCurrentDirectory = launchArguments.some(
+        (argument) =>
+          argument === "-C" ||
+          argument === "--cd" ||
+          (argument.startsWith("-C") && argument.length > 2) ||
+          argument.startsWith("--cd="),
+      );
+      const child = Bun.spawn(
+        [
+          settings.codex.binary,
+          "--remote",
+          `unix://${account.socket}`,
+          ...(hasCurrentDirectory ? [] : ["--cd", process.cwd()]),
+          ...tail,
+        ],
+        {
+          env: process.env,
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        },
+      );
+      process.exitCode = await child.exited;
+    });
+  codex
+    .command("doctor")
+    .description("report Codex integration health")
+    .action(async () => {
+      await loadSettingsResources();
+      await doctor();
+    });
+  codex
+    .command("socket")
+    .description("print the configured Codex socket")
+    .action(async () => {
+      await loadSettingsResources();
+      const home = canonicalCodexHome(
+          process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
+        ),
+        account = settings.codex.accounts.find((candidate) => candidate.home === home);
+      if (!account) throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
+      console.log(account.socket);
+    });
+  codex
+    .command("install-mcp")
+    .description("install ACS as a Codex MCP server")
+    .action(async () => {
+      await loadSettingsResources();
+      installMcp();
+    });
+  const appServer = codex.command("app-server").description("manage Codex app servers");
+  appServer
+    .command("restart <account-label>")
+    .description("restart an app server")
+    .action(async (label: string) => {
+      await loadSettingsResources();
+      restartCodexAppServer({
+        label,
+        uid: required(process.getuid?.(), "user ID"),
+      });
+    });
+  appServer
+    .command("adopt <account-label>")
+    .description("adopt an existing app server")
+    .option("--force", "force replacement after confirmation")
+    .action(async (label: string, options: { force?: boolean }) => {
+      await loadSettingsResources();
+      await adoptCodexAppServer(label, Boolean(options.force));
+    });
+
+  bindingOptions(
+    codex.command("bind <agent>").description("bind an agent to a Codex session"),
+    false,
+  ).action(async (agent: string, options: BindingOptions) => {
+    await loadSettingsResources();
+    const call = await controlClient(),
+      installationId = await accountInstallationId(call, options.account),
+      session = options.session ?? (await chooseCodexSession(call, installationId));
+    print(await call("bindings.bind", bindingParams(agent, session, installationId, options)));
+  });
+  codex
+    .command("sessions")
+    .description("inspect Codex sessions")
+    .command("list")
+    .description("list Codex sessions")
+    .option("--account <label>", "Codex account label")
+    .action(async (options: { account?: string }) => {
+      await loadSettingsResources();
+      const call = await controlClient();
+      print(
+        await call("runtimes.sessions.list", {
+          installationId: await accountInstallationId(call, options.account),
+        }),
+      );
+    });
+
+  program.action(() => program.outputHelp());
+  await program.parseAsync(args, { from: "user" });
+}
+
+type BindingOptions = {
+  session?: string;
+  continuity?: "follow-pending" | "strict";
+  revokeExisting?: boolean;
+  account?: string;
+};
+type ResolutionOptions = {
+  accepted?: boolean;
+  notAcceptedAndRetry?: boolean;
+  notAcceptedAndCancel?: boolean;
+};
+
+function bindingOptions(command: Command, sessionRequired: boolean) {
+  return command
+    .addOption(
+      sessionRequired
+        ? new Option("--session <thread-id>", "Codex thread ID").makeOptionMandatory()
+        : new Option("--session <thread-id>", "Codex thread ID"),
+    )
+    .addOption(
+      new Option("--continuity <policy>", "binding continuity").choices([
+        "follow-pending",
+        "strict",
+      ]),
+    )
+    .option("--revoke-existing", "revoke existing binding")
+    .option("--account <label>", "Codex account label");
+}
+
+function loadControlPaths() {
   config = paths();
+}
+async function loadSettingsResources() {
+  loadControlPaths();
+  migrateCodexAccounts(configPath());
   settings = loadConfig();
+}
+async function loadRuntimeResources() {
+  await loadSettingsResources();
   listen = parseListen(settings.daemon.a2aListen);
   port = listen.port;
-  if (args[0] === "init") {
-    writeDefaultConfig();
-    migrateCodexAccounts();
-    initFiles(config);
-    if (!args.includes("--no-service")) {
-      const home = required(process.env.HOME, "HOME");
-      syncSwarmLauncher({
-        enabled: settings.codex.enabled,
-        accountCount: settings.codex.accounts.length,
-        home,
-        command: selfCommand(),
-        codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
-      });
-      if (
-        settings.codex.enabled &&
-        settings.codex.accounts.length &&
-        !process.env.PATH?.split(":").includes(`${home}/.local/bin`)
-      )
-        console.warn(`ACS: add ${home}/.local/bin to PATH to use swarm`);
-    }
-    if (process.platform === "darwin" && !args.includes("--no-service")) {
-      await installService({
-        command: selfCommand(),
-        environment: serviceEnvironment(),
-        home: required(process.env.HOME, "HOME"),
-        uid: required(process.getuid?.(), "user ID"),
-        stopUnmanagedDaemon: async () => {
-          await stopUnmanagedDaemonAt();
-          await waitForDaemonStop();
-        },
-      });
-      removeCodexAppServers({
-        labels: settings.codex.enabled
-          ? settings.codex.accounts.map((account) => account.label)
-          : [],
-        userHome: required(process.env.HOME, "HOME"),
-        uid: required(process.getuid?.(), "user ID"),
-      });
-      if (settings.codex.enabled && settings.codex.accounts.length) {
-        for (const account of settings.codex.accounts) {
-          await installCodexAppServer({
-            binary: required(
-              Bun.which(settings.codex.binary) ?? settings.codex.binary,
-              "Codex binary",
-            ),
-            home: account.home,
-            socket: account.socket,
-            label: account.label,
-            userHome: required(process.env.HOME, "HOME"),
-            uid: required(process.getuid?.(), "user ID"),
-            socketOccupied: () => socketListening(account.socket),
-          });
-          installMcp(account.home);
-        }
-      }
-      await waitForDaemon();
-      console.log("ACS login service and global Codex MCP are ready");
-    }
-    console.log(`Initialized ACS at ${config.data}`);
-    return;
-  }
-  if (args[0] === "daemon" && daemonCommandRunsForeground(args[1])) return daemon();
-  if (args[0] === "daemon" && ["start", "stop", "status", "restart"].includes(args[1] ?? ""))
-    return daemonLifecycle(required(args[1], "daemon lifecycle command"));
-  if (args[0] === "mcp" && args[1] === "codex") return runMcp(port);
-  if (args[0] === "codex" && args[1] === "run") {
-    if (args[2] !== "--") throw new Error("Usage: acs codex run -- <codex arguments>");
-    const child = Bun.spawn([settings.codex.binary, ...args.slice(3)], {
-      env: process.env,
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    process.exitCode = await child.exited;
-    return;
-  }
-  if (args[0] === "codex" && args[1] === "doctor") return doctor();
-  if (args[0] === "codex" && args[1] === "socket") {
-    const home = canonicalCodexHome(
-        process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
-      ),
-      account = settings.codex.accounts.find((candidate) => candidate.home === home);
-    if (!account) throw new Error("CODEX_ACCOUNT_UNCONFIGURED");
-    console.log(account.socket);
-    return;
-  }
-  if (args[0] === "codex" && args[1] === "install-mcp") {
-    installMcp();
-    return;
-  }
-  if (args[0] === "codex" && args[1] === "app-server" && args[2] === "restart") {
-    restartCodexAppServer({
-      label: required(args[3], "account label"),
-      uid: required(process.getuid?.(), "user ID"),
-    });
-    return;
-  }
-  if (args[0] === "codex" && args[1] === "app-server" && args[2] === "adopt")
-    return adoptCodexAppServer(required(args[3], "account label"), args.includes("--force"));
+}
+async function controlClient() {
+  loadControlPaths();
   const call = (method: string, params: unknown = {}) =>
     controlCall(config.runtime, config.token, method, params);
   await call("system.initialize", {
@@ -172,92 +526,7 @@ async function main() {
     client: { name: "acs-cli", version: "0.1.0", instanceId: String(process.pid) },
     capabilities: {},
   });
-  if (args[0] === "codex" && args[1] === "bind") {
-    const installationId = await accountInstallationId(call),
-      agent = required(args[2], "agent"),
-      explicitSession = option("--session"),
-      session = explicitSession ?? (await chooseCodexSession(call, installationId));
-    return print(await call("bindings.bind", bindingParams(agent, session, installationId)));
-  }
-  if (args[0] === "agents" && args[1] === "create") {
-    const agent = required(args[2], "agent slug"),
-      created = await call("agents.create", {
-        slug: agent,
-        displayName: option("--name"),
-        description: option("--description"),
-      });
-    return print(
-      args.includes("--claim")
-        ? { created, claim: await call("agents.createClaim", { agent }) }
-        : created,
-    );
-  }
-  if (args[0] === "agents" && args[1] === "get")
-    return print(await call("agents.get", { agent: required(args[2], "agent") }));
-  if (args[0] === "agents" && args[1] === "update")
-    return print(
-      await call("agents.update", {
-        agent: required(args[2], "agent"),
-        slug: option("--slug"),
-        displayName: option("--name"),
-        description: option("--description"),
-        enabled: args.includes("--enable") ? true : args.includes("--disable") ? false : undefined,
-      }),
-    );
-  if (args[0] === "agents" && args[1] === "delete")
-    return print(await call("agents.delete", { agent: required(args[2], "agent") }));
-  if (args[0] === "agents" && args[1] === "list") return print(await call("agents.list"));
-  if (args[0] === "bindings" && args[1] === "bind")
-    return print(
-      await call(
-        "bindings.bind",
-        bindingParams(
-          required(args[2], "agent"),
-          required(option("--session"), "--session"),
-          await accountInstallationId(call),
-        ),
-      ),
-    );
-  if (args[0] === "bindings" && args[1] === "list") return print(await call("bindings.list"));
-  if (args[0] === "bindings" && args[1] === "get")
-    return print(await call("bindings.get", { bindingId: required(args[2], "binding ID") }));
-  if (args[0] === "bindings" && args[1] === "revoke")
-    return print(
-      await call("bindings.revoke", {
-        bindingId: required(args[2], "binding ID"),
-        reason: option("--reason"),
-      }),
-    );
-  if (args[0] === "runtimes" && args[1] === "list") return print(await call("runtimes.list"));
-  if (args[0] === "codex" && args[1] === "sessions" && args[2] === "list")
-    return print(
-      await call("runtimes.sessions.list", { installationId: await accountInstallationId(call) }),
-    );
-  if (args[0] === "inbox") return print(await call("inbox.list", { agent: args[1] || undefined }));
-  if (args[0] === "deliveries" && args[1] === "list") return print(await call("deliveries.list"));
-  if (args[0] === "deliveries" && args[1] === "get")
-    return print(await call("deliveries.get", { deliveryId: required(args[2], "delivery ID") }));
-  if (args[0] === "deliveries" && args[1] === "retry")
-    return print(await call("deliveries.retry", { deliveryId: required(args[2], "delivery ID") }));
-  if (args[0] === "deliveries" && args[1] === "cancel")
-    return print(
-      await call("deliveries.cancel", {
-        deliveryId: required(args[2], "delivery ID"),
-        reason: option("--reason"),
-      }),
-    );
-  if (args[0] === "deliveries" && args[1] === "resolve")
-    return print(
-      await call("deliveries.resolveUnknown", {
-        deliveryId: required(args[2], "delivery ID"),
-        resolution: resolutionOption(),
-      }),
-    );
-  if (args[0] === "token" && args[1] === "show") {
-    console.log(readFileSync(config.token, "utf8"));
-    return;
-  }
-  throw new Error(`Unknown command: ${args.join(" ")}`);
+  return call;
 }
 
 function selfCommand() {
@@ -713,16 +982,12 @@ function log(
           .join(" "),
   );
 }
-function option(name: string) {
-  const i = args.indexOf(name);
-  return i < 0 ? undefined : args[i + 1];
-}
-function resolutionOption() {
+function resolutionOption(options: ResolutionOptions) {
   const resolutions = [
-    ["--accepted", "accepted"],
-    ["--not-accepted-and-retry", "not-accepted-and-retry"],
-    ["--not-accepted-and-cancel", "not-accepted-and-cancel"],
-  ].filter(([flag]) => args.includes(flag));
+    [options.accepted, "accepted"],
+    [options.notAcceptedAndRetry, "not-accepted-and-retry"],
+    [options.notAcceptedAndCancel, "not-accepted-and-cancel"],
+  ].filter(([enabled]) => enabled);
   if (resolutions.length !== 1) throw new Error("Specify exactly one delivery resolution flag");
   return required(resolutions[0]?.[1], "delivery resolution");
 }
@@ -737,23 +1002,26 @@ function bindingParams(
   agent: string,
   session: string | { readonly installationId: string; readonly opaqueId: string },
   installationId?: string,
+  options: BindingOptions = {},
 ) {
   return {
     agent,
     session,
-    continuityPolicy: option("--continuity") ?? "follow-pending",
+    continuityPolicy: options.continuity ?? "follow-pending",
     deliveryPolicy: { interruptOnCancel: true },
-    revokeExisting: args.includes("--revoke-existing"),
+    revokeExisting: Boolean(options.revokeExisting),
     installationId,
   };
 }
-async function accountInstallationId(call: (method: string, params?: unknown) => Promise<unknown>) {
+async function accountInstallationId(
+  call: (method: string, params?: unknown) => Promise<unknown>,
+  accountLabel?: string,
+) {
   const home = canonicalCodexHome(
       process.env.CODEX_HOME ?? `${required(process.env.HOME, "HOME")}/.codex`,
     ),
     label =
-      option("--account") ??
-      settings.codex.accounts.find((candidate) => candidate.home === home)?.label;
+      accountLabel ?? settings.codex.accounts.find((candidate) => candidate.home === home)?.label;
   if (!label) throw new Error("CODEX_ACCOUNT_UNCONFIGURED: set CODEX_HOME or use --account");
   const account = settings.codex.accounts.find((candidate) => candidate.label === label);
   if (!account) throw new Error(`CODEX_ACCOUNT_UNCONFIGURED: ${label}`);
@@ -917,13 +1185,7 @@ function arrayValue(value: unknown): unknown[] {
 function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function usage() {
-  console.log(
-    `ACS 0.1.0\n\n  acs init\n  acs daemon run                         # foreground daemon\n  acs daemon start|stop|status|restart   # macOS LaunchAgent lifecycle\n    status: control-ready (0), stopped (1), supervisor-running/control-unavailable (2)\n  acs agents create <slug> [--claim] [--name name] [--description text]\n  acs agents get|delete <agent>\n  acs agents update <agent> [--slug slug] [--name name] [--description text] [--enable|--disable]\n  acs agents list\n  acs codex sessions list\n  acs codex bind <agent> [--session <codex-thread-id>] [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings bind <agent> --session <codex-thread-id> [--continuity follow-pending|strict] [--revoke-existing]\n  acs bindings get|revoke <binding-id>\n  acs bindings list\n  acs runtimes list\n  acs inbox [agent]\n  acs deliveries list|get|retry|cancel <delivery-id>\n  acs deliveries resolve <delivery-id> --accepted|--not-accepted-and-retry|--not-accepted-and-cancel\n  acs token show\n  acs codex doctor\n  acs codex install-mcp\n  acs codex app-server restart <account-label>\n  acs mcp codex`,
-  );
-}
-
 await main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
+  if (process.exitCode !== 2) process.exitCode = 1;
 });

@@ -3,7 +3,7 @@
 - [x] 1.1 Add validated explicit Codex account configuration and deterministic socket derivation.
 - [x] 1.2 Add per-account LaunchAgent generation.
 - [x] 1.3 Add account service adoption and restart commands.
-- [x] 1.4 Install an idempotent `swarm` launcher for managed interactive new, resume, and fork sessions; remove the legacy zsh integration.
+- [x] 1.4 Remove the legacy zsh integration and any ACS-owned `swarm` executable without installing a replacement shell command.
 
 ## 2. Runtime routing
 
@@ -15,4 +15,4 @@
 
 - [x] 3.1 Add focused configuration, service, and routing tests.
 - [x] 3.2 Add OpenSpec delta specifications and validate the change.
-- [x] 3.3 Replace wrapper regressions with focused `swarm` routing, rejection, cleanup, and native-`codex` preservation tests; update operator documentation.
+- [x] 3.3 Remove product-owned `swarm` routing regressions, retain cleanup and native-`codex` preservation coverage, and update operator documentation.
