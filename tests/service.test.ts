@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   codexAppServerLaunchAgent,
+  codexIntegrationArguments,
   daemonCommandRunsForeground,
   daemonCommandWaitsForHandover,
   daemonControlPathsFromEnvironment,
@@ -18,6 +19,7 @@ import {
   persistentEnvironment,
   removeCodexAppServers,
   removeLegacySwarmLauncher,
+  syncSwarmLauncher,
   restartCodexAppServer,
   restartDaemonService,
   startDaemonService,
@@ -387,7 +389,11 @@ test("reports daemon service status without lifecycle commands", async () => {
 });
 
 test("Codex account service is account-scoped", () => {
+  const configArguments = codexIntegrationArguments(["/opt/acs"], {
+    CODEX_HOME: "/Users/example/.codex/accounts/personal",
+  });
   const agent = codexAppServerLaunchAgent({
+    configArguments,
     binary: "/opt/homebrew/bin/codex",
     home: "/Users/example/.codex/accounts/personal",
     socket: "/tmp/acs-501/codex-abc.sock",
@@ -397,11 +403,28 @@ test("Codex account service is account-scoped", () => {
   expect(agent.Label).toBe("local.acs.codex-app-server.personal");
   expect(agent.ProgramArguments).toEqual([
     "/opt/homebrew/bin/codex",
+    ...configArguments,
     "app-server",
     "--listen",
     "unix:///tmp/acs-501/codex-abc.sock",
   ]);
   expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  const injected = agent.ProgramArguments.slice(1, -3);
+  expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
+  expect(Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"))).toMatchObject({
+    mcp_servers: {
+      acs: {
+        command: "/opt/acs",
+        args: ["mcp", "codex"],
+        env: { CODEX_HOME: agent.EnvironmentVariables.CODEX_HOME },
+        enabled: true,
+      },
+    },
+    features: { hooks: true },
+    hooks: {
+      SessionStart: [{ hooks: [{ command: expect.stringContaining("call acs_identity") }] }],
+    },
+  });
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
 });
@@ -424,6 +447,73 @@ test("initialization removes only the legacy ACS launcher and integration", () =
     writeFileSync(swarm, "unrelated");
     removeLegacySwarmLauncher(root);
     expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("swarm launcher sync preserves unowned executables", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-collision-")),
+    swarm = join(root, ".local/bin/swarm");
+  mkdirSync(dirname(swarm), { recursive: true });
+  writeFileSync(swarm, "unrelated");
+  try {
+    expect(() =>
+      syncSwarmLauncher({
+        enabled: true,
+        accountCount: 1,
+        home: root,
+        command: ["acs"],
+        codexBinary: "codex",
+      }),
+    ).toThrow("ACS_SWARM_LAUNCHER_COLLISION");
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+    syncSwarmLauncher({
+      enabled: false,
+      accountCount: 0,
+      home: root,
+      command: ["acs"],
+      codexBinary: "codex",
+    });
+    expect(readFileSync(swarm, "utf8")).toBe("unrelated");
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("swarm launcher includes hardening flags", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-flags-")),
+    swarm = join(root, ".local/bin/swarm");
+  syncSwarmLauncher({
+    enabled: true,
+    accountCount: 1,
+    home: root,
+    command: ["acs"],
+    codexBinary: "codex",
+  });
+  const script = readFileSync(swarm, "utf8");
+  expect(script).toContain("ulimit -n 4096");
+  expect(script).toContain("exec 'acs' codex run -- \"$@\"");
+  rmSync(root, { recursive: true });
+});
+
+test("swarm launcher preserves source command and user argument boundaries", () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-swarm-source-")),
+    source = join(root, "agent's source.ts"),
+    prompt = "a prompt with spaces and 'quotes'";
+  try {
+    writeFileSync(source, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+    syncSwarmLauncher({
+      enabled: true,
+      accountCount: 1,
+      home: root,
+      command: [process.execPath, source],
+      codexBinary: "codex",
+    });
+    const result = Bun.spawnSync([join(root, ".local/bin/swarm"), prompt]);
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toEqual(["codex", "run", "--", prompt]);
   } finally {
     rmSync(root, { recursive: true });
   }

@@ -31,6 +31,7 @@ import {
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
   daemonCommandRunsForeground,
+  codexIntegrationArguments,
   daemonCommandWaitsForHandover,
   type DaemonControlPaths,
   daemonServiceStatus,
@@ -40,9 +41,9 @@ import {
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
+  syncSwarmLauncher,
   restartDaemonService,
   restartCodexAppServer,
-  removeLegacySwarmLauncher,
   startDaemonService,
   stopDaemonService,
   stopUnmanagedDaemon,
@@ -86,7 +87,22 @@ async function main() {
       writeDefaultConfig();
       migrateCodexAccounts();
       initFiles(config);
-      removeLegacySwarmLauncher(required(process.env.HOME, "HOME"));
+      if (!args.includes("--no-service")) {
+        const home = required(process.env.HOME, "HOME");
+        syncSwarmLauncher({
+          enabled: settings.codex.enabled,
+          accountCount: settings.codex.accounts.length,
+          home,
+          command: selfCommand(),
+          codexBinary: Bun.which(settings.codex.binary) ?? settings.codex.binary,
+        });
+        if (
+          settings.codex.enabled &&
+          settings.codex.accounts.length &&
+          !process.env.PATH?.split(":").includes(`${home}/.local/bin`)
+        )
+          console.warn(`ACS: add ${home}/.local/bin to PATH to use swarm`);
+      }
       if (process.platform === "darwin" && options.service !== false) {
         await installService({
           command: selfCommand(),
@@ -108,6 +124,10 @@ async function main() {
         if (settings.codex.enabled && settings.codex.accounts.length) {
           for (const account of settings.codex.accounts) {
             await installCodexAppServer({
+              configArguments: codexIntegrationArguments(selfCommand(), {
+                ...serviceEnvironment(),
+                CODEX_HOME: account.home,
+              }),
               binary: required(
                 Bun.which(settings.codex.binary) ?? settings.codex.binary,
                 "Codex binary",
@@ -119,11 +139,10 @@ async function main() {
               uid: required(process.getuid?.(), "user ID"),
               socketOccupied: () => socketListening(account.socket),
             });
-            installMcp(account.home);
           }
         }
         await waitForDaemon();
-        console.log("ACS login service and global Codex MCP are ready");
+        console.log("ACS login service and managed Codex MCP and hooks are ready");
       }
       console.log(`Initialized ACS at ${config.data}`);
     });
@@ -385,6 +404,7 @@ async function main() {
       const child = Bun.spawn(
         [
           settings.codex.binary,
+          "--dangerously-bypass-hook-trust",
           "--remote",
           `unix://${account.socket}`,
           ...(hasCurrentDirectory ? [] : ["--cd", process.cwd()]),
@@ -554,23 +574,23 @@ function serviceEnvironment() {
 
 function installMcp(codexHome = configuredCodexHome()) {
   const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
-    installed = Bun.spawnSync(
-      [
-        settings.codex.binary,
-        "mcp",
-        "add",
-        "acs",
-        ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-        "--",
-        ...selfCommand(),
-        "mcp",
-        "codex",
-      ],
-      { env: { ...process.env, CODEX_HOME: codexHome } },
-    );
-  if (!installed.success)
-    throw new Error(installed.stderr.toString().trim() || "Codex MCP installation failed");
-  process.stdout.write(installed.stdout);
+    withoutBypass = [
+      settings.codex.binary,
+      "mcp",
+      "add",
+      "acs",
+      ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+      "--",
+      ...selfCommand(),
+      "mcp",
+      "codex",
+    ],
+    finalInstallation = Bun.spawnSync(withoutBypass, {
+      env: { ...process.env, CODEX_HOME: codexHome },
+    });
+
+  if (!finalInstallation.success) throw new Error(finalInstallation.stderr.toString());
+  process.stdout.write(finalInstallation.stdout);
 }
 
 function configuredCodexHome() {
@@ -678,6 +698,10 @@ async function adoptCodexAppServer(label: string, force: boolean) {
   for (let attempt = 0; attempt < 50; attempt++) {
     if (!(await socketListening(account.socket))) {
       await installCodexAppServer({
+        configArguments: codexIntegrationArguments(selfCommand(), {
+          ...serviceEnvironment(),
+          CODEX_HOME: account.home,
+        }),
         binary: required(Bun.which(settings.codex.binary) ?? settings.codex.binary, "Codex binary"),
         home: account.home,
         socket: account.socket,
@@ -693,6 +717,10 @@ async function adoptCodexAppServer(label: string, force: boolean) {
   if (!force) throw new Error("Codex app-server did not stop; retry with --force");
   if (!(await stopOwnedCodexAppServer(label, account.home, account.socket, "SIGKILL"))) return;
   await installCodexAppServer({
+    configArguments: codexIntegrationArguments(selfCommand(), {
+      ...serviceEnvironment(),
+      CODEX_HOME: account.home,
+    }),
     binary: required(Bun.which(settings.codex.binary) ?? settings.codex.binary, "Codex binary"),
     home: account.home,
     socket: account.socket,

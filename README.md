@@ -11,10 +11,10 @@ bun run build
 ./dist/acs init
 ```
 
-On macOS, `init` installs and starts a `launchd` user service and registers the
-global Codex MCP bridge with the same socket path. The service starts at login
+On macOS, `init` installs and starts a `launchd` user service.
+The service starts at login
 and restarts if it exits; logs are in `~/Library/Logs/acs.log`. Re-running `init`
-updates the registration and retires the legacy `local.asc.daemon` service. Restart existing Codex sessions to load the MCP tools.
+updates the services and retires the legacy `local.asc.daemon` service. Start a new `swarm` session to load the MCP tools.
 Use `acs init --no-service` for file initialization only (for example in tests).
 The LaunchAgent runs `acs daemon run` in the foreground. Use `acs daemon start`
 to bootstrap its installed plist and wait for authenticated control readiness;
@@ -29,12 +29,14 @@ not alter per-account Codex app-server services; restart one explicitly with
 `init` migrates a running foreground daemon to the login service and restarts
 an existing service so rebuilt binaries take effect.
 
-`acs init` removes only the legacy ACS-owned `~/.local/bin/swarm` and zsh
-integration; it never changes native `codex` or shell aliases. For a personal
-shortcut, define an alias yourself:
+With configured Codex accounts, `init` installs `~/.local/bin/swarm` and removes
+the legacy ACS-owned zsh integration. Ensure
+`~/.local/bin` is in `PATH` (for example, `export PATH="$HOME/.local/bin:$PATH"`).
+After upgrading from the wrapper, start a new shell or run `unfunction codex` in zsh.
+Use `swarm` for managed interactive sessions:
 
 ```sh
-alias swarm='acs codex run --'
+unalias swarm 2>/dev/null # remove an old alias so the installed wrapper runs
 swarm "start a task"
 swarm resume <session-id>
 ```
@@ -42,7 +44,14 @@ swarm resume <session-id>
 `acs codex run --` selects the configured account from `CODEX_HOME`, connects
 only through that account's managed app-server, and adds the current directory
 unless `-C` or `--cd` is supplied. It rejects `--remote`; native `codex` remains
-unchanged for every other use.
+unchanged for every other use. `init` injects ACS MCP settings and its
+source-defined registration hook into the managed app-server's launch arguments,
+so regenerated account config files do not remove the integration. Remote TUI
+flags do not forward MCP or hook definitions to the server. Re-run `init` after
+upgrading to update these launch arguments. The wrapper raises the file limit
+to 4096. ACS adds `--dangerously-bypass-hook-trust`, which bypasses persisted
+trust for all enabled hooks in that invocation, including project hooks.
+`acs codex install-mcp` remains available for explicit global MCP registration.
 
 ### Receiving messages in independently launched sessions
 
@@ -81,11 +90,11 @@ append fallback or wake-policy flag. Canceling a task never confers ownership of
 a shared turn; the shared-endpoint Codex adapter does not advertise interruption.
 Urgency/preemption remains a separate OpenSpec change, not an implemented feature.
 
-This repository currently trials automatic ACS registration through its local
-Codex `SessionStart` hook. Before testing a fresh or resumed session, open
-`/hooks` and trust the repository hook. On its first turn, the agent checks
+Managed app servers supply the ACS `SessionStart` hook to sessions.
+On its first turn, the agent checks
 `acs_identity` and, when unbound, chooses a name and calls `acs_register`.
-This does not install the hook globally.
+This does not install the hook globally. The repository hook also supports
+native Codex sessions after review through `/hooks`.
 
 The daemon listens on `127.0.0.1:7432`. Run `acs --help` for administration,
 binding, diagnostics, and MCP bridge commands.
