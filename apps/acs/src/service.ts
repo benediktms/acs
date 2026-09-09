@@ -10,6 +10,44 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
+export function codexIntegrationArguments(
+  command: string[],
+  environment: Record<string, string>,
+): string[] {
+  return [
+    "-c",
+    `mcp_servers.acs=${inlineToml({ command: command[0], args: [...command.slice(1), "mcp", "codex"], env: environment, enabled: true })}`,
+    "-c",
+    "features.hooks=true",
+    "-c",
+    `hooks.SessionStart=${inlineToml([
+      {
+        matcher: "^(startup|resume|clear)$",
+        hooks: [
+          {
+            type: "command",
+            command:
+              "printf '%s\\n' 'On the first model turn after this session starts or resumes, call acs_identity before handling the user request. If it reports an unbound state, choose a short unique lowercase logical-agent name and call acs_register with it immediately. If that name already exists, choose another and retry. Do not ask the user for a name or claim code.'",
+            timeout: 5,
+            statusMessage: "Loading ACS registration guidance",
+          },
+        ],
+      },
+    ])}`,
+  ];
+}
+
+function inlineToml(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(inlineToml).join(", ")}]`;
+  if (value !== null && typeof value === "object")
+    return `{${Object.entries(value)
+      .map(([key, item]) => `${JSON.stringify(key)} = ${inlineToml(item)}`)
+      .join(", ")}}`;
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number")
+    return JSON.stringify(value);
+  throw new Error("Unsupported inline TOML value");
+}
+
 export function persistentEnvironment(environment: Record<string, string>, cwd = process.cwd()) {
   const normalized = { ...environment };
   for (const key of [
@@ -44,6 +82,7 @@ export function launchAgent(options: {
 }
 
 export function codexAppServerLaunchAgent(options: {
+  configArguments?: string[];
   binary: string;
   home: string;
   socket: string;
@@ -52,7 +91,13 @@ export function codexAppServerLaunchAgent(options: {
 }) {
   return {
     Label: `local.acs.codex-app-server.${options.label}`,
-    ProgramArguments: [options.binary, "app-server", "--listen", `unix://${options.socket}`],
+    ProgramArguments: [
+      options.binary,
+      ...(options.configArguments ?? []),
+      "app-server",
+      "--listen",
+      `unix://${options.socket}`,
+    ],
     EnvironmentVariables: { CODEX_HOME: options.home },
     StandardOutPath: options.log,
     StandardErrorPath: options.log,
@@ -64,6 +109,7 @@ export function codexAppServerLaunchAgent(options: {
 }
 
 export async function installCodexAppServer(options: {
+  configArguments?: string[];
   binary: string;
   home: string;
   socket: string;
@@ -95,7 +141,15 @@ export async function installCodexAppServer(options: {
   const changed = !existsSync(path) || readFileSync(path, "utf8") !== content;
   if (loaded && changed) requireSuccess(control(["bootout", target]));
   if (changed) writeFileSync(path, content, { mode: 0o600 });
-  if (!loaded || changed) requireSuccess(control(["bootstrap", domain, path]));
+  if (!loaded || changed) {
+    for (let attempt = 0; ; attempt++) {
+      const result = control(["bootstrap", domain, path]);
+      if (result.success) break;
+      if (!loaded || !changed || attempt === 49)
+        throw new Error(result.error || `Codex app-server bootstrap failed: ${label}`);
+      await Bun.sleep(100);
+    }
+  }
 }
 
 export function removeCodexAppServers(options: {

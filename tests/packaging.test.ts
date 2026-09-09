@@ -7,7 +7,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -583,23 +582,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     env,
   });
   if (codexRun.exitCode !== 0) throw new Error(codexRun.stderr.toString());
-  const injected = readFileSync(passedArgs, "utf8").split("\n").slice(1, 7);
-  expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
-  const overrides = Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"));
-  expect(overrides).toMatchObject({
-    mcp_servers: { acs: { command: realpathSync(binary), args: ["mcp", "codex"], enabled: true } },
-    features: { hooks: true },
-    hooks: {
-      SessionStart: [
-        { hooks: [{ type: "command", command: expect.stringContaining("call acs_identity") }] },
-      ],
-    },
-  });
-  const passedLaunchArgs = () => {
-    const arguments_ = readFileSync(passedArgs, "utf8").split("\n");
-    expect(arguments_.filter((_, index) => [1, 3, 5].includes(index))).toEqual(["-c", "-c", "-c"]);
-    return [arguments_[0], ...arguments_.slice(7)].join("\n");
-  };
+  const passedLaunchArgs = () => readFileSync(passedArgs, "utf8");
   expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--help\n--model\ntest\n`,
   );

@@ -31,6 +31,7 @@ import {
 import { pickSession, type SessionChoice } from "./session-picker";
 import {
   daemonCommandRunsForeground,
+  codexIntegrationArguments,
   daemonCommandWaitsForHandover,
   type DaemonControlPaths,
   daemonServiceStatus,
@@ -123,6 +124,10 @@ async function main() {
         if (settings.codex.enabled && settings.codex.accounts.length) {
           for (const account of settings.codex.accounts) {
             await installCodexAppServer({
+              configArguments: codexIntegrationArguments(selfCommand(), {
+                ...serviceEnvironment(),
+                CODEX_HOME: account.home,
+              }),
               binary: required(
                 Bun.which(settings.codex.binary) ?? settings.codex.binary,
                 "Codex binary",
@@ -137,7 +142,7 @@ async function main() {
           }
         }
         await waitForDaemon();
-        console.log("ACS login service is ready; swarm injects Codex MCP and hooks at launch");
+        console.log("ACS login service and managed Codex MCP and hooks are ready");
       }
       console.log(`Initialized ACS at ${config.data}`);
     });
@@ -400,25 +405,6 @@ async function main() {
         [
           settings.codex.binary,
           "--dangerously-bypass-hook-trust",
-          "-c",
-          `mcp_servers.acs=${inlineToml({ command: selfCommand()[0], args: [...selfCommand().slice(1), "mcp", "codex"], env: { ...serviceEnvironment(), CODEX_HOME: home }, enabled: true })}`,
-          "-c",
-          "features.hooks=true",
-          "-c",
-          `hooks.SessionStart=${inlineToml([
-            {
-              matcher: "^(startup|resume|clear)$",
-              hooks: [
-                {
-                  type: "command",
-                  command:
-                    "printf '%s\\n' 'On the first model turn after this session starts or resumes, call acs_identity before handling the user request. If it reports an unbound state, choose a short unique lowercase logical-agent name and call acs_register with it immediately. If that name already exists, choose another and retry. Do not ask the user for a name or claim code.'",
-                  timeout: 5,
-                  statusMessage: "Loading ACS registration guidance",
-                },
-              ],
-            },
-          ])}`,
           "--remote",
           `unix://${account.socket}`,
           ...(hasCurrentDirectory ? [] : ["--cd", process.cwd()]),
@@ -586,17 +572,6 @@ function serviceEnvironment() {
   return persistentEnvironment(environment);
 }
 
-function inlineToml(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(inlineToml).join(", ")}]`;
-  if (value !== null && typeof value === "object")
-    return `{${Object.entries(value)
-      .map(([key, item]) => `${JSON.stringify(key)} = ${inlineToml(item)}`)
-      .join(", ")}}`;
-  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number")
-    return JSON.stringify(value);
-  throw new Error("Unsupported inline TOML value");
-}
-
 function installMcp(codexHome = configuredCodexHome()) {
   const environment = { ...serviceEnvironment(), CODEX_HOME: codexHome },
     withoutBypass = [
@@ -723,6 +698,10 @@ async function adoptCodexAppServer(label: string, force: boolean) {
   for (let attempt = 0; attempt < 50; attempt++) {
     if (!(await socketListening(account.socket))) {
       await installCodexAppServer({
+        configArguments: codexIntegrationArguments(selfCommand(), {
+          ...serviceEnvironment(),
+          CODEX_HOME: account.home,
+        }),
         binary: required(Bun.which(settings.codex.binary) ?? settings.codex.binary, "Codex binary"),
         home: account.home,
         socket: account.socket,
@@ -738,6 +717,10 @@ async function adoptCodexAppServer(label: string, force: boolean) {
   if (!force) throw new Error("Codex app-server did not stop; retry with --force");
   if (!(await stopOwnedCodexAppServer(label, account.home, account.socket, "SIGKILL"))) return;
   await installCodexAppServer({
+    configArguments: codexIntegrationArguments(selfCommand(), {
+      ...serviceEnvironment(),
+      CODEX_HOME: account.home,
+    }),
     binary: required(Bun.which(settings.codex.binary) ?? settings.codex.binary, "Codex binary"),
     home: account.home,
     socket: account.socket,

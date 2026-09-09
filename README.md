@@ -44,9 +44,11 @@ swarm resume <session-id>
 `acs codex run --` selects the configured account from `CODEX_HOME`, connects
 only through that account's managed app-server, and adds the current directory
 unless `-C` or `--cd` is supplied. It rejects `--remote`; native `codex` remains
-unchanged for every other use. Each launch injects ACS MCP settings and its
-registration hook through session configuration flags, so regenerated account
-config files do not remove the integration. The wrapper raises the file limit
+unchanged for every other use. `init` injects ACS MCP settings and its
+source-defined registration hook into the managed app-server's launch arguments,
+so regenerated account config files do not remove the integration. Remote TUI
+flags do not forward MCP or hook definitions to the server. Re-run `init` after
+upgrading to update these launch arguments. The wrapper raises the file limit
 to 4096. ACS adds `--dangerously-bypass-hook-trust`, which bypasses persisted
 trust for all enabled hooks in that invocation, including project hooks.
 `acs codex install-mcp` remains available for explicit global MCP registration.
@@ -88,7 +90,7 @@ append fallback or wake-policy flag. Canceling a task never confers ownership of
 a shared turn; the shared-endpoint Codex adapter does not advertise interruption.
 Urgency/preemption remains a separate OpenSpec change, not an implemented feature.
 
-Managed sessions receive the ACS `SessionStart` hook at launch.
+Managed app servers supply the ACS `SessionStart` hook to sessions.
 On its first turn, the agent checks
 `acs_identity` and, when unbound, chooses a name and calls `acs_register`.
 This does not install the hook globally. The repository hook also supports

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   codexAppServerLaunchAgent,
+  codexIntegrationArguments,
   daemonCommandRunsForeground,
   daemonCommandWaitsForHandover,
   daemonControlPathsFromEnvironment,
@@ -388,7 +389,11 @@ test("reports daemon service status without lifecycle commands", async () => {
 });
 
 test("Codex account service is account-scoped", () => {
+  const configArguments = codexIntegrationArguments(["/opt/acs"], {
+    CODEX_HOME: "/Users/example/.codex/accounts/personal",
+  });
   const agent = codexAppServerLaunchAgent({
+    configArguments,
     binary: "/opt/homebrew/bin/codex",
     home: "/Users/example/.codex/accounts/personal",
     socket: "/tmp/acs-501/codex-abc.sock",
@@ -398,11 +403,28 @@ test("Codex account service is account-scoped", () => {
   expect(agent.Label).toBe("local.acs.codex-app-server.personal");
   expect(agent.ProgramArguments).toEqual([
     "/opt/homebrew/bin/codex",
+    ...configArguments,
     "app-server",
     "--listen",
     "unix:///tmp/acs-501/codex-abc.sock",
   ]);
   expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  const injected = agent.ProgramArguments.slice(1, -3);
+  expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
+  expect(Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"))).toMatchObject({
+    mcp_servers: {
+      acs: {
+        command: "/opt/acs",
+        args: ["mcp", "codex"],
+        env: { CODEX_HOME: agent.EnvironmentVariables.CODEX_HOME },
+        enabled: true,
+      },
+    },
+    features: { hooks: true },
+    hooks: {
+      SessionStart: [{ hooks: [{ command: expect.stringContaining("call acs_identity") }] }],
+    },
+  });
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
 });
