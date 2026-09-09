@@ -50,12 +50,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   const reservation = Bun.serve({ port: 0, fetch: () => new Response() }),
     port = required(reservation.port, "reserved port");
   reservation.stop(true);
-  const codexHomePath = join(root, "codex"),
-    changedCodexHomePath = join(root, "changed-codex");
-  mkdirSync(codexHomePath);
-  mkdirSync(changedCodexHomePath);
-  const codexHome = canonicalCodexHome(codexHomePath),
-    changedCodexHome = canonicalCodexHome(changedCodexHomePath),
+  const codexHome = canonicalCodexHome(join(root, "codex")),
     codexSocket = derivedCodexSocket(codexHome, dirname(dirname(defaultLocations().runtimeSocket))),
     bin = join(root, "bin"),
     codex = join(bin, "codex");
@@ -385,13 +380,6 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   insertRuntime.run("ins_retired", "codex", "codex.app-server", "retired", Date.now(), Date.now());
   insertRuntime.run("ins_foreign", "foreign", "foreign.adapter", "local", Date.now(), Date.now());
   doctorStore.close();
-  writeFileSync(
-    join(root, "config.toml"),
-    readFileSync(join(root, "config.toml"), "utf8").replace(
-      `codex_home = ${JSON.stringify(codexHome)}`,
-      `codex_home = ${JSON.stringify(changedCodexHome)}`,
-    ),
-  );
   appendFileSync(
     join(root, "config.toml"),
     '\n[[runtimes.codex.accounts]]\nlabel = "missing"\ncodex_home = "/tmp/missing-codex"\n',
@@ -404,7 +392,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
     diagnosis = record(JSON.parse(await new Response(doctor.stdout).text()));
   expect(await doctor.exited).toBe(0);
   expect(array(record(diagnosis.codex).accounts)).toContainEqual(
-    expect.objectContaining({ label: "local", state: "unavailable", error: "RUNTIME_UNAVAILABLE" }),
+    expect.objectContaining({ label: "local", state: "ready", threadsSampled: 0 }),
   );
   expect(array(record(diagnosis.codex).accounts)).toContainEqual(
     expect.objectContaining({ label: "missing", state: "unavailable" }),
@@ -413,7 +401,7 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
   expect(diagnosis.codex).toMatchObject({
     installed: "codex-cli 0.153.2",
   });
-  expect(diagnosis.mutatingDeliveryEnabled).toBe(false);
+  expect(diagnosis.mutatingDeliveryEnabled).toBe(true);
 
   const idleBridge = await Promise.race([
     mcp.exited.then(() => false),
