@@ -203,13 +203,14 @@ export function mcpMessageIdentity(
   };
 }
 
-export function workspaceContext(cwd = process.cwd()) {
+export function workspaceContext(cwd?: string) {
   try {
+    cwd ??= process.cwd();
     const git = Bun.spawnSync(["git", "-C", cwd, "branch", "--show-current"]),
       gitBranch = git.success ? git.stdout.toString().trim() : "";
     return { cwd, ...(gitBranch ? { gitBranch } : {}) };
   } catch {
-    return { cwd };
+    return cwd === undefined ? undefined : { cwd };
   }
 }
 

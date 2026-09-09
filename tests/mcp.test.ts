@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,5 +167,16 @@ describe("Codex MCP bridge", () => {
     const outside = mkdtempSync(join(tmpdir(), "acs-mcp-outside-"));
     roots.push(outside);
     expect(workspaceContext(outside)).toEqual({ cwd: outside });
+  });
+
+  test("does not fail when the current working directory was deleted", () => {
+    const cwd = spyOn(process, "cwd").mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    try {
+      expect(workspaceContext()).toBeUndefined();
+    } finally {
+      cwd.mockRestore();
+    }
   });
 });
