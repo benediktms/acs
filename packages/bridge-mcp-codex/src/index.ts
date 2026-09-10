@@ -45,6 +45,7 @@ const agentSchema = z.looseObject({
     slug: z.string(),
     displayName: z.string(),
     description: z.string(),
+    enabled: z.boolean(),
     state: z.enum([
       "unknown",
       "offline",
@@ -727,6 +728,7 @@ export function isConfiguredCodexRuntime(
 }
 
 export function agentView(agent: z.infer<typeof agentSchema>) {
+  if (!agent.enabled) throw new Error("AGENT_NOT_FOUND");
   return {
     slug: agent.slug,
     description: agent.description,
