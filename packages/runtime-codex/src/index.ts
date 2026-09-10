@@ -376,7 +376,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (agentState === "offline") return { outcome: "deferred", reason: "offline" };
     if (agentState === "input-required" || agentState === "auth-required")
       return { outcome: "deferred", reason: "local-input" };
-    if (agentState === "error" || agentState === "unknown")
+    if (agentState === "error" || snapshot.runtimeState === "unknown")
       return { outcome: "deferred", reason: "unsupported-active-state" };
     if (snapshot.attributes.canAcceptDirectInput !== true)
       return { outcome: "deferred", reason: "unsupported-active-state" };
