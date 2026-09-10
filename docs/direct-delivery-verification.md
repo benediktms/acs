@@ -33,16 +33,19 @@ Responses API. It never loads user authentication. It verifies:
 - Context-only empty-input `turn/steer` is rejected without merging its content.
 - Each delivery ID/payload hash can be reconciled to the correct persisted turn;
   conflicting evidence remains inconclusive.
-- Attaching for notifications is separate from admitting input. Listener/read
-  failure after an accepted submission must not cause input resubmission.
+- A test-only Unix WebSocket relay can drop the response after `turn/start` reaches
+  real Codex; the adapter reports `acceptance-unknown`, reconnects, reconciles to
+  accepted or inconclusive evidence, and never resubmits the delivery.
 - The shared adapter refuses cancellation as evidence of exclusive execution
   ownership is absent.
 
-Fake-adapter and transport tests additionally cover lease recovery, aborts and
-lost responses, malformed success responses, capability reductions, exact binding
-fences, foreign-thread notifications, shared task isolation, explicit completion,
-and cancellation that does not starve unrelated work. Compiled-binary tests run
-without a Bun executable in PATH and exercise MCP, A2A, CLI, and persistence.
+Fake-adapter and transport tests additionally cover lease recovery, reconnect,
+post-flush lost responses and aborts, malformed success responses, exact-marker
+reconciliation, local approval/user-input deferral, capability reductions, exact
+binding fences, foreign-thread notifications, shared task isolation, explicit
+completion, and cancellation that does not starve unrelated work. They are not
+evidence for human-interactive ownership. Compiled-binary tests run without a Bun
+executable in PATH and exercise MCP, A2A, CLI, and persistence.
 
 ## Evidence still requiring a live interactive setup
 
@@ -64,3 +67,21 @@ this operator-driven matrix:
 No authenticated model or human-interactive matrix result is claimed by the
 credential-free test run. The urgency/preemption follow-up is not implemented or
 certified by this branch.
+
+## 2026-09-09–10 verification run
+
+`bun run test:codex-real` passed against installed Codex `0.153.4` (two native
+tests passed; the authenticated model smoke test was skipped). The response-loss
+test used the actual app-server and proved exactly one model request after the
+delivery response was suppressed and the adapter reconnected. `bun test
+tests/runtime-adapter-conformance.test.ts` passed (16 tests), including simulated
+reconnect, post-flush ambiguity, and both local-input states.
+
+Two live Codex TUI runs exercised human-owned local input. While a
+`request_user_input` dialog remained open, ACS deferred a peer delivery with reason
+`local-input`; resolving the dialog locally allowed delivery without ACS changing
+the selection. In a separate `workspace-write`, `on-request`, user-reviewed session,
+ACS likewise deferred a peer delivery throughout an open shell-approval dialog.
+After the human selected one-time approval, the original command completed and the
+peer delivery was accepted and processed. ACS did not answer, approve, deny, or
+bypass either prompt.

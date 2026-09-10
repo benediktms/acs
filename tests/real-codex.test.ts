@@ -185,6 +185,109 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
   30_000,
 );
 
+test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
+  "real Codex retains ambiguous direct delivery after a post-write response loss",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-native-codex-loss-")),
+      socket = join(root, "app.sock"),
+      proxySocket = join(root, "loss.sock"),
+      firstRequest = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      requests: Record<string, unknown>[] = [];
+    const model = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        if (request.method !== "POST") return Response.json({ data: [] });
+        requests.push(record(await request.json()));
+        firstRequest.resolve();
+        await release.promise;
+        return new Response(modelResponse(1, "native loss probe complete"), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    writeFileSync(
+      join(root, "config.toml"),
+      [
+        'model_provider = "acs_probe"',
+        'model = "acs-probe"',
+        "[model_providers.acs_probe]",
+        'name = "Isolated ACS test"',
+        `base_url = "${model.url.origin}/v1"`,
+        'wire_api = "responses"',
+        "requires_openai_auth = false",
+      ].join("\n"),
+    );
+    const child = Bun.spawn(
+        [process.env.ACS_CODEX_BINARY ?? "codex", "app-server", "--listen", `unix://${socket}`],
+        {
+          env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: root },
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
+      owner = new CodexAppServerClient(socket),
+      proxy = responseLossProxy(proxySocket, socket),
+      adapter = new CodexRuntimeAdapter(proxySocket),
+      reconnected = new CodexRuntimeAdapter(socket),
+      context = {
+        installationId: "ins_native" as const,
+        instanceId: "native-loss-test",
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        clock: { now: () => new Date().toISOString() },
+        assertBindingFence: async () => ({ valid: true as const }),
+      };
+    try {
+      await until(() => existsSync(socket), "Codex app-server socket");
+      await owner.start();
+      const created = record(
+          await owner.startThread({
+            cwd: root,
+            ephemeral: false,
+            approvalPolicy: "never",
+            sandbox: "read-only",
+          }),
+        ),
+        threadId = string(record(created.thread).id),
+        message = delivery(threadId, "int_response_loss");
+      await adapter.start(context);
+      const submitted = adapter.deliver(message);
+      await bounded(
+        proxy.turnStartFlushed.promise,
+        "turn/start flushed through response-loss proxy",
+      );
+      await bounded(firstRequest.promise, "Codex received flushed delivery");
+      proxy.disconnect();
+      expect(await submitted).toMatchObject({
+        outcome: "acceptance-unknown",
+        reconciliationToken: `${threadId}:${message.deliveryId}`,
+      });
+
+      await reconnected.start(context);
+      const reconciled = await reconnected.reconcile({
+        deliveryId: message.deliveryId,
+        target: message.target,
+        payloadHash: message.payloadHash,
+        reconciliationToken: `${threadId}:${message.deliveryId}`,
+      });
+      expect(["accepted", "inconclusive"]).toContain(reconciled.outcome);
+      expect(requests).toHaveLength(1);
+    } finally {
+      release.resolve();
+      await adapter.stop({ reason: "shutdown" });
+      await reconnected.stop({ reason: "shutdown" });
+      proxy.close();
+      owner.close();
+      child.kill("SIGKILL");
+      await child.exited;
+      await model.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 // Optional semantic smoke test. This uses the operator's existing authentication
 // only when explicitly opted in; it is NOT a test of desktop/TUI ownership.
 test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
@@ -273,6 +376,86 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
   150_000,
 );
 
+function responseLossProxy(socketPath: string, upstreamPath: string) {
+  const turnStartFlushed = Promise.withResolvers<void>();
+  let upstream: { write(data: Uint8Array): unknown; end(): void } | undefined,
+    client: { write(data: Uint8Array): unknown; end(): void } | undefined,
+    pending: Buffer[] = [],
+    clientFrames = Buffer.alloc(0),
+    upgraded = false,
+    suppressResponses = false;
+  const server = Bun.listen({
+    unix: socketPath,
+    socket: {
+      open(socket) {
+        client = socket;
+        void Bun.connect({
+          unix: upstreamPath,
+          socket: {
+            open(connection) {
+              upstream = connection;
+              for (const data of pending) connection.write(data);
+              pending = [];
+            },
+            data(_connection, data) {
+              if (!suppressResponses) client?.write(data);
+            },
+            close() {
+              client?.end();
+            },
+            error() {
+              client?.end();
+            },
+          },
+        }).catch(() => client?.end());
+      },
+      data(_socket, data) {
+        if (containsTurnStart(Buffer.from(data))) {
+          suppressResponses = true;
+          turnStartFlushed.resolve();
+        }
+        if (upstream) upstream.write(data);
+        else pending.push(Buffer.from(data));
+      },
+      close() {
+        upstream?.end();
+      },
+      error() {
+        upstream?.end();
+      },
+    },
+  });
+
+  function containsTurnStart(data: Buffer) {
+    clientFrames = Buffer.concat([clientFrames, data]);
+    if (!upgraded) {
+      const end = clientFrames.indexOf("\r\n\r\n");
+      if (end < 0) return false;
+      upgraded = true;
+      clientFrames = clientFrames.subarray(end + 4);
+    }
+    let found = false;
+    for (;;) {
+      const frame = clientFrame(clientFrames);
+      if (!frame) break;
+      clientFrames = clientFrames.subarray(frame.consumed);
+      found ||= record(JSON.parse(frame.text)).method === "turn/start";
+    }
+    return found;
+  }
+
+  return {
+    turnStartFlushed,
+    disconnect() {
+      client?.end();
+    },
+    close() {
+      server.stop();
+      upstream?.end();
+    },
+  };
+}
+
 function delivery(threadId: string, id: DeliveryId): RuntimeDeliveryRequest {
   return {
     deliveryId: id,
@@ -360,6 +543,24 @@ function record(value: unknown): Record<string, unknown> {
 function string(value: unknown): string {
   if (typeof value !== "string") throw new Error("expected string");
   return value;
+}
+function clientFrame(frame: Buffer) {
+  if (frame.length < 6) return undefined;
+  const lengthCode = frame[1] & 0x7f,
+    offset = lengthCode === 126 ? 4 : lengthCode === 127 ? 10 : 2,
+    length =
+      lengthCode === 126
+        ? frame.readUInt16BE(2)
+        : lengthCode === 127
+          ? Number(frame.readBigUInt64BE(2))
+          : lengthCode,
+    mask = frame.subarray(offset, offset + 4),
+    payload = frame.subarray(offset + 4, offset + 4 + length);
+  if (mask.length < 4 || payload.length < length) return undefined;
+  return {
+    text: Buffer.from(payload.map((value, index) => value ^ mask[index % 4])).toString(),
+    consumed: offset + 4 + length,
+  };
 }
 async function until(condition: () => boolean, label: string) {
   for (let i = 0; i < 200; i++) {
