@@ -16,6 +16,47 @@ export enum BindingState {
   Revoked = "revoked",
 }
 
+export type RuntimeState =
+  | "unknown"
+  | "offline"
+  | "not-loaded"
+  | "idle"
+  | "active"
+  | "system-error";
+export type BlockingReason = "none" | "user-input" | "approval" | "unknown";
+export type InteractivePresence = "present" | "absent" | "unknown";
+export type AgentState =
+  | "unknown"
+  | "offline"
+  | "ready"
+  | "working"
+  | "input-required"
+  | "auth-required"
+  | "error";
+
+export interface AgentObservation {
+  readonly runtimeState: RuntimeState;
+  readonly blockingReason: BlockingReason;
+  readonly interactivePresence: InteractivePresence;
+}
+
+export function deriveAgentState(observation: AgentObservation): AgentState {
+  if (
+    observation.runtimeState === "offline" ||
+    observation.runtimeState === "not-loaded" ||
+    observation.interactivePresence === "absent"
+  )
+    return "offline";
+  if (observation.interactivePresence === "unknown") return "unknown";
+  if (observation.blockingReason === "approval") return "auth-required";
+  if (observation.blockingReason === "user-input") return "input-required";
+  if (observation.runtimeState === "system-error") return "error";
+  if (observation.blockingReason === "unknown") return "unknown";
+  if (observation.runtimeState === "active") return "working";
+  if (observation.runtimeState === "idle") return "ready";
+  return "unknown";
+}
+
 export enum DeliveryState {
   Pending = "pending",
   Leased = "leased",

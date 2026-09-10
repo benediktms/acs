@@ -56,6 +56,7 @@ export interface CodexThreadDto {
   readonly source: unknown;
   readonly canAcceptDirectInput: boolean | null;
   readonly status: { readonly type: string; readonly activeFlags?: readonly string[] };
+  readonly interactiveSubscriberPresence: "present" | "absent" | "unknown";
 }
 
 export interface CodexThreadListRequestDto {

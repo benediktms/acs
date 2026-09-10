@@ -28,7 +28,7 @@ import {
   paths,
   writeDefaultConfig,
 } from "../../../packages/config/src/index";
-import { pickSession, type SessionChoice } from "./session-picker";
+import { pickSession, sessionChoices, type SessionChoice } from "./session-picker";
 import {
   daemonCommandRunsForeground,
   codexIntegrationArguments,
@@ -845,6 +845,7 @@ async function daemon() {
             retryBaseMs: settings.delivery.retryBaseMs,
             retryCapMs: settings.delivery.retryCapMs,
             reconnectMs: settings.codex.statusPollIntervalMs,
+            offlineRetentionMs: settings.delivery.offlineRetentionMs,
           },
           installationId,
           deliveryConcurrency,
@@ -1086,26 +1087,6 @@ async function chooseCodexSession(
   } finally {
     terminal.close();
   }
-}
-function sessionChoices(value: unknown): SessionChoice[] {
-  if (!Array.isArray(value)) throw new Error("Invalid runtime session list");
-  return value.map((item) => {
-    const snapshot = recordValue(item),
-      session = recordValue(snapshot.session),
-      attributes = recordValue(snapshot.attributes);
-    if (
-      typeof session.installationId !== "string" ||
-      typeof session.opaqueId !== "string" ||
-      typeof snapshot.availability !== "string"
-    )
-      throw new Error("Invalid runtime session");
-    return {
-      session: { installationId: session.installationId, opaqueId: session.opaqueId },
-      availability: snapshot.availability,
-      title: typeof attributes.displayTitle === "string" ? attributes.displayTitle : undefined,
-      cwd: typeof attributes.cwdHint === "string" ? attributes.cwdHint : undefined,
-    };
-  });
 }
 async function doctor() {
   const codex = Bun.spawnSync([settings.codex.binary, "--version"]);

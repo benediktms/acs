@@ -8,13 +8,22 @@
 import type {
   JsonObject,
   JsonValue,
-  RuntimeAvailability,
+  RuntimeState,
   RuntimeProbeResult,
   RuntimeSessionRef,
   RuntimeSessionSnapshot,
 } from "./runtime-adapter";
 
 export const ACS_CONTROL_PROTOCOL_VERSION = "1.0";
+
+export type AgentState =
+  | "unknown"
+  | "offline"
+  | "ready"
+  | "working"
+  | "input-required"
+  | "auth-required"
+  | "error";
 
 export interface ControlClientInfo {
   readonly name: string;
@@ -73,9 +82,14 @@ export interface LogicalAgentDto {
     readonly description: string;
     readonly tags: readonly string[];
   }[];
-  readonly availability: RuntimeAvailability;
+  readonly state: AgentState;
+  readonly runtimeObservation?: {
+    readonly runtimeState: RuntimeState;
+    readonly blockingReason: "none" | "user-input" | "approval" | "unknown";
+    readonly interactivePresence: "present" | "absent" | "unknown";
+    readonly observedAt?: string;
+  };
   readonly currentActivity?: {
-    readonly state: "working" | "input-required" | "auth-required";
     readonly summary?: string;
     readonly cwd?: string;
     readonly gitBranch?: string;
@@ -251,7 +265,7 @@ export interface ControlMethodMap {
   "agents.list": {
     readonly params: {
       readonly enabled?: boolean;
-      readonly availability?: readonly RuntimeAvailability[];
+      readonly state?: readonly AgentState[];
       readonly skill?: string;
       readonly text?: string;
       readonly limit?: number;
@@ -403,7 +417,7 @@ export interface ControlMethodMap {
   "runtimes.sessions.list": {
     readonly params: {
       readonly installationId: string;
-      readonly availability?: readonly RuntimeAvailability[];
+      readonly runtimeState?: readonly RuntimeState[];
       readonly text?: string;
       readonly limit?: number;
       readonly cursor?: string;

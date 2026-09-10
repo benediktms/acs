@@ -216,7 +216,9 @@ describe("control protocol", () => {
       inspected.push(session.opaqueId);
       return {
         session,
-        availability: "idle",
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "present",
         observedAt: new Date().toISOString(),
         attributes: { cwdHint: root },
       };
@@ -349,7 +351,7 @@ describe("control protocol", () => {
       },
     });
     expect(await (await call("agents.get", { agent: "backend" })).json()).toMatchObject({
-      result: { agent: { availability: "idle" } },
+      result: { agent: { state: "ready" } },
     });
     const backendBinding = required(
         store.db
@@ -544,7 +546,9 @@ describe("control protocol", () => {
     const inspectSession = adapter.inspectSession;
     adapter.inspectSession = async (session) => ({
       session,
-      availability: "offline",
+      runtimeState: "offline",
+      blockingReason: "unknown",
+      interactivePresence: "unknown",
       observedAt: new Date().toISOString(),
       attributes: {},
     });
@@ -573,7 +577,7 @@ describe("control protocol", () => {
       ).json(),
     ).toMatchObject({
       result: {
-        agent: { slug: "self-service" },
+        agent: { slug: "self-service", state: "ready" },
         binding: { session: { opaqueId: "self-service-thread" }, epoch: 1 },
         idempotent: false,
       },
@@ -685,7 +689,6 @@ describe("control protocol", () => {
       result: {
         agent: {
           currentActivity: {
-            state: "working",
             summary: "Reviewing the work",
             cwd: root,
             gitBranch: "feature/control",
@@ -718,7 +721,6 @@ describe("control protocol", () => {
           {
             slug: "backend",
             currentActivity: {
-              state: "working",
               summary: "Implementing the work",
               updatedAt: expect.any(String),
               expiresAt: expect.any(String),
@@ -994,7 +996,7 @@ describe("control protocol", () => {
         await (
           await call("runtimes.sessions.list", {
             installationId: installation.id,
-            availability: ["idle"],
+            runtimeState: ["idle"],
             text: "worker",
             limit: 7,
           })
@@ -1005,7 +1007,7 @@ describe("control protocol", () => {
       result: { sessions: [], nextCursor: expect.any(String) },
     });
     expect(sessionQuery).toEqual({
-      availability: ["idle"],
+      runtimeState: ["idle"],
       cursor: undefined,
       limit: 7,
       text: "worker",
@@ -1103,6 +1105,8 @@ describe("control protocol", () => {
         "expired-thread",
         "invalid-thread",
         "new-claimed-thread",
+        "self-service-thread",
+        "name-collision-thread",
       ]),
     );
     expect(inspected.length).toBeGreaterThan(1);
@@ -1179,13 +1183,15 @@ describe("control protocol", () => {
     let cwdHint: string | undefined = root;
     adapter.inspectSession = async (session) => ({
       session,
-      availability: "idle",
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
       observedAt: new Date().toISOString(),
       attributes: cwdHint === undefined ? {} : { cwdHint },
     });
     store.db
       .query(
-        "UPDATE runtime_bindings SET last_observed_availability='idle',last_observed_at_ms=? WHERE id=?",
+        "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present',last_observed_at_ms=? WHERE id=?",
       )
       .run(Date.now(), binding.id);
     expect(
@@ -1294,7 +1300,9 @@ describe("control protocol", () => {
       revokeExisting: true,
     });
     store.db
-      .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+      .query(
+        "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+      )
       .run(replacement.id);
     expect(
       await (
@@ -1322,7 +1330,9 @@ describe("control protocol", () => {
       adapter = new FakeRuntimeAdapter();
     adapter.inspectSession = async (session) => ({
       session,
-      availability: "idle",
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
       observedAt: new Date().toISOString(),
       attributes: {},
     });

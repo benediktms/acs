@@ -47,18 +47,22 @@ export interface RuntimeSessionRef {
   readonly opaqueId: string;
 }
 
-export type RuntimeAvailability =
+export type RuntimeState =
   | "unknown"
   | "offline"
-  | "dormant"
+  | "not-loaded"
   | "idle"
-  | "busy"
-  | "awaiting-local-input"
-  | "degraded";
+  | "active"
+  | "system-error";
+
+export type RuntimeBlockingReason = "none" | "user-input" | "approval" | "unknown";
+export type InteractivePresence = "present" | "absent" | "unknown";
 
 export interface RuntimeSessionSnapshot {
   readonly session: RuntimeSessionRef;
-  readonly availability: RuntimeAvailability;
+  readonly runtimeState: RuntimeState;
+  readonly blockingReason: RuntimeBlockingReason;
+  readonly interactivePresence: InteractivePresence;
   readonly observedAt: string;
   readonly revision?: string;
   readonly attributes: {
@@ -72,7 +76,7 @@ export interface RuntimeSessionSnapshot {
 export interface RuntimeSessionQuery {
   readonly cursor?: string;
   readonly limit?: number;
-  readonly availability?: readonly RuntimeAvailability[];
+  readonly runtimeState?: readonly RuntimeState[];
   readonly text?: string;
 }
 

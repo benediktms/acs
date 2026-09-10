@@ -84,14 +84,14 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       observed = (async () => {
         for await (const event of adapter.observe(abort.signal)) events.push(event);
       })();
-      expect((await adapter.inspectSession(first.target.session)).availability).toBe("idle");
+      expect((await adapter.inspectSession(first.target.session)).runtimeState).toBe("idle");
       const accepted = await adapter.deliver(first);
       if (accepted.outcome !== "accepted")
         throw new Error(`idle submission: ${JSON.stringify(accepted)}`);
       // A fresh thread has no rollout yet. Direct submission must not require
       // thread/resume, which fails for such threads on the pinned runtime.
       await bounded(firstRequest.promise, "first model request");
-      expect((await adapter.inspectSession(first.target.session)).availability).toBe("busy");
+      expect((await adapter.inspectSession(first.target.session)).runtimeState).toBe("active");
       const next = await adapter.deliver(second),
         last = await adapter.deliver(third);
       expect(next).toMatchObject({

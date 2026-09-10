@@ -53,7 +53,9 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
   async inspectSession(session: RuntimeSessionRef): Promise<RuntimeSessionSnapshot> {
     return {
       session,
-      availability: "offline",
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
       observedAt: new Date().toISOString(),
       attributes: {},
     };

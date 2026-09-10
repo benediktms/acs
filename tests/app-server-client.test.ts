@@ -26,6 +26,7 @@ describe("Codex app-server transport", () => {
     const root = mkdtempSync(join(tmpdir(), "acs-codex-"));
     roots.push(root);
     const path = join(root, "app.sock");
+    const requests: unknown[] = [];
     let received = "",
       respond = true,
       batchTurn = false,
@@ -60,6 +61,7 @@ describe("Codex app-server transport", () => {
           ).toString();
           if (!respond) return;
           const request = JSON.parse(received);
+          requests.push(request);
           if (typeof request.id !== "number") return;
           if (batchTurn && request.method === "turn/start") {
             socket.write(
@@ -103,6 +105,16 @@ describe("Codex app-server transport", () => {
     expect(received).not.toContain("jsonrpc");
     expect(initialized.userAgent).toBe("fake");
     expect(initialized.codexHome).toBe("/tmp/codex");
+    expect(requests).toContainEqual(
+      expect.objectContaining({
+        method: "initialize",
+        params: expect.objectContaining({
+          capabilities: expect.objectContaining({
+            extensions: { "openai/thread-subscription": { role: "observer" } },
+          }),
+        }),
+      }),
+    );
     await Bun.sleep(10);
     batchTurn = true;
     const order: string[] = [];

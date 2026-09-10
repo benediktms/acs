@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -286,7 +286,9 @@ describe("delivery scheduler", () => {
       inspected.push(session.opaqueId);
       return {
         session,
-        availability: "idle",
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "present",
         observedAt: new Date().toISOString(),
         attributes: {},
       };
@@ -307,10 +309,10 @@ describe("delivery scheduler", () => {
     expect(inspected).toEqual(["reconnected-thread"]);
     expect(
       store.db
-        .query<{ availability: string | null }, []>(
-          "SELECT last_observed_availability availability FROM runtime_bindings WHERE status='active'",
+        .query<{ runtimeState: string | null }, []>(
+          "SELECT last_observed_runtime_state runtimeState FROM runtime_bindings WHERE status='active'",
         )
-        .get()?.availability,
+        .get()?.runtimeState,
     ).toBe("idle");
     await scheduler.stop();
     store.close();
@@ -953,7 +955,9 @@ describe("delivery scheduler", () => {
       adapter = new FakeRuntimeAdapter();
     adapter.inspectSession = async (session) => ({
       session,
-      availability: "idle",
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
       observedAt: new Date().toISOString(),
       attributes: { canAcceptDirectInput: true },
     });
@@ -971,11 +975,19 @@ describe("delivery scheduler", () => {
     expect(stopped).toBe(true);
     expect(
       store.db
-        .query<{ runtime_state: string; availability: string; binding_status: string }, [string]>(
-          "SELECT i.state runtime_state,b.last_observed_availability availability,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
+        .query<
+          { runtime_state: string; runtimeState: string; presence: string; binding_status: string },
+          [string]
+        >(
+          "SELECT i.state runtime_state,b.last_observed_runtime_state runtimeState,b.last_observed_interactive_presence presence,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
         )
         .get(binding.id),
-    ).toEqual({ runtime_state: "offline", availability: "offline", binding_status: "active" });
+    ).toEqual({
+      runtime_state: "offline",
+      runtimeState: "offline",
+      presence: "unknown",
+      binding_status: "active",
+    });
     expect(store.agent(agent.id)?.id).toBe(agent.id);
     store.close();
   });
@@ -1391,7 +1403,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1436,18 +1450,18 @@ describe("delivery scheduler", () => {
       store.db
         .query<
           {
-            availability: string;
+            runtimeState: string;
             execution_id_matches: number;
             execution_state: string;
             task_state: string;
           },
           [string]
         >(
-          "SELECT b.last_observed_availability availability,i.runtime_execution_id=e.id execution_id_matches,e.state execution_state,t.state task_state FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN a2a_tasks t ON t.id=i.task_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.id=?",
+          "SELECT b.last_observed_runtime_state runtimeState,i.runtime_execution_id=e.id execution_id_matches,e.state execution_state,t.state task_state FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN a2a_tasks t ON t.id=i.task_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.id=?",
         )
         .get(accepted.deliveryId),
     ).toEqual({
-      availability: "idle",
+      runtimeState: "idle",
       execution_id_matches: 1,
       execution_state: "awaiting-local-input",
       task_state: "submitted",
@@ -1855,7 +1869,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1873,7 +1889,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "awaiting-local-input",
+          runtimeState: "active",
+          blockingReason: "user-input",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1891,7 +1909,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1905,6 +1925,208 @@ describe("delivery scheduler", () => {
     await Bun.sleep(950);
     expect(deliveries).toBe(3);
     expect(deliveryState(store, accepted.deliveryId)?.state).toBe("accepted");
+    await scheduler.stop();
+    store.close();
+  });
+  test("delivers only ready and working observed targets", async () => {
+    for (const [runtimeState, blockingReason, interactivePresence, expected, reason] of [
+      ["idle", "none", "present", "accepted", null],
+      ["active", "none", "present", "accepted", null],
+      ["active", "user-input", "present", "deferred", "local-input"],
+      ["active", "approval", "present", "deferred", "local-input"],
+      ["idle", "none", "absent", "deferred", "offline"],
+      ["idle", "none", "unknown", "deferred", "unsupported-active-state"],
+      ["system-error", "none", "present", "deferred", "unsupported-active-state"],
+    ] as const) {
+      const store = fixture(),
+        agent = store.createAgent(`state-${runtimeState}-${blockingReason}-${interactivePresence}`),
+        binding = store.bind(
+          agent.id,
+          `state-${runtimeState}-${blockingReason}-${interactivePresence}`,
+        ),
+        accepted = store.accept(
+          agent.id,
+          authenticated(store).id,
+          Message.fromJSON({ messageId: agent.slug, role: "ROLE_USER", parts: [{ text: "work" }] }),
+          {},
+        ),
+        adapter = new FakeRuntimeAdapter();
+      const row = store.binding(binding.id);
+      if (!row) throw new Error("missing binding");
+      adapter.inspectSession = async (session) => ({
+        session,
+        runtimeState,
+        blockingReason,
+        interactivePresence,
+        observedAt: new Date().toISOString(),
+        attributes: {},
+      });
+      adapter.deliver = async () => ({
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "state", relationship: "unknown" },
+        evidence: { scheme: "fake", value: "state" },
+      });
+      const scheduler = new DeliveryScheduler(store, adapter, `state-${agent.slug}`);
+      await scheduler.start();
+      await Bun.sleep(300);
+      expect(deliveryState(store, accepted.deliveryId)).toMatchObject({
+        state: expected,
+        state_reason: reason,
+      });
+      await scheduler.stop();
+      store.close();
+    }
+  });
+  test("reaps overdue offline agents at startup and allows disabled retention", async () => {
+    const setup = (slug: string) => {
+      const store = fixture(),
+        agent = store.createAgent(slug),
+        binding = store.bind(agent.id, slug);
+      const row = store.binding(binding.id);
+      if (!row) throw new Error("missing binding");
+      store.observeSession({
+        session: { installationId: row.installation_id, opaqueId: slug },
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "absent",
+        observedAt: new Date(Date.now() - 2_000).toISOString(),
+        attributes: {},
+      });
+      return { store, agent };
+    };
+    const overdue = setup("startup-reap");
+    const offlineAdapter = new FakeRuntimeAdapter();
+    offlineAdapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    const reaper = new DeliveryScheduler(overdue.store, offlineAdapter, "startup-reap", {
+      offlineRetentionMs: 1,
+    });
+    await reaper.start();
+    expect(overdue.store.agent(overdue.agent.id)).toBeNull();
+    await reaper.stop();
+    overdue.store.close();
+    const live = setup("startup-live");
+    const safeReaper = new DeliveryScheduler(live.store, new FakeRuntimeAdapter(), "startup-live", {
+      offlineRetentionMs: 1,
+    });
+    await safeReaper.start();
+    expect(live.store.agent(live.agent.id)?.id).toBe(live.agent.id);
+    await safeReaper.stop();
+    live.store.close();
+    const unreadable = setup("startup-unreadable");
+    const unreadableAdapter = new FakeRuntimeAdapter();
+    unreadableAdapter.inspectSession = async () => {
+      throw new Error("transient read failure");
+    };
+    const guardedReaper = new DeliveryScheduler(
+      unreadable.store,
+      unreadableAdapter,
+      "startup-unreadable",
+      { offlineRetentionMs: 1 },
+    );
+    await guardedReaper.start();
+    expect(unreadable.store.agent(unreadable.agent.id)?.id).toBe(unreadable.agent.id);
+    await guardedReaper.stop();
+    unreadable.store.close();
+    const disabled = setup("disabled-reap"),
+      disabledAdapter = new FakeRuntimeAdapter();
+    let disabledNow = Date.now(),
+      disabledPresence: "present" | "absent" = "present";
+    const clock = spyOn(Date, "now").mockImplementation(() => disabledNow);
+    disabledAdapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: disabledPresence,
+      observedAt: new Date(disabledNow).toISOString(),
+      attributes: {},
+    });
+    const noReaper = new DeliveryScheduler(disabled.store, disabledAdapter, "disabled-reap", {
+      offlineRetentionMs: undefined,
+    });
+    await noReaper.start();
+    expect(disabled.store.agent(disabled.agent.id)?.id).toBe(disabled.agent.id);
+    disabledPresence = "absent";
+    disabledNow += 60_001;
+    noReaper.signal();
+    await until(
+      () =>
+        disabled.store.db
+          .query<{ offline_since_ms: number | null }, [string]>(
+            "SELECT offline_since_ms FROM agents WHERE id=?",
+          )
+          .get(disabled.agent.id)?.offline_since_ms === disabledNow,
+    );
+    expect(disabled.store.agent(disabled.agent.id)?.id).toBe(disabled.agent.id);
+    await noReaper.stop();
+    clock.mockRestore();
+    disabled.store.close();
+  });
+
+  test("does not accept a late runtime result after its target is reaped", async () => {
+    const store = fixture(),
+      agent = store.createAgent("reaped-in-flight"),
+      binding = store.bind(agent.id, "reaped-in-flight-session"),
+      requester = authenticated(store),
+      accepted = store.accept(
+        agent.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "reaped-in-flight",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        {},
+      ),
+      started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      adapter = new FakeRuntimeAdapter();
+    adapter.deliver = async () => {
+      started.resolve();
+      await release.promise;
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "late-execution", relationship: "started" },
+        evidence: { scheme: "fake", value: "late-execution" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "reaped-in-flight");
+    await scheduler.start();
+    await started.promise;
+    const stored = store.binding(binding.id);
+    if (!stored) throw new Error("missing binding");
+    store.observeSession({
+      session: {
+        installationId: stored.installation_id,
+        opaqueId: stored.session_opaque_id,
+      },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    expect(store.reapOfflineAgents(0)).toEqual([agent.id]);
+    release.resolve();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+    expect(
+      store.db.query<{ count: number }, []>("SELECT count(*) count FROM runtime_executions").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      store.db
+        .query<{ outcome: string }, [string]>(
+          "SELECT outcome FROM delivery_attempts WHERE intent_id=?",
+        )
+        .get(accepted.deliveryId),
+    ).toEqual({ outcome: "rejected" });
     await scheduler.stop();
     store.close();
   });

@@ -52,6 +52,7 @@ type Fixture = {
   setHistoryDelivery(deliveryId: string): void;
   setLoadedOnly(): void;
   setSessionPages(): void;
+  setPresence(presence: "present" | "absent" | "unknown"): void;
   setSource(source: unknown): void;
   setStatus(status: string): void;
   notify(method: string, params: unknown): void;
@@ -202,11 +203,11 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       fixture.close();
     });
 
-    test("defers dormant, blocked, unknown, and foreign-route sessions without fallback", async () => {
+    test("defers offline, blocked, unknown, and foreign-route sessions without fallback", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
       for (const [status, reason] of [
-        ["notLoaded", "dormant"],
+        ["notLoaded", "offline"],
         ["waitingOnApproval", "local-input"],
         ["waitingOnUserInput", "local-input"],
         ["future-status", "unsupported-active-state"],
@@ -218,6 +219,16 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         });
       }
       fixture.setStatus("idle");
+      fixture.setPresence("absent");
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({
+        outcome: "deferred",
+        reason: "offline",
+      });
+      fixture.setPresence("unknown");
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      fixture.methods.length = 0;
+      fixture.setPresence("present");
       fixture.setDirectInput(false);
       expect(await fixture.adapter.deliver(delivery())).toMatchObject({
         outcome: "deferred",
@@ -236,6 +247,33 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       ).toMatchObject({ outcome: "deferred", reason: "route-unavailable" });
       expect(fixture.methods).not.toContain("thread/resume");
       expect(mutations(fixture.methods)).toEqual([]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
+    test("projects interactive subscriber presence changes", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      const abort = new AbortController(),
+        iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+      await iterator.next();
+      await fixture.adapter.inspectSession(delivery().target.session);
+
+      const observed = iterator.next();
+      fixture.notify("thread/presence/changed", {
+        threadId: "thread-1",
+        interactiveSubscriberPresence: "absent",
+      });
+      expect((await observed).value).toMatchObject({
+        type: "session.observed",
+        snapshot: {
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "absent",
+        },
+      });
+
+      abort.abort();
       await fixture.adapter.stop({ reason: "shutdown" });
       fixture.close();
     });
@@ -482,6 +520,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">();
   let fence = true,
     canAcceptDirectInput = true,
+    presence: "present" | "absent" | "unknown" = "present",
     historyDelivery: string | undefined,
     loadedOnly = false,
     sessionPages = false,
@@ -566,6 +605,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
                           sessionPages,
                           loadedOnly,
                           canAcceptDirectInput,
+                          presence,
                         ),
                 }),
               ),
@@ -613,6 +653,9 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     },
     setSessionPages() {
       sessionPages = true;
+    },
+    setPresence(value) {
+      presence = value;
     },
     setSource(value) {
       source = value;
@@ -666,6 +709,7 @@ function response(
   sessionPages = false,
   loadedOnly = false,
   canAcceptDirectInput = true,
+  presence: "present" | "absent" | "unknown" = "present",
 ) {
   if (method === "initialize") return { userAgent, codexHome: "/tmp/codex" };
   if (method === "thread/loaded/list")
@@ -674,11 +718,13 @@ function response(
     if (!sessionPages) return { data: [], nextCursor: null };
     return record(params).cursor === "page-2"
       ? {
-          data: [thread("thread-1", status, source, historyDelivery, canAcceptDirectInput)],
+          data: [
+            thread("thread-1", status, source, historyDelivery, canAcceptDirectInput, presence),
+          ],
           nextCursor: null,
         }
       : {
-          data: [thread("thread-2", status, source, undefined, canAcceptDirectInput)],
+          data: [thread("thread-2", status, source, undefined, canAcceptDirectInput, presence)],
           nextCursor: "page-2",
         };
   }
@@ -691,6 +737,7 @@ function response(
         source,
         historyDelivery,
         canAcceptDirectInput,
+        presence,
       ),
     };
   }
@@ -704,6 +751,7 @@ function thread(
   source: unknown,
   historyDelivery?: string,
   canAcceptDirectInput = true,
+  interactiveSubscriberPresence: "present" | "absent" | "unknown" = "present",
 ) {
   return {
     id,
@@ -714,6 +762,7 @@ function thread(
     cliVersion: "test",
     source,
     canAcceptDirectInput,
+    interactiveSubscriberPresence,
     status: status.startsWith("waitingOn")
       ? { type: "active", activeFlags: [status] }
       : { type: status },

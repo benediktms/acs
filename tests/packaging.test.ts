@@ -944,6 +944,7 @@ function codexThread(id: string) {
     source: "test",
     canAcceptDirectInput: true,
     status: { type: "idle" },
+    interactiveSubscriberPresence: "present",
     turns: [],
   };
 }

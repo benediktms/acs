@@ -57,7 +57,10 @@ export class CodexAppServerClient {
           title: "Agent Communications Service",
           version: "0.1.0",
         },
-        capabilities: { experimentalApi: true },
+        capabilities: {
+          experimentalApi: true,
+          extensions: { "openai/thread-subscription": { role: "observer" } },
+        },
       }),
     );
     await this.notify("initialized", {});
@@ -412,11 +415,19 @@ function decodeThread(value: unknown): CodexThreadDto {
     name = thread.name,
     canAcceptDirectInput = thread.canAcceptDirectInput,
     updatedAt = thread.updatedAt,
-    status = record(thread.status);
+    status = record(thread.status),
+    interactiveSubscriberPresence = thread.interactiveSubscriberPresence;
   if (name !== null && typeof name !== "string") throw new Error("invalid app-server thread name");
   if (canAcceptDirectInput !== null && typeof canAcceptDirectInput !== "boolean")
     throw new Error("invalid app-server direct-input capability");
   if (typeof updatedAt !== "number") throw new Error("invalid app-server thread timestamp");
+  if (
+    interactiveSubscriberPresence !== undefined &&
+    interactiveSubscriberPresence !== "present" &&
+    interactiveSubscriberPresence !== "absent" &&
+    interactiveSubscriberPresence !== "unknown"
+  )
+    throw new Error("invalid app-server interactive subscriber presence");
   return {
     id: stringField(thread, "id"),
     preview: stringField(thread, "preview"),
@@ -430,6 +441,7 @@ function decodeThread(value: unknown): CodexThreadDto {
       type: stringField(status, "type"),
       activeFlags: status.activeFlags === undefined ? undefined : stringArray(status.activeFlags),
     },
+    interactiveSubscriberPresence: interactiveSubscriberPresence ?? "unknown",
   };
 }
 
