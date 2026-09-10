@@ -24,6 +24,7 @@ export interface AcsConfig {
     retryBaseMs: number;
     retryCapMs: number;
     maxQueuedDeliveryIntents: number;
+    offlineRetentionMs?: number;
   };
   codex: {
     enabled: boolean;
@@ -73,6 +74,7 @@ lease_seconds = 30
 retry_base_ms = 250
 retry_cap_ms = 30000
 max_queued_delivery_intents = 1000
+offline_retention_hours = 24
 
 [runtimes.codex]
 enabled = true
@@ -182,6 +184,7 @@ export function loadConfig(path = configPath()): AcsConfig {
       "retry_base_ms",
       "retry_cap_ms",
       "max_queued_delivery_intents",
+      "offline_retention_hours",
     ]),
     runtimes = section(root, "runtimes", ["codex"]),
     codex = section(runtimes, "codex", [
@@ -259,6 +262,7 @@ export function loadConfig(path = configPath()): AcsConfig {
         number(delivery.max_queued_delivery_intents, 1000),
         "delivery.max_queued_delivery_intents",
       ),
+      offlineRetentionMs: retentionMs(delivery.offline_retention_hours),
     },
     codex: {
       enabled: boolean(codex.enabled, true),
@@ -275,6 +279,16 @@ export function loadConfig(path = configPath()): AcsConfig {
       accounts,
     },
   };
+}
+
+function retentionMs(value: unknown) {
+  if (value === "disabled") return undefined;
+  if (value !== undefined && typeof value !== "number")
+    throw new Error("VALIDATION_FAILED: delivery.offline_retention_hours");
+  const hours = value ?? 24;
+  if (!Number.isFinite(hours)) return undefined;
+  if (hours < 0) throw new Error("VALIDATION_FAILED: delivery.offline_retention_hours");
+  return hours * 60 * 60 * 1000;
 }
 
 export function codexSocket(

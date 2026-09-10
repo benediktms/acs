@@ -12,7 +12,8 @@ import type {
   RuntimeAdapterContext,
   RuntimeAdapterDescriptor,
   RuntimeAdapterStopContext,
-  RuntimeAvailability,
+  InteractivePresence,
+  RuntimeBlockingReason,
   RuntimeCapabilities,
   RuntimeCancelRequest,
   RuntimeCancelResult,
@@ -31,10 +32,12 @@ import type {
   RuntimeSessionQuery,
   RuntimeSessionRef,
   RuntimeSessionSnapshot,
+  RuntimeState,
 } from "../../../contracts/runtime-adapter";
 import { CodexAppServerClient } from "./app-server-client";
 import { telemetry } from "../../observability/src/index";
 import { CODEX_PROTOCOL_FINGERPRINT, supportsCodexVersion } from "./protocol-codec";
+import { deriveAgentState } from "../../domain/src/index";
 
 export { SUPPORTED_CODEX_VERSIONS, TESTED_CODEX_VERSION } from "./protocol-codec";
 
@@ -83,14 +86,13 @@ const disabledCapabilities = (): RuntimeCapabilities => ({
   cancelOwnedExecution: false,
   reconcileDelivery: false,
 });
-const availabilityStates: RuntimeAvailability[] = [
+const runtimeStates: RuntimeState[] = [
   "unknown",
   "offline",
-  "dormant",
+  "not-loaded",
   "idle",
-  "busy",
-  "awaiting-local-input",
-  "degraded",
+  "active",
+  "system-error",
 ];
 type SessionCursor = {
   phase: "stored" | "loaded";
@@ -120,6 +122,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
   private completedExecutions = new Set<string>();
+  private observations = new Map<
+    string,
+    Pick<RuntimeSessionSnapshot, "runtimeState" | "blockingReason" | "interactivePresence">
+  >();
 
   constructor(
     readonly socketPath: string,
@@ -145,6 +151,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (this.client !== client) return;
       this.client = undefined;
       this.runtimeVersion = undefined;
+      this.observations.clear();
       if (!this.stopped) this.emit({ type: "adapter.connection", state: "offline" });
     };
     try {
@@ -164,6 +171,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.client?.close();
     this.client = undefined;
     this.runtimeVersion = undefined;
+    this.observations.clear();
     this.wake();
   }
   async probe(signal?: AbortSignal): Promise<RuntimeProbeResult> {
@@ -273,10 +281,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           })
         : undefined;
     }
-    for (const state of availabilityStates)
+    for (const state of runtimeStates)
       telemetry.gauge(
         "acs_runtime_sessions_by_state",
-        sessions.filter((session) => session.availability === state).length,
+        sessions.filter((session) => session.runtimeState === state).length,
         { state },
       );
     return { sessions, nextCursor };
@@ -316,7 +324,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         if (sessionUnavailable(appServerFailure(error).kind))
           return {
             session,
-            availability: "offline",
+            runtimeState: "offline",
+            blockingReason: "unknown",
+            interactivePresence: "unknown",
             observedAt: new Date().toISOString(),
             attributes: {},
           };
@@ -362,11 +372,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!supportsCodexVersion(this.runtimeVersion))
       return { outcome: "rejected", reason: "runtime-protocol-error", retryable: false };
     const snapshot = await this.inspectSession(request.target.session, signal);
-    if (snapshot.availability === "offline") return { outcome: "deferred", reason: "offline" };
-    if (snapshot.availability === "dormant") return { outcome: "deferred", reason: "dormant" };
-    if (snapshot.availability === "awaiting-local-input")
+    const agentState = deriveAgentState(snapshot);
+    if (agentState === "offline") return { outcome: "deferred", reason: "offline" };
+    if (agentState === "input-required" || agentState === "auth-required")
       return { outcome: "deferred", reason: "local-input" };
-    if (snapshot.availability === "degraded" || snapshot.availability === "unknown")
+    if (agentState === "error" || agentState === "unknown")
       return { outcome: "deferred", reason: "unsupported-active-state" };
     if (snapshot.attributes.canAcceptDirectInput !== true)
       return { outcome: "deferred", reason: "unsupported-active-state" };
@@ -546,9 +556,14 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return execution;
   }
   private snapshot(thread: CodexThreadDto): RuntimeSessionSnapshot {
+    const observation = {
+      ...statusObservation(thread.status),
+      interactivePresence: interactivePresence(thread.interactiveSubscriberPresence),
+    };
+    this.observations.set(thread.id, observation);
     return {
       session: { installationId: this.requireContext().installationId, opaqueId: thread.id },
-      availability: status(thread),
+      ...observation,
       observedAt: new Date().toISOString(),
       revision: String(thread.updatedAt),
       attributes: {
@@ -592,15 +607,42 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         installationId: this.requireContext().installationId,
         opaqueId: params.threadId,
       };
+      const observation = {
+        ...statusObservation(params.status),
+        interactivePresence:
+          this.observations.get(params.threadId)?.interactivePresence ?? "unknown",
+      };
+      this.observations.set(params.threadId, observation);
       this.emit({
         type: "session.observed",
         session,
         snapshot: {
           session,
-          availability: statusType(params.status),
+          ...observation,
           observedAt: new Date().toISOString(),
           attributes: {},
         },
+      });
+    }
+    if (method === "thread/presence/changed" && isThreadPresenceChanged(params)) {
+      const session = {
+          installationId: this.requireContext().installationId,
+          opaqueId: params.threadId,
+        },
+        previous = this.observations.get(params.threadId),
+        observation = {
+          runtimeState: previous?.runtimeState ?? "unknown",
+          blockingReason: previous?.blockingReason ?? "unknown",
+          interactivePresence: interactivePresence(params.interactiveSubscriberPresence),
+        } satisfies Pick<
+          RuntimeSessionSnapshot,
+          "runtimeState" | "blockingReason" | "interactivePresence"
+        >;
+      this.observations.set(params.threadId, observation);
+      this.emit({
+        type: "session.observed",
+        session,
+        snapshot: { session, ...observation, observedAt: new Date().toISOString(), attributes: {} },
       });
     }
     if (method === "turn/started" && isTurnStarted(params)) {
@@ -687,7 +729,7 @@ function filterSessions(sessions: RuntimeSessionSnapshot[], query: RuntimeSessio
   const search = query.text?.toLocaleLowerCase();
   return sessions.filter(
     (session) =>
-      (!query.availability?.length || query.availability.includes(session.availability)) &&
+      (!query.runtimeState?.length || query.runtimeState.includes(session.runtimeState)) &&
       (!search ||
         [
           session.session.opaqueId,
@@ -842,28 +884,44 @@ function isThreadStatusChanged(
   );
 }
 
-function status(thread: CodexThreadDto): RuntimeAvailability {
-  return statusType(thread.status);
+function isThreadPresenceChanged(value: unknown): value is {
+  threadId: string;
+  interactiveSubscriberPresence: string;
+} {
+  return (
+    isRecord(value) &&
+    typeof value.threadId === "string" &&
+    typeof value.interactiveSubscriberPresence === "string"
+  );
 }
-function statusType(value: { type: string; activeFlags?: readonly string[] }): RuntimeAvailability {
+
+function statusObservation(value: { type: string; activeFlags?: readonly string[] }): {
+  runtimeState: RuntimeState;
+  blockingReason: RuntimeBlockingReason;
+} {
   switch (value.type) {
     case "idle":
-      return "idle";
+      return { runtimeState: "idle", blockingReason: "none" };
     case "active":
-      if (
-        value.activeFlags?.some(
-          (flag) => flag === "waitingOnApproval" || flag === "waitingOnUserInput",
-        )
-      )
-        return "awaiting-local-input";
-      return value.activeFlags?.length ? "degraded" : "busy";
+      if (value.activeFlags?.includes("waitingOnApproval"))
+        return { runtimeState: "active", blockingReason: "approval" };
+      if (value.activeFlags?.includes("waitingOnUserInput"))
+        return { runtimeState: "active", blockingReason: "user-input" };
+      return {
+        runtimeState: "active",
+        blockingReason: value.activeFlags?.length ? "unknown" : "none",
+      };
     case "notLoaded":
-      return "dormant";
+      return { runtimeState: "not-loaded", blockingReason: "none" };
     case "systemError":
-      return "degraded";
+      return { runtimeState: "system-error", blockingReason: "none" };
     default:
-      return "unknown";
+      return { runtimeState: "unknown", blockingReason: "unknown" };
   }
+}
+
+function interactivePresence(value: string): InteractivePresence {
+  return value === "present" || value === "absent" ? value : "unknown";
 }
 
 function executionKey(threadId: string, turnId: string) {

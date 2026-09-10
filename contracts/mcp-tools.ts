@@ -102,28 +102,29 @@ export interface AcsMcpToolMap {
 
   acs_agents_list: {
     readonly input: {
-      readonly status?: "any" | "available" | "unavailable";
       readonly skill?: string;
       readonly limit?: number;
       readonly cursor?: string;
     };
     readonly output: McpToolResult<{
       readonly agents: readonly {
-        readonly id: string;
         readonly slug: string;
-        readonly displayName: string;
         readonly description: string;
-        readonly availability:
+        readonly state:
           | "unknown"
           | "offline"
-          | "dormant"
-          | "idle"
-          | "busy"
-          | "awaiting-local-input"
-          | "degraded";
-        readonly skills: readonly string[];
+          | "ready"
+          | "working"
+          | "input-required"
+          | "auth-required"
+          | "error";
+        readonly skills: readonly {
+          readonly id: string;
+          readonly name: string;
+          readonly description?: string;
+          readonly tags: readonly string[];
+        }[];
         readonly currentActivity?: {
-          readonly state: "working" | "input-required" | "auth-required";
           readonly summary?: string;
           readonly cwd?: string;
           readonly gitBranch?: string;
@@ -138,14 +139,23 @@ export interface AcsMcpToolMap {
   acs_agent_get: {
     readonly input: { readonly agent: string };
     readonly output: McpToolResult<{
-      readonly id: string;
       readonly slug: string;
-      readonly displayName: string;
       readonly description: string;
-      readonly availability: string;
-      readonly skills: readonly string[];
+      readonly state:
+        | "unknown"
+        | "offline"
+        | "ready"
+        | "working"
+        | "input-required"
+        | "auth-required"
+        | "error";
+      readonly skills: readonly {
+        readonly id: string;
+        readonly name: string;
+        readonly description?: string;
+        readonly tags: readonly string[];
+      }[];
       readonly currentActivity?: {
-        readonly state: "working" | "input-required" | "auth-required";
         readonly summary?: string;
         readonly cwd?: string;
         readonly gitBranch?: string;

@@ -46,6 +46,7 @@ describe("configuration", () => {
     const config = loadConfig(path);
     expect(config.delivery.workerConcurrency).toBe(4);
     expect(config.delivery.maxQueuedDeliveryIntents).toBe(12);
+    expect(config.delivery.offlineRetentionMs).toBe(24 * 60 * 60 * 1000);
     expect(config.security.maxParts).toBe(8);
     expect(config.security.maxTextPartBytes).toBe(1024);
     expect(config.codex.maxInFlightRequests).toBe(64);
@@ -69,6 +70,8 @@ describe("configuration", () => {
     expect(() => loadConfig(path)).toThrow("invalid daemon.log_level");
     writeFileSync(path, '[daemon]\nlog_format = "xml"\n');
     expect(() => loadConfig(path)).toThrow("invalid daemon.log_format");
+    writeFileSync(path, '[delivery]\noffline_retention_hours = "disabled"\n');
+    expect(loadConfig(path).delivery.offlineRetentionMs).toBeUndefined();
   });
   test("loads distinct explicit Codex accounts with stable sockets", () => {
     const root = mkdtempSync(join(tmpdir(), "acs-config-"));

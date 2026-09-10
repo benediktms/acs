@@ -36,7 +36,7 @@ The alternative was to persist only the derived state. That is smaller initially
 
 ### Require explicit Codex connection roles and thread presence
 
-Extend the Codex app-server protocol so initialized connections declare `interactive`, `observer`, or `unspecified`, and thread snapshots/notifications report whether at least one interactive subscriber is attached. ACS initializes its managed connection as `observer`. The Codex adapter translates thread status and interactive presence into the neutral observation; application code never imports the generated types.
+Extend the Codex app-server protocol so initialized connections declare `interactive`, `observer`, or `unspecified` through the existing `capabilities.extensions` map under `openai/thread-subscription`, and thread snapshots/notifications report whether at least one interactive subscriber is attached. ACS initializes its managed connection as `observer`. The Codex adapter translates thread status and interactive presence into the neutral observation; application code never imports the generated types.
 
 An app-server without this capability reports presence as `unknown`. There is no compatibility heuristic because ACS itself can keep a thread loaded and would produce the same false-ready state this change is intended to remove.
 

@@ -286,7 +286,9 @@ describe("delivery scheduler", () => {
       inspected.push(session.opaqueId);
       return {
         session,
-        availability: "idle",
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "present",
         observedAt: new Date().toISOString(),
         attributes: {},
       };
@@ -307,10 +309,10 @@ describe("delivery scheduler", () => {
     expect(inspected).toEqual(["reconnected-thread"]);
     expect(
       store.db
-        .query<{ availability: string | null }, []>(
-          "SELECT last_observed_availability availability FROM runtime_bindings WHERE status='active'",
+        .query<{ runtimeState: string | null }, []>(
+          "SELECT last_observed_runtime_state runtimeState FROM runtime_bindings WHERE status='active'",
         )
-        .get()?.availability,
+        .get()?.runtimeState,
     ).toBe("idle");
     await scheduler.stop();
     store.close();
@@ -953,7 +955,9 @@ describe("delivery scheduler", () => {
       adapter = new FakeRuntimeAdapter();
     adapter.inspectSession = async (session) => ({
       session,
-      availability: "idle",
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
       observedAt: new Date().toISOString(),
       attributes: { canAcceptDirectInput: true },
     });
@@ -971,11 +975,19 @@ describe("delivery scheduler", () => {
     expect(stopped).toBe(true);
     expect(
       store.db
-        .query<{ runtime_state: string; availability: string; binding_status: string }, [string]>(
-          "SELECT i.state runtime_state,b.last_observed_availability availability,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
+        .query<
+          { runtime_state: string; runtimeState: string; presence: string; binding_status: string },
+          [string]
+        >(
+          "SELECT i.state runtime_state,b.last_observed_runtime_state runtimeState,b.last_observed_interactive_presence presence,b.status binding_status FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id WHERE b.id=?",
         )
         .get(binding.id),
-    ).toEqual({ runtime_state: "offline", availability: "offline", binding_status: "active" });
+    ).toEqual({
+      runtime_state: "offline",
+      runtimeState: "offline",
+      presence: "unknown",
+      binding_status: "active",
+    });
     expect(store.agent(agent.id)?.id).toBe(agent.id);
     store.close();
   });
@@ -1391,7 +1403,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1436,18 +1450,18 @@ describe("delivery scheduler", () => {
       store.db
         .query<
           {
-            availability: string;
+            runtimeState: string;
             execution_id_matches: number;
             execution_state: string;
             task_state: string;
           },
           [string]
         >(
-          "SELECT b.last_observed_availability availability,i.runtime_execution_id=e.id execution_id_matches,e.state execution_state,t.state task_state FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN a2a_tasks t ON t.id=i.task_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.id=?",
+          "SELECT b.last_observed_runtime_state runtimeState,i.runtime_execution_id=e.id execution_id_matches,e.state execution_state,t.state task_state FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id JOIN a2a_tasks t ON t.id=i.task_id JOIN runtime_bindings b ON b.id=e.binding_id WHERE i.id=?",
         )
         .get(accepted.deliveryId),
     ).toEqual({
-      availability: "idle",
+      runtimeState: "idle",
       execution_id_matches: 1,
       execution_state: "awaiting-local-input",
       task_state: "submitted",
@@ -1855,7 +1869,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1873,7 +1889,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "awaiting-local-input",
+          runtimeState: "active",
+          blockingReason: "user-input",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1891,7 +1909,9 @@ describe("delivery scheduler", () => {
             installationId: bindingRow.installation_id,
             opaqueId: bindingRow.session_opaque_id,
           },
-          availability: "idle",
+          runtimeState: "idle",
+          blockingReason: "none",
+          interactivePresence: "present",
           observedAt: new Date().toISOString(),
           attributes: {},
         },
@@ -1907,6 +1927,92 @@ describe("delivery scheduler", () => {
     expect(deliveryState(store, accepted.deliveryId)?.state).toBe("accepted");
     await scheduler.stop();
     store.close();
+  });
+  test("delivers only ready and working observed targets", async () => {
+    for (const [runtimeState, blockingReason, interactivePresence, expected] of [
+      ["idle", "none", "present", "accepted"],
+      ["active", "none", "present", "accepted"],
+      ["active", "user-input", "present", "deferred"],
+      ["active", "approval", "present", "deferred"],
+      ["idle", "none", "absent", "deferred"],
+      ["idle", "none", "unknown", "deferred"],
+      ["system-error", "none", "present", "deferred"],
+    ] as const) {
+      const store = fixture(),
+        agent = store.createAgent(`state-${runtimeState}-${blockingReason}-${interactivePresence}`),
+        binding = store.bind(
+          agent.id,
+          `state-${runtimeState}-${blockingReason}-${interactivePresence}`,
+        ),
+        accepted = store.accept(
+          agent.id,
+          authenticated(store).id,
+          Message.fromJSON({ messageId: agent.slug, role: "ROLE_USER", parts: [{ text: "work" }] }),
+          {},
+        ),
+        adapter = new FakeRuntimeAdapter();
+      const row = store.binding(binding.id);
+      if (!row) throw new Error("missing binding");
+      adapter.inspectSession = async (session) => ({
+        session,
+        runtimeState,
+        blockingReason,
+        interactivePresence,
+        observedAt: new Date().toISOString(),
+        attributes: {},
+      });
+      adapter.deliver = async () => ({
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "state", relationship: "unknown" },
+        evidence: { scheme: "fake", value: "state" },
+      });
+      const scheduler = new DeliveryScheduler(store, adapter, `state-${agent.slug}`);
+      await scheduler.start();
+      await Bun.sleep(300);
+      expect(deliveryState(store, accepted.deliveryId)?.state).toBe(expected);
+      await scheduler.stop();
+      store.close();
+    }
+  });
+  test("reaps overdue offline agents at startup and allows disabled retention", async () => {
+    const setup = (slug: string) => {
+      const store = fixture(),
+        agent = store.createAgent(slug),
+        binding = store.bind(agent.id, slug);
+      const row = store.binding(binding.id);
+      if (!row) throw new Error("missing binding");
+      store.observeSession({
+        session: { installationId: row.installation_id, opaqueId: slug },
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "absent",
+        observedAt: new Date(Date.now() - 2_000).toISOString(),
+        attributes: {},
+      });
+      return { store, agent };
+    };
+    const overdue = setup("startup-reap");
+    const reaper = new DeliveryScheduler(overdue.store, new FakeRuntimeAdapter(), "startup-reap", {
+      offlineRetentionMs: 1,
+    });
+    await reaper.start();
+    expect(overdue.store.agent(overdue.agent.id)).toBeNull();
+    await reaper.stop();
+    overdue.store.close();
+    const disabled = setup("disabled-reap");
+    const noReaper = new DeliveryScheduler(
+      disabled.store,
+      new FakeRuntimeAdapter(),
+      "disabled-reap",
+      {
+        offlineRetentionMs: undefined,
+      },
+    );
+    await noReaper.start();
+    expect(disabled.store.agent(disabled.agent.id)?.id).toBe(disabled.agent.id);
+    await noReaper.stop();
+    disabled.store.close();
   });
 });
 

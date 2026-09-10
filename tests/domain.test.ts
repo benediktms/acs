@@ -3,6 +3,7 @@ import {
   agentSlug,
   BindingState,
   canonical,
+  deriveAgentState,
   DeliveryState,
   id,
   RuntimeExecutionState,
@@ -56,5 +57,91 @@ describe("domain", () => {
     expect(canonical({ b: 1, a: [2] })).toBe('{"a":[2],"b":1}');
     expect(canonical({ b: undefined, a: [undefined, 1] })).toBe('{"a":[null,1]}');
     expect(() => canonical(undefined)).toThrow("value is not JSON");
+  });
+  test("derives agent state with presence and blocking precedence", () => {
+    expect(
+      deriveAgentState({
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "absent",
+      }),
+    ).toBe("offline");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "approval",
+        interactivePresence: "present",
+      }),
+    ).toBe("auth-required");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "user-input",
+        interactivePresence: "present",
+      }),
+    ).toBe("input-required");
+    expect(
+      deriveAgentState({
+        runtimeState: "system-error",
+        blockingReason: "none",
+        interactivePresence: "present",
+      }),
+    ).toBe("error");
+    expect(
+      deriveAgentState({
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "unknown",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
+        runtimeState: "not-loaded",
+        blockingReason: "none",
+        interactivePresence: "present",
+      }),
+    ).toBe("offline");
+    expect(
+      deriveAgentState({
+        runtimeState: "offline",
+        blockingReason: "none",
+        interactivePresence: "unknown",
+      }),
+    ).toBe("offline");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "approval",
+        interactivePresence: "present",
+      }),
+    ).toBe("auth-required");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "user-input",
+        interactivePresence: "present",
+      }),
+    ).toBe("input-required");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "none",
+        interactivePresence: "present",
+      }),
+    ).toBe("working");
+    expect(
+      deriveAgentState({
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "present",
+      }),
+    ).toBe("ready");
+    expect(
+      deriveAgentState({
+        runtimeState: "offline",
+        blockingReason: "none",
+        interactivePresence: "present",
+      }),
+    ).toBe("offline");
   });
 });

@@ -1,6 +1,7 @@
 import {
   DeliveryAttemptOutcome,
   DeliveryState,
+  deriveAgentState,
   id,
   RuntimeExecutionState,
   TaskState,
@@ -24,9 +25,9 @@ import type {
   RuntimeDeliveryRequest,
   RuntimeEvent,
   RuntimeExecutionRef,
-  RuntimeAvailability,
   RuntimeInstallationId,
   RuntimeExecutionId,
+  RuntimeSessionSnapshot,
   NeutralPart,
   JsonObject,
   RuntimeTraceContext,
@@ -70,6 +71,14 @@ type ReconciliationRow = {
   session_opaque_id: string;
   reconciliation_token: string;
 };
+type SchedulerOptions = {
+  concurrency: number;
+  leaseMs: number;
+  retryBaseMs: number;
+  retryCapMs: number;
+  reconnectMs: number;
+  offlineRetentionMs?: number;
+};
 
 export class DeliveryConcurrency {
   private inFlight = 0;
@@ -96,23 +105,28 @@ export class DeliveryScheduler {
   private capabilities: RuntimeCapabilities;
   private nextConnectAt = 0;
   private reconnectAttempts = 0;
+  private nextReapAt = 0;
   private pendingExecutionEvents: RuntimeEvent[] = [];
   constructor(
     private store: DeliveryStoragePort,
     private adapter: RuntimeAdapter,
     private instanceId: string,
-    private options = {
+    options: Partial<SchedulerOptions> = {},
+    private installationId?: RuntimeInstallationId,
+    private sharedConcurrency?: DeliveryConcurrency,
+  ) {
+    this.options = {
       concurrency: 16,
       leaseMs: 30_000,
       retryBaseMs: 250,
       retryCapMs: 30_000,
       reconnectMs: 2000,
-    },
-    private installationId?: RuntimeInstallationId,
-    private sharedConcurrency?: DeliveryConcurrency,
-  ) {
+      offlineRetentionMs: 24 * 60 * 60 * 1000,
+      ...options,
+    };
     this.capabilities = adapter.descriptor.capabilities;
   }
+  private options: SchedulerOptions;
 
   async start() {
     const installation = this.installationId
@@ -140,6 +154,7 @@ export class DeliveryScheduler {
       },
     };
     this.recoverExpiredLeases();
+    this.reap();
     await this.connect();
     this.timer = setInterval(() => void this.tick(), 250);
   }
@@ -158,6 +173,7 @@ export class DeliveryScheduler {
     if (this.scheduling) return;
     this.scheduling = true;
     try {
+      this.reap();
       if (!this.connected) {
         if (Date.now() >= this.nextConnectAt) await this.connect();
         return;
@@ -312,7 +328,7 @@ export class DeliveryScheduler {
         installationId,
         opaqueId: row.session_opaque_id,
       });
-      this.observeSession(snapshot.session, snapshot.availability);
+      this.observeSession(snapshot);
     }
   }
   private scheduleReconnect() {
@@ -473,6 +489,13 @@ export class DeliveryScheduler {
             )
             .get(intent.target_agent_id);
     if (!binding) return this.defer(intent.id, "offline", 30_000);
+    const state = deriveAgentState({
+      runtimeState: runtimeState(binding.last_observed_runtime_state),
+      blockingReason: blockingReason(binding.last_observed_blocking_reason),
+      interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
+    });
+    if (!["ready", "working"].includes(state))
+      return this.defer(intent.id, state === "input-required" ? "local-input" : state, 30_000);
     const payload: DeliveryPayload = JSON.parse(intent.payload_json),
       isTaskEventNotification = intent.kind === "task-event-notification",
       parties = required(
@@ -928,7 +951,7 @@ export class DeliveryScheduler {
   }
   private project(event: RuntimeEvent) {
     if (event.type === "session.observed") {
-      this.observeSession(event.session, event.snapshot.availability);
+      this.observeSession(event.snapshot);
       return;
     }
     if (event.type === "execution.started") {
@@ -1063,18 +1086,22 @@ export class DeliveryScheduler {
           reference.session.opaqueId,
         );
   }
-  private observeSession(
-    session: { installationId: RuntimeInstallationId; opaqueId: string },
-    availability: RuntimeAvailability,
-  ) {
-    this.store.observeSession(session, availability);
-    if (availability !== "idle" && availability !== "busy") return;
+  private observeSession(snapshot: RuntimeSessionSnapshot) {
+    this.store.observeSession(snapshot);
+    if (!["ready", "working"].includes(deriveAgentState(snapshot))) return;
     const now = Date.now();
     this.store
       .query(
         "UPDATE delivery_intents SET not_before_ms=?,updated_at_ms=? WHERE state='deferred' AND (state_reason IN ('offline','dormant','local-input','unsupported-active-state','route-unavailable','policy')) AND target_agent_id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND session_opaque_id=? AND status='active')",
       )
-      .run(now, now, session.installationId, session.opaqueId);
+      .run(now, now, snapshot.session.installationId, snapshot.session.opaqueId);
+  }
+  private reap() {
+    if (this.options.offlineRetentionMs === undefined) return;
+    const now = Date.now();
+    if (now < this.nextReapAt) return;
+    this.nextReapAt = now + 60_000;
+    this.store.reapOfflineAgents(this.options.offlineRetentionMs, now);
   }
 }
 
@@ -1102,6 +1129,25 @@ function interruptOnCancel(json: string) {
     "interruptOnCancel" in value &&
     value.interruptOnCancel === true
   );
+}
+function runtimeState(value: string | null) {
+  if (
+    value === "offline" ||
+    value === "not-loaded" ||
+    value === "idle" ||
+    value === "active" ||
+    value === "system-error"
+  )
+    return value;
+  return "unknown";
+}
+function blockingReason(value: string | null) {
+  if (value === "none" || value === "user-input" || value === "approval") return value;
+  return "unknown";
+}
+function interactivePresence(value: string | null) {
+  if (value === "present" || value === "absent") return value;
+  return "unknown";
 }
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new Error(`missing ${name}`);

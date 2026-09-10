@@ -2,11 +2,11 @@ import type {
   BindingId,
   DeliveryId,
   JsonValue,
-  RuntimeAvailability,
   RuntimeExecutionId,
   RuntimeInstallationId,
   RuntimeProbeResult,
   RuntimeSessionRef,
+  RuntimeSessionSnapshot,
   RuntimeTraceContext,
 } from "../../../contracts/runtime-adapter";
 import type { BindingState, DeliveryState, TaskState } from "../../domain/src/index";
@@ -92,6 +92,9 @@ export interface BindingRow {
   activated_at_ms: number | null;
   revoked_at_ms: number | null;
   last_observed_availability: string | null;
+  last_observed_runtime_state: string | null;
+  last_observed_blocking_reason: string | null;
+  last_observed_interactive_presence: string | null;
   last_observed_at_ms: number | null;
 }
 
@@ -278,7 +281,8 @@ export interface ControlStoragePort extends SqlPort {
   claim(code: string, sessionId: string, options?: BindingOptions): ClaimBindingResult;
   binding(bindingId: string): BindingRow | null;
   revokeBinding(bindingId: string, reason?: string): BindingRow | null;
-  observeSession(session: RuntimeSessionRef, availability: RuntimeAvailability): void;
+  observeSession(snapshot: RuntimeSessionSnapshot): void;
+  reapOfflineAgents(retentionMs: number, now?: number): string[];
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult): void;
   attestSession(
     session: RuntimeSessionRef,
@@ -360,7 +364,8 @@ export interface DeliveryStoragePort extends SqlPort {
   agent(value: string): AgentRow | null;
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult): void;
   markRuntimeOffline(installationId: RuntimeInstallationId): void;
-  observeSession(session: RuntimeSessionRef, availability: RuntimeAvailability): void;
+  observeSession(snapshot: RuntimeSessionSnapshot): void;
+  reapOfflineAgents(retentionMs: number, now?: number): string[];
   setTaskState(
     taskId: string,
     principalId: string,

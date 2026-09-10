@@ -50,8 +50,15 @@ describe("Codex MCP bridge", () => {
       slug: "worker",
       displayName: "Worker",
       description: "",
-      availability: "idle",
-      skills: [{ id: "reports", name: "Reporting", tags: ["data", "reports"] }],
+      state: "ready",
+      skills: [
+        {
+          id: "reports",
+          name: "Reporting",
+          description: "Build reports",
+          tags: ["data", "reports"],
+        },
+      ],
       currentActivity: {
         state: "working",
         summary: "Review reports",
@@ -65,14 +72,18 @@ describe("Codex MCP bridge", () => {
       taskId: "tsk_secret",
     });
     expect(view).toEqual({
-      id: "agt_1",
       slug: "worker",
-      displayName: "Worker",
       description: "",
-      availability: "idle",
-      skills: ["reports", "Reporting", "data"],
+      state: "ready",
+      skills: [
+        {
+          id: "reports",
+          name: "Reporting",
+          description: "Build reports",
+          tags: ["data", "reports"],
+        },
+      ],
       currentActivity: {
-        state: "working",
         summary: "Review reports",
         cwd: "/Users/worker/reports",
         gitBranch: "feature/reports",

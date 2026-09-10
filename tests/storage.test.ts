@@ -64,7 +64,9 @@ test("projects only current binding-fenced acknowledged task activity", () => {
         .run(updated, expires, taskId);
     };
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(binding.id);
   expect(store.currentActivity(agent.id)).toBeUndefined();
   store.acknowledgeTask(first.task.id, binding.principalId, first.deliveryId, "Reviewing the plan");
@@ -112,14 +114,14 @@ test("projects only current binding-fenced acknowledged task activity", () => {
   expect(activityTimes(first.task.id)).toEqual(beforeRequesterUpdate);
   store.updateTaskActivity(first.task.id, binding.principalId, "clear");
   expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Second task" });
-  for (const availability of ["unknown", "offline", "dormant", "degraded"]) {
-    store.db
-      .query("UPDATE runtime_bindings SET last_observed_availability=? WHERE id=?")
-      .run(availability, binding.id);
-    expect(store.currentActivity(agent.id)).toBeUndefined();
-  }
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query("UPDATE runtime_bindings SET last_observed_interactive_presence='unknown' WHERE id=?")
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.db
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(binding.id);
   expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Second task" });
   setActivityTimes(second.task.id, fixed, 0);
@@ -127,7 +129,9 @@ test("projects only current binding-fenced acknowledged task activity", () => {
   store.updateTaskActivity(second.task.id, binding.principalId, "refresh");
   const replacement = store.bind(agent.id, "replacement-session", { revokeExisting: true });
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(replacement.id);
   expect(store.currentActivity(agent.id)).toBeUndefined();
   store.updateTaskActivity(second.task.id, replacement.principalId, "refresh", "Taking over");
@@ -147,7 +151,7 @@ test("projects binding-scoped activity through its current binding lifecycle", (
     task = store.accept(agent.id, requester.id, requestMessage("local-activity-task"), {});
   store.db
     .query(
-      "UPDATE runtime_bindings SET last_observed_availability='idle',metadata_json='{\"keep\":true}' WHERE id=?",
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present',metadata_json='{\"keep\":true}' WHERE id=?",
     )
     .run(binding.id);
   expect(() => store.updateActivity(binding.principalId, "refresh")).toThrow("VALIDATION_FAILED");
@@ -207,19 +211,21 @@ test("projects binding-scoped activity through its current binding lifecycle", (
     .run(binding.id);
   expect(store.currentActivity(agent.id)).toBeUndefined();
   store.updateActivity(binding.principalId, "refresh", "Resumed local focus");
-  for (const availability of ["offline", "dormant"]) {
-    store.db
-      .query("UPDATE runtime_bindings SET last_observed_availability=? WHERE id=?")
-      .run(availability, binding.id);
-    expect(store.currentActivity(agent.id)).toBeUndefined();
-  }
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query("UPDATE runtime_bindings SET last_observed_interactive_presence='unknown' WHERE id=?")
+    .run(binding.id);
+  expect(store.currentActivity(agent.id)).toBeUndefined();
+  store.db
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(binding.id);
   expect(store.currentActivity(agent.id)).toMatchObject({ summary: "Resumed local focus" });
   const replacement = store.bind(agent.id, "local-activity-replacement", { revokeExisting: true });
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(replacement.id);
   expect(store.currentActivity(agent.id)).toBeUndefined();
   expect(() => store.updateActivity(binding.principalId, "refresh", "stale")).toThrow(
@@ -249,7 +255,9 @@ test("preserves removed Codex installations as offline records", () => {
   const agent = store.createAgent("work-agent"),
     binding = store.bind(agent.id, "work-session", { installationId: work.id });
   store.db
-    .query("UPDATE runtime_bindings SET last_observed_availability='idle' WHERE id=?")
+    .query(
+      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+    )
     .run(binding.id);
   store.syncCodexInstallations([]);
   expect(
@@ -261,11 +269,94 @@ test("preserves removed Codex installations as offline records", () => {
   ).toEqual({ state: "offline" });
   expect(
     store.db
-      .query<{ availability: string }, [string]>(
-        "SELECT last_observed_availability availability FROM runtime_bindings WHERE id=?",
+      .query<{ runtimeState: string; presence: string }, [string]>(
+        "SELECT last_observed_runtime_state runtimeState,last_observed_interactive_presence presence FROM runtime_bindings WHERE id=?",
       )
       .get(binding.id),
-  ).toEqual({ availability: "offline" });
+  ).toEqual({ runtimeState: "unknown", presence: "unknown" });
+});
+
+test("reaps only continuously offline active bindings and fails queued work", () => {
+  const store = fixture(),
+    agent = store.createAgent("reaped-worker"),
+    binding = store.bind(agent.id, "reaped-session"),
+    requester = authenticated(store),
+    accepted = store.accept(agent.id, requester.id, requestMessage("reaped-task"), {}),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  const oldToken = store.issueToken(binding.principalId, ["executor"]);
+  const offlineAt = Date.now() - 2_000;
+  store.observeSession({
+    session: { installationId: stored.installation_id, opaqueId: "reaped-session" },
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date(offlineAt).toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(1_000)).toEqual([agent.id]);
+  expect(store.agent(agent.id)).toBeNull();
+  expect(store.binding(binding.id)?.status).toBe(BindingState.Revoked);
+  expect(store.authenticate(oldToken)).toBeNull();
+  expect(store.task(accepted.task.id, requester.id)?.status?.state).toBe(4);
+  expect(store.eventsAfter(accepted.task.id, 0).at(-1)).toMatchObject({ eventType: "task-failed" });
+  expect(
+    store.db
+      .query(
+        "SELECT count(*) count FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','leased','attempting','deferred','acceptance-unknown')",
+      )
+      .get(agent.id),
+  ).toEqual({ count: 0 });
+  expect(store.createAgent("reaped-worker").id).not.toBe(agent.id);
+  store.close();
+});
+
+test("clears the offline interval for reconnects and unsupported observations", () => {
+  const store = fixture(),
+    agent = store.createAgent("offline-reset"),
+    binding = store.bind(agent.id, "offline-reset-session"),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  const session = { installationId: stored.installation_id, opaqueId: "offline-reset-session" };
+  store.observeSession({
+    session,
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date(Date.now() - 2_000).toISOString(),
+    attributes: {},
+  });
+  store.observeSession({
+    session,
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "present",
+    observedAt: new Date().toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(1)).toEqual([]);
+  store.observeSession({
+    session,
+    runtimeState: "system-error",
+    blockingReason: "unknown",
+    interactivePresence: "unknown",
+    observedAt: new Date().toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(1)).toEqual([]);
+  expect(store.agent(agent.id)?.id).toBe(agent.id);
+  store.close();
+});
+
+test("starts the offline interval when a runtime disconnects", () => {
+  const store = fixture(),
+    agent = store.createAgent("disconnected-worker"),
+    binding = store.bind(agent.id, "disconnected-session"),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  store.markRuntimeOffline(stored.installation_id);
+  expect(store.reapOfflineAgents(0)).toEqual([agent.id]);
+  store.close();
 });
 
 describe("schema migrations", () => {
@@ -327,7 +418,7 @@ describe("schema migrations", () => {
     ).toEqual([{ mode: "direct" }, { mode: "direct" }, { mode: "direct" }]);
     expect(
       upgraded.db.query("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
+    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
     expect(
       upgraded.db
         .query("SELECT intent_id,binding_id FROM delivery_attempts WHERE id='att_legacy'")
@@ -411,11 +502,12 @@ describe("schema migrations", () => {
       { version: 2 },
       { version: 3 },
       { version: 4 },
+      { version: 5 },
     ]);
     store.close();
     const reopened = new Store(config);
     expect(reopened.db.query("SELECT count(*) count FROM schema_migrations").get()).toEqual({
-      count: 4,
+      count: 5,
     });
     reopened.close();
   });
@@ -1000,16 +1092,20 @@ describe("durable acceptance", () => {
       binding = store.bind(agent.id, "observed-thread"),
       storedBinding = store.binding(binding.id);
     if (!storedBinding) throw new Error("missing stored binding");
-    store.observeSession(
-      { installationId: storedBinding.installation_id, opaqueId: "observed-thread" },
-      "busy",
-    );
+    store.observeSession({
+      session: { installationId: storedBinding.installation_id, opaqueId: "observed-thread" },
+      runtimeState: "active",
+      blockingReason: "none",
+      interactivePresence: "present",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
     expect(
       store
         .metrics()
         .find(
           (point) =>
-            point.name === "acs_runtime_sessions_by_state" && point.labels.state === "busy",
+            point.name === "acs_runtime_sessions_by_state" && point.labels.state === "active",
         ),
     ).toMatchObject({ value: 1 });
     store.revokeBinding(binding.id);
@@ -1018,7 +1114,7 @@ describe("durable acceptance", () => {
         .metrics()
         .find(
           (point) =>
-            point.name === "acs_runtime_sessions_by_state" && point.labels.state === "busy",
+            point.name === "acs_runtime_sessions_by_state" && point.labels.state === "active",
         ),
     ).toMatchObject({ value: 0 });
     store.close();

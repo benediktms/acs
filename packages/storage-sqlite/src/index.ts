@@ -3,11 +3,13 @@ import migration from "../../../storage/001_initial.sql" with { type: "text" };
 import directDeliveryMigration from "../../../storage/002_direct_delivery.sql" with { type: "text" };
 import runtimeExecutionRelationshipMigration from "../../../storage/003_runtime_execution_relationship.sql" with { type: "text" };
 import taskAcknowledgementMigration from "../../../storage/004_task_acknowledgement.sql" with { type: "text" };
+import agentObservationsMigration from "../../../storage/005_agent_observations_and_reaping.sql" with { type: "text" };
 import {
   agentSlug,
   BindingState,
   canonical,
   DeliveryState,
+  deriveAgentState,
   id,
   TaskState,
   transition,
@@ -19,10 +21,10 @@ import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "nod
 import { dirname } from "node:path";
 import type {
   BindingId,
-  RuntimeAvailability,
   RuntimeInstallationId,
   RuntimeProbeResult,
   RuntimeSessionRef,
+  RuntimeSessionSnapshot,
 } from "../../../contracts/runtime-adapter";
 import { paths } from "../../config/src/index";
 import type { CodexAccount } from "../../config/src/index";
@@ -82,6 +84,18 @@ const migrations = [
         )
         .get()
         ?.sql?.includes("'task-acknowledged'"),
+  },
+  {
+    version: 5,
+    name: "agent-observations-and-reaping",
+    sql: agentObservationsMigration,
+    rebuildsForeignKeys: false,
+    required: (db: Database) =>
+      !db
+        .query(
+          "SELECT 1 FROM pragma_table_info('runtime_bindings') WHERE name='last_observed_runtime_state'",
+        )
+        .get(),
   },
 ];
 export type {
@@ -319,7 +333,7 @@ export class Store {
         .run(now, JSON.stringify([...configured]));
       this.db
         .query(
-          "UPDATE runtime_bindings SET last_observed_availability='offline',last_observed_at_ms=? WHERE status='active' AND installation_id IN (SELECT id FROM runtime_installations WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?)))",
+          "UPDATE runtime_bindings SET last_observed_runtime_state='unknown',last_observed_blocking_reason='unknown',last_observed_interactive_presence='unknown',last_observed_at_ms=? WHERE status='active' AND installation_id IN (SELECT id FROM runtime_installations WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?)))",
         )
         .run(now, JSON.stringify([...configured]));
     });
@@ -346,15 +360,7 @@ export class Store {
       telemetry.gauge("acs_tasks_by_state", 0, { state });
     for (const state of Object.values(DeliveryState))
       telemetry.gauge("acs_delivery_intents_by_state", 0, { state });
-    for (const state of [
-      "unknown",
-      "offline",
-      "dormant",
-      "idle",
-      "busy",
-      "awaiting-local-input",
-      "degraded",
-    ])
+    for (const state of ["unknown", "offline", "idle", "active", "not-loaded", "system-error"])
       telemetry.gauge("acs_runtime_sessions_by_state", 0, { state });
     for (const row of this.db
       .query<{ state: string; count: number }, []>(
@@ -370,7 +376,7 @@ export class Store {
       telemetry.gauge("acs_delivery_intents_by_state", row.count, { state: row.state });
     for (const row of this.db
       .query<{ state: string; count: number }, []>(
-        "SELECT coalesce(last_observed_availability,'unknown') state,count(*) count FROM runtime_bindings WHERE status='active' GROUP BY state",
+        "SELECT coalesce(last_observed_runtime_state,'unknown') state,count(*) count FROM runtime_bindings WHERE status='active' GROUP BY state",
       )
       .all())
       telemetry.gauge("acs_runtime_sessions_by_state", row.count, { state: row.state });
@@ -588,23 +594,7 @@ export class Store {
   deleteAgent(value: string) {
     const agent = this.agent(value);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
-    const now = Date.now();
-    this.write(() => {
-      const revoked = transitionBinding(BindingState.Active, BindingState.Revoked);
-      this.db
-        .query("UPDATE agents SET enabled=0,deleted_at_ms=?,updated_at_ms=? WHERE id=?")
-        .run(now, now, agent.id);
-      this.db
-        .query(
-          "UPDATE runtime_bindings SET status=?,revoked_at_ms=?,revocation_reason='agent-deleted' WHERE agent_id=? AND status='active'",
-        )
-        .run(revoked, now, agent.id);
-      this.db
-        .query(
-          "UPDATE principals SET disabled_at_ms=? WHERE binding_id IN (SELECT id FROM runtime_bindings WHERE agent_id=?) AND disabled_at_ms IS NULL",
-        )
-        .run(now, agent.id);
-    });
+    this.write(() => this.logicalDelete(agent.id, "agent-deleted", false, Date.now()));
   }
   agent(value: string) {
     return this.db
@@ -636,7 +626,7 @@ export class Store {
         .get(agentId);
     if (
       !binding ||
-      !["idle", "busy", "awaiting-local-input"].includes(binding.last_observed_availability ?? "")
+      !["ready", "working", "input-required", "auth-required"].includes(agentState(binding))
     )
       return undefined;
     const rows = this.db
@@ -786,6 +776,9 @@ export class Store {
           "UPDATE delivery_intents SET not_before_ms=?,updated_at_ms=? WHERE target_agent_id=? AND state='deferred' AND state_reason IN ('offline','dormant','local-input','unsupported-active-state','route-unavailable','policy')",
         )
         .run(now, now, agent.id);
+      this.db
+        .query("UPDATE agents SET offline_since_ms=NULL,updated_at_ms=? WHERE id=?")
+        .run(now, agent.id);
       return {
         id: bindingId,
         agentId: agent.id,
@@ -801,13 +794,35 @@ export class Store {
       .query<BindingRow, [string]>("SELECT * FROM runtime_bindings WHERE id=?")
       .get(bindingId);
   }
-  observeSession(session: RuntimeSessionRef, availability: RuntimeAvailability) {
-    const now = Date.now();
-    this.db
-      .query(
-        "UPDATE runtime_bindings SET last_observed_availability=?,last_observed_at_ms=? WHERE installation_id=? AND session_opaque_id=? AND status='active'",
-      )
-      .run(availability, now, session.installationId, session.opaqueId);
+  observeSession(snapshot: RuntimeSessionSnapshot) {
+    const observedAt = Date.parse(snapshot.observedAt);
+    if (!Number.isFinite(observedAt))
+      throw new Error("VALIDATION_FAILED: invalid observation time");
+    const state = deriveAgentState(snapshot);
+    this.write(() => {
+      const binding = this.db
+        .query<BindingRow, [RuntimeInstallationId, string]>(
+          "SELECT * FROM runtime_bindings WHERE installation_id=? AND session_opaque_id=? AND status='active'",
+        )
+        .get(snapshot.session.installationId, snapshot.session.opaqueId);
+      if (!binding) return;
+      this.db
+        .query(
+          "UPDATE runtime_bindings SET last_observed_runtime_state=?,last_observed_blocking_reason=?,last_observed_interactive_presence=?,last_observed_at_ms=? WHERE id=?",
+        )
+        .run(
+          snapshot.runtimeState,
+          snapshot.blockingReason,
+          snapshot.interactivePresence,
+          observedAt,
+          binding.id,
+        );
+      this.db
+        .query(
+          "UPDATE agents SET offline_since_ms=CASE WHEN ?='offline' THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id=?",
+        )
+        .run(state, observedAt, observedAt, binding.agent_id);
+    });
   }
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult) {
     const state = probe.state === "ready" ? "online" : probe.state;
@@ -832,10 +847,102 @@ export class Store {
         .run(now, installationId);
       this.db
         .query(
-          "UPDATE runtime_bindings SET last_observed_availability='offline',last_observed_at_ms=? WHERE installation_id=? AND status='active'",
+          "UPDATE runtime_bindings SET last_observed_runtime_state='offline',last_observed_blocking_reason='unknown',last_observed_interactive_presence='unknown',last_observed_at_ms=? WHERE installation_id=? AND status='active'",
         )
         .run(now, installationId);
+      this.db
+        .query(
+          "UPDATE agents SET offline_since_ms=coalesce(offline_since_ms,?),updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND status='active')",
+        )
+        .run(now, now, installationId);
     });
+  }
+  reapOfflineAgents(retentionMs: number, now = Date.now()) {
+    if (!Number.isFinite(retentionMs) || retentionMs < 0) return [];
+    return this.write(() => {
+      const candidates = this.db
+        .query<{ id: `agt_${string}` }, [number]>(
+          "SELECT id FROM agents WHERE enabled=1 AND deleted_at_ms IS NULL AND offline_since_ms IS NOT NULL AND offline_since_ms<=? ORDER BY offline_since_ms,id LIMIT 100",
+        )
+        .all(now - retentionMs);
+      const agents = candidates.filter((agent) => {
+        const binding = this.db
+          .query<BindingRow, [`agt_${string}`]>(
+            "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
+          )
+          .get(agent.id);
+        return binding !== null && agentState(binding) === "offline";
+      });
+      for (const agent of agents) this.logicalDelete(agent.id, "target-reaped", true, now);
+      return agents.map((agent) => agent.id);
+    });
+  }
+  private logicalDelete(
+    agentId: `agt_${string}`,
+    reason: "agent-deleted" | "target-reaped",
+    reap: boolean,
+    now: number,
+  ) {
+    if (reap) {
+      const tasks = this.db
+        .query<TaskRow, [`agt_${string}`]>(
+          "SELECT * FROM a2a_tasks WHERE target_agent_id=? AND state NOT IN ('completed','failed','canceled','rejected')",
+        )
+        .all(agentId);
+      for (const row of tasks) {
+        const task = parseTask(row.a2a_snapshot_json);
+        task.status = {
+          state: taskStates[TaskState.Failed],
+          timestamp: new Date(now).toISOString(),
+        };
+        this.db
+          .query(
+            "UPDATE a2a_tasks SET state=?,state_version=state_version+1,summary=?,a2a_snapshot_json=?,updated_at_ms=?,terminal_at_ms=? WHERE id=?",
+          )
+          .run(TaskState.Failed, reason, JSON.stringify(task), now, now, row.id);
+        this.db
+          .query(
+            "INSERT INTO task_events(id,task_id,sequence,event_type,actor_principal_id,payload_json,created_at_ms) VALUES(?,?,?,?,?,?,?)",
+          )
+          .run(
+            id("evt"),
+            row.id,
+            row.next_event_sequence,
+            "task-failed",
+            null,
+            JSON.stringify({ reason, snapshot: task }),
+            now,
+          );
+        this.db
+          .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
+          .run(row.id);
+      }
+      this.db
+        .query(
+          "DELETE FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','deferred') AND NOT EXISTS(SELECT 1 FROM delivery_attempts WHERE intent_id=delivery_intents.id)",
+        )
+        .run(agentId);
+      this.db
+        .query(
+          "UPDATE delivery_intents SET state=CASE WHEN state='attempting' THEN 'failed-terminal' ELSE 'canceled' END,state_reason='target-reaped',lease_owner=NULL,lease_expires_at_ms=NULL,updated_at_ms=? WHERE target_agent_id=? AND state IN ('pending','leased','attempting','deferred','acceptance-unknown')",
+        )
+        .run(now, agentId);
+    }
+    this.db
+      .query(
+        "UPDATE agents SET enabled=0,offline_since_ms=NULL,deleted_at_ms=?,updated_at_ms=? WHERE id=?",
+      )
+      .run(now, now, agentId);
+    this.db
+      .query(
+        "UPDATE runtime_bindings SET status=?,revoked_at_ms=?,revocation_reason=? WHERE agent_id=? AND status='active'",
+      )
+      .run(transitionBinding(BindingState.Active, BindingState.Revoked), now, reason, agentId);
+    this.db
+      .query(
+        "UPDATE principals SET disabled_at_ms=? WHERE binding_id IN (SELECT id FROM runtime_bindings WHERE agent_id=?) AND disabled_at_ms IS NULL",
+      )
+      .run(now, agentId);
   }
   revokeBinding(bindingId: string, reason = "revoked") {
     const binding = this.binding(bindingId);
@@ -2185,6 +2292,30 @@ function terminalTaskState(state: TaskState) {
   return [TaskState.Completed, TaskState.Failed, TaskState.Canceled, TaskState.Rejected].includes(
     state,
   );
+}
+function agentState(binding: BindingRow) {
+  return deriveAgentState({
+    runtimeState: runtimeState(binding.last_observed_runtime_state),
+    blockingReason: blockingReason(binding.last_observed_blocking_reason),
+    interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
+  });
+}
+function runtimeState(value: string | null) {
+  return ["offline", "not-loaded", "idle", "active", "system-error"].includes(value ?? "")
+    ? value === "offline" ||
+      value === "not-loaded" ||
+      value === "idle" ||
+      value === "active" ||
+      value === "system-error"
+      ? value
+      : "unknown"
+    : "unknown";
+}
+function blockingReason(value: string | null) {
+  return value === "none" || value === "user-input" || value === "approval" ? value : "unknown";
+}
+function interactivePresence(value: string | null) {
+  return value === "present" || value === "absent" ? value : "unknown";
 }
 function sameTransitionPayload(json: string, summary: string, details: Record<string, unknown>) {
   const value: unknown = JSON.parse(json);

@@ -14,8 +14,11 @@ import type {
   RuntimeAdapter,
   RuntimeCallerAttestor,
   RuntimeCapabilities,
+  RuntimeBlockingReason,
+  InteractivePresence,
   RuntimeInstallationId,
   RuntimeProbeResult,
+  RuntimeState,
 } from "../../../contracts/runtime-adapter";
 import type {
   BridgeAttestationDto,
@@ -25,7 +28,7 @@ import type {
   ExecutorPart,
   TaskDto,
 } from "../../../contracts/control-protocol";
-import { TaskState } from "../../domain/src/index";
+import { deriveAgentState, TaskState } from "../../domain/src/index";
 import { telemetry } from "../../observability/src/index";
 import { z } from "zod";
 
@@ -54,18 +57,8 @@ const partSchema = z.discriminatedUnion("kind", [
   }),
   paramsSchema = z.looseObject({
     agent: z.string().optional(),
-    availability: z
-      .array(
-        z.enum([
-          "unknown",
-          "offline",
-          "dormant",
-          "idle",
-          "busy",
-          "awaiting-local-input",
-          "degraded",
-        ]),
-      )
+    runtimeState: z
+      .array(z.enum(["unknown", "offline", "not-loaded", "idle", "active", "system-error"]))
       .optional(),
     artifacts: z.array(artifactSchema).optional(),
     action: z.enum(["refresh", "clear"]).optional(),
@@ -334,20 +327,23 @@ export function controlHandler(
           const agent = store.agent(required(p.agent, "agent"));
           if (!agent) throw new Error("AGENT_NOT_FOUND");
           return ok(rpc.id, {
-            agent: { ...agentDto(store, agent), currentActivity: store.currentActivity(agent.id) },
+            agent: {
+              ...agentDto(store, agent),
+              currentActivity: activityDto(store.currentActivity(agent.id)),
+            },
           });
         }
         case "agents.list": {
           const agentLimit = Math.min(p.limit ?? 50, 100),
             text = p.text?.toLowerCase(),
-            requestedAvailability = p.availability ? new Set<string>(p.availability) : undefined,
+            requestedStates = p.state ? new Set<string>(p.state) : undefined,
             candidates = store
               .agents()
               .map((agent) => ({ agent, dto: agentDto(store, agent) }))
               .filter(
                 ({ agent, dto }) =>
                   (p.enabled === undefined || Boolean(agent.enabled) === p.enabled) &&
-                  (!requestedAvailability?.size || requestedAvailability.has(dto.availability)) &&
+                  (!requestedStates?.size || requestedStates.has(dto.state)) &&
                   (!p.skill || agentHasSkill(agent.skills_json, p.skill)) &&
                   (!text ||
                     [agent.slug, agent.display_name, agent.description].some((value) =>
@@ -365,7 +361,7 @@ export function controlHandler(
           return ok(rpc.id, {
             items: page.items.map(({ agent, dto }) => ({
               ...dto,
-              currentActivity: store.currentActivity(agent.id),
+              currentActivity: activityDto(store.currentActivity(agent.id)),
             })),
             nextCursor: page.nextCursor,
           });
@@ -397,7 +393,7 @@ export function controlHandler(
             installationId: bindInstallation.id,
             opaqueId: sessionId,
           });
-          if (bindSnapshot.availability === "offline")
+          if (deriveAgentState(bindSnapshot) === "offline")
             throw new Error("RUNTIME_UNAVAILABLE: session not found");
           const createdBinding = store.bind(required(p.agent, "agent"), sessionId, {
             continuityPolicy: p.continuityPolicy,
@@ -405,7 +401,7 @@ export function controlHandler(
             installationId: bindSnapshot.session.installationId,
             revokeExisting: p.revokeExisting,
           });
-          store.observeSession(bindSnapshot.session, bindSnapshot.availability);
+          store.observeSession(bindSnapshot);
           audit("binding.bind", "binding", createdBinding.id);
           if (createdBinding.rebound)
             audit("binding.rebind", "binding", createdBinding.id, {
@@ -422,7 +418,7 @@ export function controlHandler(
             const claimAdapter = adapterFor(proof.session.installationId);
             if (!claimAdapter) throw new Error("RUNTIME_UNAVAILABLE");
             const claimSnapshot = await claimAdapter.inspectSession(proof.session);
-            if (claimSnapshot.availability === "offline")
+            if (deriveAgentState(claimSnapshot) === "offline")
               throw new Error("RUNTIME_UNAVAILABLE: session not found");
             const binding = store.claim(
               required(p.claimCode, "claimCode"),
@@ -434,7 +430,7 @@ export function controlHandler(
                 revokeExisting: p.revokeExisting,
               },
             );
-            store.observeSession(claimSnapshot.session, claimSnapshot.availability);
+            store.observeSession(claimSnapshot);
             audit("binding.claim.consume", "binding", binding.id, {
               idempotent: binding.idempotent,
             });
@@ -632,11 +628,10 @@ export function controlHandler(
           const page = await adapter.listSessions({
             cursor: p.cursor ? runtimeSessionCursor(store.decodeCursor(p.cursor)) : undefined,
             limit: p.limit,
-            availability: p.availability,
+            runtimeState: p.runtimeState,
             text: p.text,
           });
-          for (const snapshot of page.sessions)
-            store.observeSession(snapshot.session, snapshot.availability);
+          for (const snapshot of page.sessions) store.observeSession(snapshot);
           return ok(rpc.id, {
             sessions: page.sessions,
             nextCursor: page.nextCursor
@@ -676,7 +671,7 @@ export function controlHandler(
             installationId: inspectInstallation.id,
             opaqueId,
           });
-          store.observeSession(snapshot.session, snapshot.availability);
+          store.observeSession(snapshot);
           return ok(rpc.id, { session: snapshot });
         }
         case "bridge.attestCaller": {
@@ -1044,8 +1039,8 @@ async function attestEvidence(
   if (adapter)
     try {
       const snapshot = await adapter.inspectSession(before.session);
-      if (snapshot.availability !== "offline") {
-        store.observeSession(snapshot.session, snapshot.availability);
+      if (deriveAgentState(snapshot) !== "offline") {
+        store.observeSession(snapshot);
         verified = true;
         runtimeCwd = snapshot.attributes.cwdHint;
       }
@@ -1223,10 +1218,20 @@ function authorize(principal: { kind: string; scopes: string[] }, method: string
 }
 function agentDto(store: ControlStoragePort, agent: AgentRow) {
   const binding = store
-    .query<BindingRow, [`agt_${string}`]>(
-      "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
-    )
-    .get(agent.id);
+      .query<BindingRow, [`agt_${string}`]>(
+        "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
+      )
+      .get(agent.id),
+    runtimeObservation = binding
+      ? {
+          runtimeState: runtimeState(binding.last_observed_runtime_state),
+          blockingReason: blockingReason(binding.last_observed_blocking_reason),
+          interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
+          observedAt: binding.last_observed_at_ms
+            ? new Date(binding.last_observed_at_ms).toISOString()
+            : undefined,
+        }
+      : undefined;
   return {
     id: agent.id,
     slug: agent.slug,
@@ -1234,7 +1239,8 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     description: agent.description,
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
-    availability: binding?.last_observed_availability ?? "unknown",
+    state: runtimeObservation ? deriveAgentState(runtimeObservation) : "unknown",
+    runtimeObservation,
     binding: binding
       ? {
           id: binding.id,
@@ -1246,6 +1252,46 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     createdAt: new Date(agent.created_at_ms).toISOString(),
     updatedAt: new Date(agent.updated_at_ms).toISOString(),
   };
+}
+function activityDto(
+  activity:
+    | {
+        state: "working" | "input-required" | "auth-required";
+        summary?: string;
+        cwd?: string;
+        gitBranch?: string;
+        updatedAt: string;
+        expiresAt: string;
+      }
+    | undefined,
+) {
+  if (!activity) return undefined;
+  return {
+    summary: activity.summary,
+    cwd: activity.cwd,
+    gitBranch: activity.gitBranch,
+    updatedAt: activity.updatedAt,
+    expiresAt: activity.expiresAt,
+  };
+}
+function runtimeState(value: string | null): RuntimeState {
+  if (
+    value === "offline" ||
+    value === "not-loaded" ||
+    value === "idle" ||
+    value === "active" ||
+    value === "system-error"
+  )
+    return value;
+  return "unknown";
+}
+function blockingReason(value: string | null): RuntimeBlockingReason {
+  if (value === "none" || value === "user-input" || value === "approval") return value;
+  return "unknown";
+}
+function interactivePresence(value: string | null): InteractivePresence {
+  if (value === "present" || value === "absent") return value;
+  return "unknown";
 }
 function taskDto(store: ControlStoragePort, taskId: string): TaskDto {
   const row = required(

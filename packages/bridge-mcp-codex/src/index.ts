@@ -45,10 +45,17 @@ const agentSchema = z.looseObject({
     slug: z.string(),
     displayName: z.string(),
     description: z.string(),
-    availability: z.string(),
+    state: z.enum([
+      "unknown",
+      "offline",
+      "ready",
+      "working",
+      "input-required",
+      "auth-required",
+      "error",
+    ]),
     currentActivity: z
       .looseObject({
-        state: z.enum(["working", "input-required", "auth-required"]),
         summary: z.string().optional(),
         cwd: z.string().optional(),
         gitBranch: z.string().optional(),
@@ -58,8 +65,9 @@ const agentSchema = z.looseObject({
       .optional(),
     skills: z.array(
       z.looseObject({
-        id: z.string().optional(),
-        name: z.string().optional(),
+        id: z.string(),
+        name: z.string(),
+        description: z.string().optional(),
         tags: z.array(z.string()).optional(),
       }),
     ),
@@ -288,7 +296,7 @@ export async function runMcp(port = 7432) {
           harness: "codex",
           bindingEpoch: identity.attestation.bindingEpoch,
           remediation:
-            identity.agent?.availability === "dormant"
+            identity.agent?.state === "offline"
               ? "This thread is not loaded on ACS's connected app-server. Read messages with acs_inbox_list and acs_task_get, or resume through codex --remote unix:// for automatic delivery."
               : undefined,
         };
@@ -361,7 +369,6 @@ export async function runMcp(port = 7432) {
     {
       description: "List logical ACS agents",
       inputSchema: {
-        status: z.enum(["any", "available", "unavailable"]).optional(),
         skill: z.string().optional(),
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().optional(),
@@ -372,12 +379,8 @@ export async function runMcp(port = 7432) {
         const page = await typedCall(
           "agents.list",
           {
-            availability:
-              args.status === "available"
-                ? ["idle"]
-                : args.status === "unavailable"
-                  ? ["unknown", "offline", "dormant", "busy", "awaiting-local-input", "degraded"]
-                  : undefined,
+            enabled: true,
+            state: ["ready", "working", "input-required", "auth-required", "error"],
             skill: args.skill,
             limit: args.limit,
             cursor: args.cursor,
@@ -725,22 +728,16 @@ export function isConfiguredCodexRuntime(
 
 export function agentView(agent: z.infer<typeof agentSchema>) {
   return {
-    id: agent.id,
     slug: agent.slug,
-    displayName: agent.displayName,
     description: agent.description,
-    availability: agent.availability,
-    skills: [
-      ...new Set(
-        agent.skills.flatMap((skill) =>
-          [skill.id, skill.name, ...(skill.tags ?? [])].filter(
-            (value): value is string => typeof value === "string",
-          ),
-        ),
-      ),
-    ],
+    state: agent.state,
+    skills: agent.skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      tags: skill.tags ?? [],
+    })),
     currentActivity: agent.currentActivity && {
-      state: agent.currentActivity.state,
       summary: agent.currentActivity.summary,
       cwd: agent.currentActivity.cwd,
       gitBranch: agent.currentActivity.gitBranch,

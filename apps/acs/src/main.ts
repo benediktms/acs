@@ -845,6 +845,7 @@ async function daemon() {
             retryBaseMs: settings.delivery.retryBaseMs,
             retryCapMs: settings.delivery.retryCapMs,
             reconnectMs: settings.codex.statusPollIntervalMs,
+            offlineRetentionMs: settings.delivery.offlineRetentionMs,
           },
           installationId,
           deliveryConcurrency,
