@@ -11,7 +11,7 @@ import serverNotificationSchema from "../../codex-protocol-generated/schema/Serv
 import type { ResponseItem } from "../../codex-protocol-generated/src/ResponseItem";
 
 export const TESTED_CODEX_VERSION = testedVersion.trim();
-export const SUPPORTED_CODEX_VERSIONS = Object.freeze([TESTED_CODEX_VERSION, "0.153.4"]);
+export const SUPPORTED_CODEX_VERSIONS = Object.freeze([TESTED_CODEX_VERSION, "0.153.4", "0.153.2"]);
 export const CODEX_PROTOCOL_FINGERPRINT = createHash("sha256")
   .update(JSON.stringify(clientRequestSchema))
   .update("\0")

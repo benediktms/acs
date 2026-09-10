@@ -1163,7 +1163,7 @@ async function doctor() {
     phaseZero: {
       a2aOnBun: "verified by pinned TCK",
       standaloneExecutable: "verified by clean-machine release matrix",
-      mcpAttestation: "verified on Codex 0.153.2 and 0.153.4",
+      mcpAttestation: `verified on Codex ${SUPPORTED_CODEX_VERSIONS.join(" and ")}`,
       directDelivery: "named tool-output submission is the only automatic peer-message path",
       deliveryReconciliation:
         "exact delivery markers are required; inconclusive writes remain operator-owned",
