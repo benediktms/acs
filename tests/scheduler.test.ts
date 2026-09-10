@@ -2161,14 +2161,14 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
-  test("delivers only ready and working observed targets", async () => {
+  test("delivers ready, working, and presence-unknown observed targets", async () => {
     for (const [runtimeState, blockingReason, interactivePresence, expected, reason] of [
       ["idle", "none", "present", "accepted", null],
       ["active", "none", "present", "accepted", null],
       ["active", "user-input", "present", "deferred", "local-input"],
       ["active", "approval", "present", "deferred", "local-input"],
       ["idle", "none", "absent", "deferred", "offline"],
-      ["idle", "none", "unknown", "deferred", "unsupported-active-state"],
+      ["idle", "none", "unknown", "accepted", null],
       ["system-error", "none", "present", "deferred", "unsupported-active-state"],
     ] as const) {
       const store = fixture(),
@@ -2184,6 +2184,7 @@ describe("delivery scheduler", () => {
           {},
         ),
         adapter = new FakeRuntimeAdapter();
+      let deliveries = 0;
       const row = store.binding(binding.id);
       if (!row) throw new Error("missing binding");
       adapter.inspectSession = async (session) => ({
@@ -2194,12 +2195,15 @@ describe("delivery scheduler", () => {
         observedAt: new Date().toISOString(),
         attributes: {},
       });
-      adapter.deliver = async () => ({
-        outcome: "accepted",
-        acceptedAt: new Date().toISOString(),
-        execution: { opaqueId: "state", relationship: "unknown" },
-        evidence: { scheme: "fake", value: "state" },
-      });
+      adapter.deliver = async () => {
+        deliveries += 1;
+        return {
+          outcome: "accepted",
+          acceptedAt: new Date().toISOString(),
+          execution: { opaqueId: "state", relationship: "unknown" },
+          evidence: { scheme: "fake", value: "state" },
+        };
+      };
       const scheduler = new DeliveryScheduler(store, adapter, `state-${agent.slug}`);
       await scheduler.start();
       await Bun.sleep(300);
@@ -2207,6 +2211,7 @@ describe("delivery scheduler", () => {
         state: expected,
         state_reason: reason,
       });
+      expect(deliveries).toBe(expected === "accepted" ? 1 : 0);
       await scheduler.stop();
       store.close();
     }

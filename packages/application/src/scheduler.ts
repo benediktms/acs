@@ -523,7 +523,7 @@ export class DeliveryScheduler {
       blockingReason: blockingReason(binding.last_observed_blocking_reason),
       interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
     });
-    if (!["ready", "working"].includes(state)) {
+    if (!["ready", "working", "unknown"].includes(state)) {
       const reason =
         state === "input-required" || state === "auth-required"
           ? "local-input"
