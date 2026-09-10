@@ -9,6 +9,14 @@ import { uuidV7 } from "../../domain/src/index";
 
 const deliveryStatus = "urn:agent-communications:delivery-status:v1",
   cancellationStatus = "urn:agent-communications:cancellation:v1";
+export const discoverableAgentStates = [
+  "unknown",
+  "ready",
+  "working",
+  "input-required",
+  "auth-required",
+  "error",
+];
 const result = (data: unknown): CallToolResult => ({
   content: [{ type: "text", text: JSON.stringify(data) }],
   structuredContent: {
@@ -381,7 +389,7 @@ export async function runMcp(port = 7432) {
           "agents.list",
           {
             enabled: true,
-            state: ["ready", "working", "input-required", "auth-required", "error"],
+            state: discoverableAgentStates,
             skill: args.skill,
             limit: args.limit,
             cursor: args.cursor,

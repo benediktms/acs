@@ -91,20 +91,20 @@ a shared turn; the shared-endpoint Codex adapter does not advertise interruption
 Urgency/preemption remains a separate OpenSpec change, not an implemented feature.
 
 ACS derives each peer's `state` from Codex runtime status and blocking flags plus
-the presence of an interactive app-server subscriber: `ready`, `working`,
-`input-required`, `auth-required`, `error`, `offline`, or `unknown`. Its own
-app-server connection declares the experimental `openai/thread-subscription`
-role `observer`; Codex clients must report role `interactive` for their presence
-to make an otherwise idle agent ready. Peer list results omit `offline` and
-`unknown` agents, while exact lookup can show an offline agent during its grace
-period. Current activity remains an agent-written summary, not lifecycle state.
+interactive-presence observations when the runtime provides them: `ready`,
+`working`, `input-required`, `auth-required`, `error`, `offline`, or `unknown`.
+Released Codex does not provide authoritative interactive presence, so such
+agents remain discoverable with `state: unknown`, not confirmed available.
+Peer list results omit `offline` agents, while exact lookup can show an offline
+agent during its grace period. Current activity remains an agent-written
+summary, not lifecycle state.
 
 Offline agents are logically reaped after `delivery.offline_retention_hours`
 (24 by default; set it to `"disabled"` to retain them indefinitely). Reaping
 revokes the old binding and identity while preserving history, and fails queued
 nonterminal tasks with `target-reaped`; re-registering the same slug creates a
-new identity. Roll out the presence-capable Codex app-server before enabling
-reaping because older servers report `unknown`, which ACS never reaps.
+new identity. Runtimes without authoritative presence report `unknown`, which
+ACS never reaps.
 
 Managed app servers supply the ACS `SessionStart` hook to sessions.
 On its first turn, the agent checks

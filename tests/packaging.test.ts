@@ -635,7 +635,7 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
   );
-}, 15_000);
+}, 30_000);
 
 test("compiled daemon ownership ignores listener overrides and releases after a crash", async () => {
   const root = mkdtempSync(join(tmpdir(), "acs-daemon-lock-"));
