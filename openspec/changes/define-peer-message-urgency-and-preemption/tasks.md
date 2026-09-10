@@ -1,26 +1,20 @@
-## 1. Urgency contract
+## 1. Public contract and policy
 
-- [ ] 1.1 Add `normal`, `high`, and `preempt` urgency to the A2A/MCP/runtime-neutral delivery contracts; default to `normal`; verify removed/unknown values fail validation.
-- [ ] 1.2 Add scheduler priority for `high` with anti-starvation coverage; verify `high` never causes runtime interruption.
-- [ ] 1.3 Add explicit preemption authorization/policy checks separate from ordinary send/cancel scopes.
+- [ ] 1.1 Preserve `low`, `normal`, and `high` priority and add optional `preempt` to the A2A, MCP, storage, and runtime-neutral delivery contracts with a default of `false`; verify removed or unknown values fail validation.
+- [ ] 1.2 Extend the existing delivery-status projection so senders can distinguish preemption requested, attempted, pending confirmation, achieved, unnecessary, downgraded with a reason, or unresolved from the independent delivery state.
+- [ ] 1.3 Require ordinary send authority before durable acceptance, then gate interruption separately on explicit sender preemption authority and recipient binding opt-in; verify either missing preemption gate noisily downgrades without blocking ordinary delivery.
 
-## 2. Runtime interruption
+## 2. Scheduling and runtime interruption
 
-- [ ] 2.1 Add a harness-neutral interruption capability and opaque execution-target contract; keep harness-specific turn/process identifiers inside adapters.
-- [ ] 2.2 Map authorized Codex preemption to exact `turn/interrupt`, then wait for safe runtime state before submitting the peer message through the existing named-tool-output direct-delivery path.
-- [ ] 2.3 Handle accepted, not-running, unsupported, rejected, and ambiguous interruption outcomes without blind retry.
-- [ ] 2.4 Add real-Codex tests proving normal delivery does not interrupt tool-heavy turns and proving the exact preempt sequence before advertising the capability.
+- [ ] 2.1 Add bounded anti-starvation to the existing priority scheduler; verify sustained high-priority traffic eventually permits eligible normal and low deliveries and never causes interruption by itself.
+- [ ] 2.2 Add a harness-neutral interruption capability and operation over opaque execution references; keep harness-specific turn or process identifiers inside adapters.
+- [ ] 2.3 Map eligible Codex preemption to exact `turn/interrupt`; treat RPC success as request acceptance and require `turn/completed(interrupted)` or equivalent authoritative evidence before reporting confirmed interruption.
+- [ ] 2.4 Classify generic Codex interruption RPC failures as unsupported, not running, definitively rejected, or unresolved; combine these with ACS authorization and recipient-policy decisions, retain safe diagnostics for audit, and noisily downgrade definitive failures.
+- [ ] 2.5 Handle ambiguous interruption acceptance by reconciling from turn notifications and `thread/read` without blind mutation retries, retaining the pending message, and attempting direct delivery as soon as runtime state is safe within the existing message deadline.
+- [ ] 2.6 Keep fallback on the existing `turn/start` named-tool-output path, including when Codex queues it behind active work; do not use `turn/steer` for peer content.
+- [ ] 2.7 Add isolated real-Codex coverage for active turn -> interrupt acceptance -> confirmed interrupted completion -> fallback delivery, idle or stale turn -> classified rejection -> fallback delivery, and post-write interrupt response loss -> reconciliation -> exactly-once fallback delivery before advertising interruption support.
 
-## 3. Delivery observability
+## 3. Evidence and validation
 
-- [ ] 3.1 Keep durable acceptance, runtime acceptance, explicit agent acknowledgement, and reply/task transition as distinct milestones.
-- [ ] 3.2 Do not infer message observation from turn completion, elapsed time, or generic assistant output; add targeted tests.
-- [ ] 3.3 Add audit/telemetry for urgency, preemption requests, authorization decisions, interruption outcomes, and subsequent direct-delivery outcomes.
-
-## 4. OpenSpec as the single source of truth
-
-- [ ] 4.1 Promote the still-valid TypeScript/Bun/SQLite implementation baseline from ADR-001 into the `local-service` OpenSpec capability.
-- [ ] 4.2 Verify ADR-002 through ADR-008 and ADR-010 contain no still-valid normative behavior absent from canonical OpenSpec capabilities; ADR-009 is superseded by direct delivery.
-- [ ] 4.3 Remove `docs/adr` after the audit and remove ADR references from canonical specs, README, and OpenSpec configuration.
-- [ ] 4.4 Update repository guidance so architectural decisions are proposed only through OpenSpec and supporting docs/contracts are explicitly subordinate to it.
-- [ ] 4.5 Run strict OpenSpec validation and targeted text searches proving there are no remaining normative `docs/adr` references.
+- [ ] 3.1 Add audit and telemetry for preemption request, authorization and recipient-policy decisions, interruption outcome, downgrade, ambiguity, and subsequent delivery outcome without duplicating existing acceptance, acknowledgement, or reply milestones.
+- [ ] 3.2 Run strict OpenSpec validation, targeted A2A, MCP, storage, scheduler, adapter, and conformance tests, plus type checking, linting, formatting checks, boundary checks, and build; leave the full suite to CI.

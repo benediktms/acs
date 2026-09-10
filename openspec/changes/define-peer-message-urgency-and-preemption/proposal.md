@@ -1,44 +1,39 @@
 ## Why
 
-Direct peer-message delivery can be accepted by a recipient runtime before the model actually observes the message. A recipient may be deep in a long-running tool-heavy turn, so normal delivery can have noticeable processing latency even though the app-server accepted the message. ACS needs to model that honestly and define when an authorized sender may request stronger intervention.
-
-The repository is also in the middle of moving to OpenSpec. To avoid two competing architecture/specification systems, this change formalizes `openspec/specs` as the sole normative source for behavioral and architectural requirements. Existing ADRs may remain as historical records, but they must not carry requirements that are absent from OpenSpec.
+Direct peer-message delivery can be accepted by a recipient runtime before the model observes it. Important messages need a best-effort way to interrupt long-running work, but failure to interrupt must not prevent eventual delivery or leave the sender believing preemption succeeded.
 
 ## What Changes
 
-- Define three peer-message urgency levels: `normal`, `high`, and `preempt`.
-- Keep `normal` as the default direct-delivery behavior: submit through the runtime-native message path without interrupting current work.
-- Define `high` as scheduling priority only; it may be attempted before lower-priority pending messages but MUST NOT imply runtime interruption.
-- Define `preempt` as an explicitly authorized request to interrupt the current runtime execution, when the adapter can prove the target execution and the policy permits interruption, then submit the peer message through normal direct delivery.
-- Separate runtime acceptance from model observation/acknowledgement and from task reply/completion.
-- Require runtime-neutral capability reporting for interruption and avoid leaking Codex-specific `turn/interrupt` into application/domain code.
-- Make OpenSpec the single normative specification/architecture source. Audit existing ADRs for unique requirements, promote those requirements into OpenSpec, then retain ADR files only as historical/non-normative records or archive them.
+- Preserve the existing `low`, `normal`, and `high` delivery priority contract; priority continues to affect scheduling only.
+- Add an optional preemption request separately from priority. Preemption attempts to interrupt an eligible execution before using the existing direct-delivery path.
+- Treat preemption as best-effort acceleration: an unauthorized, unsupported, unnecessary, or rejected interruption falls back to ordinary direct delivery.
+- Report every requested preemption outcome to the sender, distinguishing pending confirmation, confirmed interruption, unnecessary interruption, classified downgrade, and unresolved ambiguity from the independent delivery outcome. Never silently downgrade.
+- If interruption acceptance is ambiguous, reconcile runtime state before delivery rather than risking duplicate or conflicting work; keep retrying toward delivery within the message's existing deadline.
+- Keep interruption runtime-neutral outside adapters and preserve exact execution ownership, binding fences, local permission ownership, and auditability.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `specification-governance`: define OpenSpec as the sole normative source and the treatment of legacy ADRs.
+None.
 
 ### Modified Capabilities
 
-- `runtime-delivery`: add urgency and preemption semantics around direct delivery, including explicit runtime-interrupt capability and observability boundaries.
-- `a2a-messaging`: allow an authorized sender to express message urgency without conflating priority with task authority.
+- `runtime-delivery`: add best-effort preemption before direct delivery, explicit downgrade reporting, and bounded priority behavior.
+- `a2a-messaging`: allow an authorized sender to request preemption separately from delivery priority and observe its outcome.
 
 ## Impact
 
-- Runtime-neutral delivery contracts and runtime capability reporting.
-- Codex adapter mapping for `turn/interrupt` plus subsequent named-tool-output direct delivery.
-- Delivery scheduling priority and authorization policy.
-- Runtime execution ownership checks and cancellation/preemption safety.
-- Observability for runtime acceptance versus agent acknowledgement/reply.
-- `openspec/config.yaml`, README development guidance, and legacy `docs/adr` references.
-- Existing ADR contents must be audited so no still-valid normative requirement disappears when ADRs become non-authoritative.
+- A2A delivery metadata, MCP send input, runtime-neutral delivery contracts, and delivery-status projection.
+- Delivery scheduling fairness and preemption authorization policy.
+- Runtime execution ownership checks and the Codex adapter's `turn/interrupt`, `turn/completed`, `thread/read`, and named-tool-output fallback mapping.
+- Audit and telemetry for preemption requests, interruption outcomes, downgrade, and subsequent delivery.
+- Targeted protocol, storage, scheduler, adapter, and real-Codex compatibility tests.
 
 ## Non-Goals
 
-- Guaranteeing that a `normal` or `high` message is observed immediately by the model.
-- Treating high priority as permission to cancel tools or approvals.
-- Allowing arbitrary peer agents to interrupt user-owned turns.
-- Inventing a provider-independent concept of "model has read this" when the runtime cannot provide authoritative evidence.
-- Maintaining ADRs as a parallel normative architecture system.
+- Guaranteeing immediate model observation after runtime acceptance.
+- Treating high priority as permission to interrupt.
+- Letting preemption bypass ordinary send authorization, recipient policy, local approvals, or binding fences.
+- Interrupting an execution ACS cannot identify and is not authorized to control.
+- Inferring message acknowledgement from elapsed time, turn completion, or generic assistant output.
