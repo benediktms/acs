@@ -22,6 +22,10 @@ export function supportsCodexVersion(version: string | undefined): boolean {
   return version !== undefined && SUPPORTED_CODEX_VERSIONS.includes(version);
 }
 
+export function supportsPeerPreemption(version: string | undefined): boolean {
+  return version === TESTED_CODEX_VERSION;
+}
+
 export function responseItem(envelope: RuntimeDeliveryEnvelopeV1): CodexFunctionCallOutputDto {
   return {
     type: "function_call_output",

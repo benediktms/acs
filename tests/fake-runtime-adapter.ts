@@ -8,7 +8,11 @@ import {
   type RuntimeDeliveryRequest,
   type RuntimeDeliveryResult,
   type RuntimeEvent,
+  type RuntimeFindActiveExecutionResult,
+  type RuntimeInterruptExecutionResult,
   type RuntimeProbeResult,
+  type RuntimeReconcileInterruptResult,
+  type RuntimeReconcileInterruptRequest,
   type RuntimeReconcileRequest,
   type RuntimeReconcileResult,
   type RuntimeSessionPage,
@@ -23,6 +27,7 @@ const capabilities = {
   observeExecutions: true,
   directDelivery: true,
   cancelOwnedExecution: true,
+  peerPreemption: false,
   reconcileDelivery: true,
   callerAttestationSchemes: [],
   supportedPartKinds: ["text", "uri", "data"],
@@ -77,5 +82,16 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
   }
   async cancel(_request: RuntimeCancelRequest): Promise<RuntimeCancelResult> {
     return { outcome: "unsupported" };
+  }
+  async findActiveExecution(): Promise<RuntimeFindActiveExecutionResult> {
+    return { outcome: "unsupported" };
+  }
+  async interruptExecution(): Promise<RuntimeInterruptExecutionResult> {
+    return { outcome: "unsupported" };
+  }
+  async reconcileInterrupt(
+    _request: RuntimeReconcileInterruptRequest,
+  ): Promise<RuntimeReconcileInterruptResult> {
+    return { outcome: "unresolved" };
   }
 }

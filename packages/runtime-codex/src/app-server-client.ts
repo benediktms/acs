@@ -6,6 +6,7 @@ import {
   type CodexThreadInjectItemsRequestDto,
   type CodexThreadListRequestDto,
   type CodexThreadReadRequestDto,
+  type CodexThreadTurnsListRequestDto,
   type CodexThreadStartRequestDto,
   type CodexTurnStartRequestDto,
   type CodexWireId,
@@ -91,6 +92,17 @@ export class CodexAppServerClient {
     const response = record(await this.request("thread/read", params, undefined, signal));
     return { thread: decodeThread(response.thread) };
   }
+  async newestActiveTurn(params: CodexThreadTurnsListRequestDto, signal?: AbortSignal) {
+    const response = record(await this.request("thread/turns/list", params, undefined, signal));
+    if (!Array.isArray(response.data) || response.data.length > 1)
+      throw new Error("invalid app-server newest turn list");
+    if (response.data.length === 0) return undefined;
+    const turn = record(response.data[0]),
+      id = stringField(turn, "id"),
+      status = stringField(turn, "status");
+    if (!id) throw new Error("invalid app-server newest turn id");
+    return status === "inProgress" ? { id, status } : undefined;
+  }
   async findDeliveryMarker(
     threadId: string,
     deliveryId: string,
@@ -148,8 +160,13 @@ export class CodexAppServerClient {
       turn = record(response.turn);
     return { turn: { id: stringField(turn, "id") } };
   }
-  async interruptTurn(threadId: string, turnId: string, signal?: AbortSignal): Promise<void> {
-    await this.request("turn/interrupt", { threadId, turnId }, () => {}, signal);
+  async interruptTurn(
+    threadId: string,
+    turnId: string,
+    markRequestFlushed?: () => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.request("turn/interrupt", { threadId, turnId }, markRequestFlushed, signal);
   }
 
   async request(
@@ -369,6 +386,8 @@ function remoteFailureKind(message: string) {
     /not running|cannot steer|not steerable|non-steerable|does not support steering/i.test(message)
   )
     return CodexAppServerFailureKind.NotRunning;
+  if (/expected active turn id|no active turn to interrupt/i.test(message))
+    return CodexAppServerFailureKind.StaleExecution;
   if (/not found|invalid thread|thread not loaded/i.test(message))
     return CodexAppServerFailureKind.SessionNotFound;
   if (/method not found|unsupported method/i.test(message))

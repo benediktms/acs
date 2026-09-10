@@ -17,6 +17,7 @@ export enum CodexAppServerFailureKind {
   RequestAbortedAfterWrite = "REQUEST_ABORTED_AFTER_WRITE",
   RequestMarkerFailedAfterWrite = "REQUEST_MARKER_FAILED_AFTER_WRITE",
   RequestTimedOut = "REQUEST_TIMED_OUT",
+  StaleExecution = "STALE_EXECUTION",
   SessionNotFound = "SESSION_NOT_FOUND",
   UnsupportedMethod = "UNSUPPORTED_METHOD",
   Unknown = "UNKNOWN",
@@ -70,6 +71,20 @@ export interface CodexThreadListRequestDto {
 export interface CodexThreadReadRequestDto {
   readonly threadId: string;
   readonly includeTurns?: boolean;
+}
+
+/** Hand-maintained subset of the pinned thread/turns/list protocol. */
+export interface CodexThreadTurnsListRequestDto {
+  readonly threadId: string;
+  readonly cursor: null;
+  readonly limit: 1;
+  readonly sortDirection: "desc";
+  readonly itemsView: "notLoaded";
+}
+
+export interface CodexTurnStatusDto {
+  readonly id: string;
+  readonly status: string;
 }
 
 export interface CodexThreadStartRequestDto {

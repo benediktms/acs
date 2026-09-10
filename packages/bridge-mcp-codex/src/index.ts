@@ -86,6 +86,7 @@ const agentSchema = z.looseObject({
       kind: z.literal("attested"),
       bindingId: z.string(),
       bindingEpoch: z.number(),
+      scopes: z.array(z.string()),
       session: z.object({ installationId: z.string(), opaqueId: z.string() }),
     }),
     z.looseObject({ kind: z.literal("unattested"), reason: z.string() }),
@@ -267,14 +268,18 @@ export async function runMcp(port = 7432) {
         throw new Error(`UNATTESTED_CALLER: ${attestation.reason}`);
       return attestation;
     },
-    issueA2AToken = (attestation: Awaited<ReturnType<typeof attest>>, extra: unknown) =>
+    issueA2AToken = (
+      attestation: Awaited<ReturnType<typeof attest>>,
+      extra: unknown,
+      additionalScopes: readonly string[] = [],
+    ) =>
       typedCall(
         "bridge.issueA2AToken",
         {
           evidence: evidence(extra),
           bindingId: attestation.bindingId,
           bindingEpoch: attestation.bindingEpoch,
-          scopes: ["a2a:send", "a2a:read", "a2a:cancel"],
+          scopes: ["a2a:send", "a2a:read", "a2a:cancel", ...additionalScopes],
         },
         tokenSchema,
       );
@@ -417,6 +422,7 @@ export async function runMcp(port = 7432) {
         taskId: z.string().optional(),
         contextId: z.string().optional(),
         priority: z.enum(["low", "normal", "high"]).optional(),
+        preempt: z.boolean().optional(),
         replyExpected: z.boolean().optional(),
         notifyOn: z
           .array(
@@ -439,7 +445,11 @@ export async function runMcp(port = 7432) {
       execute(async () => {
         const caller = await attest(extra),
           identity = mcpMessageIdentity(extra.requestId, hostMetadata(extra), args.clientRequestId),
-          auth = await issueA2AToken(caller, extra),
+          auth = await issueA2AToken(
+            caller,
+            extra,
+            args.preempt && caller.scopes.includes("a2a:preempt") ? ["a2a:preempt"] : [],
+          ),
           agent = await typedCall("agents.get", { agent: args.to }, agentResultSchema);
         const rpc = taskResultSchema.parse(
           await a2a(port, agent.agent.slug, auth.token, "SendMessage", {
@@ -454,6 +464,7 @@ export async function runMcp(port = 7432) {
             metadata: {
               "urn:agent-communications:delivery:v1": {
                 priority: args.priority,
+                preempt: args.preempt,
                 replyExpected: args.replyExpected,
                 notifyOn: args.notifyOn,
               },

@@ -442,20 +442,38 @@ export class DeliveryScheduler {
         const now = Date.now();
         const expired = this.store
           .query<DeliveryIntentRow, [number]>(
-            "SELECT * FROM delivery_intents WHERE state IN ('pending','deferred') AND deadline_ms IS NOT NULL AND deadline_ms<=?",
+            "SELECT * FROM delivery_intents WHERE state NOT IN ('accepted','failed-terminal','canceled','superseded') AND deadline_ms IS NOT NULL AND deadline_ms<=?",
           )
           .all(now);
-        for (const intent of expired)
+        for (const intent of expired) {
+          const status = parsePreemption(intent.preemption_status_json);
+          if (
+            status.requested &&
+            ["attempted", "pending-confirmation", "unresolved"].includes(status.state)
+          )
+            this.setPreemption(
+              intent.id,
+              {
+                ...status,
+                state: "unresolved",
+                reason: "deadline-expired",
+              },
+              true,
+            );
           this.store
             .query(
-              "UPDATE delivery_intents SET state=?,state_reason='deadline-expired',lease_owner=NULL,lease_expires_at_ms=NULL,updated_at_ms=? WHERE id=?",
+              "UPDATE delivery_intents SET state=?,state_reason='deadline-expired',lease_owner=NULL,lease_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND state NOT IN ('accepted','failed-terminal','canceled','superseded')",
             )
             .run(transitionDelivery(intent.state, DeliveryState.FailedTerminal), now, intent.id);
+        }
         const rows = this.store
-            .query<DeliveryIntentRow, [number, number, number, RuntimeInstallationId]>(
-              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY i.target_agent_id ORDER BY i.priority DESC,i.not_before_ms,i.created_at_ms) lane_rank FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.state IN ('pending','deferred') AND i.not_before_ms<=? AND (i.deadline_ms IS NULL OR i.deadline_ms>?) AND (i.lease_expires_at_ms IS NULL OR i.lease_expires_at_ms<=?) AND CASE WHEN p.status='active' OR p.continuity_policy='strict' THEN p.installation_id ELSE b.installation_id END=? AND NOT EXISTS(SELECT 1 FROM delivery_intents active WHERE active.target_agent_id=i.target_agent_id AND active.id<>i.id AND active.state IN ('leased','attempting'))) WHERE lane_rank=1 ORDER BY priority DESC,not_before_ms,created_at_ms LIMIT 100",
+            .query<
+              DeliveryIntentRow,
+              [number, number, number, number, RuntimeInstallationId, number]
+            >(
+              "SELECT * FROM (SELECT i.*,row_number() OVER (PARTITION BY i.target_agent_id ORDER BY CASE WHEN ? - i.created_at_ms >= 60000 THEN 1 ELSE 0 END DESC,i.priority DESC,i.not_before_ms,i.created_at_ms) lane_rank FROM delivery_intents i LEFT JOIN runtime_bindings p ON p.id=i.pinned_binding_id LEFT JOIN runtime_bindings b ON b.agent_id=i.target_agent_id AND b.status='active' WHERE i.state IN ('pending','deferred') AND i.not_before_ms<=? AND (i.deadline_ms IS NULL OR i.deadline_ms>?) AND (i.lease_expires_at_ms IS NULL OR i.lease_expires_at_ms<=?) AND CASE WHEN p.status='active' OR p.continuity_policy='strict' THEN p.installation_id ELSE b.installation_id END=? AND NOT EXISTS(SELECT 1 FROM delivery_intents active WHERE active.target_agent_id=i.target_agent_id AND active.id<>i.id AND active.state IN ('leased','attempting'))) WHERE lane_rank=1 ORDER BY CASE WHEN ? - created_at_ms >= 60000 THEN 1 ELSE 0 END DESC,priority DESC,not_before_ms,created_at_ms LIMIT 100",
             )
-            .all(now, now, now, required(this.context, "adapter context").installationId),
+            .all(now, now, now, now, required(this.context, "adapter context").installationId, now),
           row = rows.find((item) => !this.lanes.has(item.target_agent_id));
         if (!row) return null;
         if (row.state === DeliveryState.Deferred) {
@@ -475,6 +493,8 @@ export class DeliveryScheduler {
     );
   }
   private async deliver(intent: DeliveryIntentRow) {
+    if (intent.deadline_ms !== null && intent.deadline_ms <= Date.now()) return;
+    const signal = deadlineSignal(this.abort.signal, intent.deadline_ms);
     const target = this.store.agent(intent.target_agent_id);
     if (!target?.enabled) return this.failTerminal(intent.id, "target-disabled");
     if (!this.capabilities.directDelivery)
@@ -512,6 +532,7 @@ export class DeliveryScheduler {
             : state;
       return this.defer(intent.id, reason, 30_000);
     }
+    if (await this.maybePreempt(intent, binding, signal)) return;
     const payload: DeliveryPayload = JSON.parse(intent.payload_json),
       isTaskEventNotification = intent.kind === "task-event-notification",
       parties = required(
@@ -611,29 +632,32 @@ export class DeliveryScheduler {
           }),
       provenance,
     };
-    const result = await this.runtimeDeliver({
-      deliveryId: intent.id,
-      target: {
-        session: {
-          installationId: binding.installation_id,
-          opaqueId: binding.session_opaque_id,
+    const result = await this.runtimeDeliver(
+      {
+        deliveryId: intent.id,
+        target: {
+          session: {
+            installationId: binding.installation_id,
+            opaqueId: binding.session_opaque_id,
+          },
+          bindingId: binding.id,
+          bindingEpoch: binding.epoch,
         },
-        bindingId: binding.id,
-        bindingEpoch: binding.epoch,
+        mode: "direct",
+        envelope,
+        payloadHash: intent.payload_hash,
+        deadline: intent.deadline_ms ? new Date(intent.deadline_ms).toISOString() : undefined,
+        traceContext: "message" in payload ? payload.traceContext : undefined,
+        markRequestFlushed: () => {
+          this.store
+            .query(
+              "UPDATE delivery_attempts SET request_flushed_at_ms=? WHERE id=? AND request_flushed_at_ms IS NULL",
+            )
+            .run(Date.now(), attempt);
+        },
       },
-      mode: "direct",
-      envelope,
-      payloadHash: intent.payload_hash,
-      deadline: intent.deadline_ms ? new Date(intent.deadline_ms).toISOString() : undefined,
-      traceContext: "message" in payload ? payload.traceContext : undefined,
-      markRequestFlushed: () => {
-        this.store
-          .query(
-            "UPDATE delivery_attempts SET request_flushed_at_ms=? WHERE id=? AND request_flushed_at_ms IS NULL",
-          )
-          .run(Date.now(), attempt);
-      },
-    });
+      signal,
+    );
     const completed = Date.now();
     const currentAttempt = this.store
       .query(
@@ -745,6 +769,7 @@ export class DeliveryScheduler {
             );
       });
     }
+    this.auditPreemptionDelivery(intent.id, result.outcome);
     if (
       result.outcome === "accepted" &&
       !isTaskEventNotification &&
@@ -778,6 +803,250 @@ export class DeliveryScheduler {
     )
       return;
     this.store.setTaskState(taskId, row.requester_principal_id, TaskState.Canceled);
+  }
+  private async maybePreempt(
+    intent: DeliveryIntentRow,
+    recipient: BindingRow,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const status = parsePreemption(intent.preemption_status_json);
+    if (!status.requested || status.state === "not-requested") return false;
+    if (
+      status.attempted &&
+      ["attempted", "pending-confirmation", "unresolved"].includes(status.state)
+    ) {
+      const execution = preemptionExecution(status),
+        target = preemptionTarget(status);
+      if (!execution || !target || !this.adapter.reconcileInterrupt) {
+        this.setPreemption(intent.id, { ...status, state: "unresolved" });
+        return (this.defer(intent.id, "preemption-reconciliation", 30_000), true);
+      }
+      const result = await this.adapter.reconcileInterrupt(
+        {
+          target,
+          execution,
+          reconciliationToken: preemptionToken(status),
+        },
+        signal,
+      );
+      if (result.outcome === "pending-confirmation" || result.outcome === "unresolved") {
+        this.setPreemption(intent.id, { ...status, state: result.outcome });
+        this.defer(intent.id, "preemption-reconciliation", 30_000);
+        return true;
+      }
+      this.setPreemption(intent.id, {
+        ...status,
+        state:
+          result.outcome === "achieved"
+            ? "achieved"
+            : result.outcome === "terminal"
+              ? "unnecessary"
+              : "unresolved",
+      });
+      return false;
+    }
+    if (status.attempted || status.state !== "requested") return false;
+    if (
+      !this.capabilities.peerPreemption ||
+      !this.adapter.findActiveExecution ||
+      !this.adapter.interruptExecution
+    ) {
+      this.setPreemption(intent.id, {
+        ...status,
+        state: "downgraded",
+        reason: "unsupported-runtime",
+      });
+      return false;
+    }
+    const sender = this.store
+      .query<
+        { principal_id: string; binding_id: BindingId; scopes_json: string; status: string },
+        [`tsk_${string}`]
+      >(
+        "SELECT p.id principal_id,p.binding_id,p.scopes_json,b.status FROM a2a_tasks t JOIN principals p ON p.id=t.requester_principal_id JOIN runtime_bindings b ON b.id=p.binding_id WHERE t.id=? AND p.disabled_at_ms IS NULL",
+      )
+      .get(intent.task_id);
+    if (!sender || sender.status !== "active" || !hasPreemptionScope(sender.scopes_json)) {
+      this.store.audit(
+        null,
+        "delivery.preemption.authorization-denied",
+        "delivery-intent",
+        intent.id,
+      );
+      this.setPreemption(intent.id, {
+        ...status,
+        state: "downgraded",
+        reason: "missing-sender-authority",
+      });
+      return false;
+    }
+    if (!allowPeerPreemption(recipient.delivery_policy_json)) {
+      this.store.audit(
+        sender.principal_id,
+        "delivery.preemption.policy-denied",
+        "delivery-intent",
+        intent.id,
+        {
+          bindingId: recipient.id,
+        },
+      );
+      this.setPreemption(intent.id, {
+        ...status,
+        state: "downgraded",
+        reason: "recipient-opt-out",
+      });
+      return false;
+    }
+    this.store.audit(
+      sender.principal_id,
+      "delivery.preemption.authorized",
+      "delivery-intent",
+      intent.id,
+      {
+        bindingId: recipient.id,
+        bindingEpoch: recipient.epoch,
+      },
+    );
+    const target = {
+      session: { installationId: recipient.installation_id, opaqueId: recipient.session_opaque_id },
+      bindingId: recipient.id,
+      bindingEpoch: recipient.epoch,
+    } as const;
+    const found = await this.adapter.findActiveExecution({ target }, this.abort.signal);
+    if (found.outcome !== "found") {
+      this.setPreemption(intent.id, {
+        ...status,
+        state: found.outcome === "unsupported" ? "downgraded" : "unnecessary",
+        reason: found.outcome === "unsupported" ? "unsupported-runtime" : "no-active-execution",
+      });
+      return false;
+    }
+    this.setPreemption(intent.id, {
+      ...status,
+      attempted: true,
+      state: "attempted",
+      execution: found.execution,
+      target,
+    });
+    const result = await this.adapter.interruptExecution(
+      {
+        target,
+        execution: found.execution,
+        reason: "Authorized peer delivery",
+        assertAuthorityFence: async () => ({
+          valid: Boolean(
+            this.store
+              .query<{ value: number }, [string, BindingId, BindingId, number]>(
+                "SELECT exists(SELECT 1 FROM principals p JOIN runtime_bindings b ON b.id=p.binding_id WHERE p.id=? AND p.binding_id=? AND p.disabled_at_ms IS NULL AND b.status='active' AND exists(SELECT 1 FROM json_each(p.scopes_json) WHERE value='a2a:preempt')) AND exists(SELECT 1 FROM runtime_bindings WHERE id=? AND epoch=? AND status='active' AND json_extract(delivery_policy_json,'$.allowPeerPreemption')=1) value",
+              )
+              .get(sender.principal_id, sender.binding_id, recipient.id, recipient.epoch)?.value,
+          ),
+        }),
+      },
+      signal,
+    );
+    const next =
+      result.outcome === "achieved"
+        ? { state: "achieved" }
+        : result.outcome === "pending-confirmation"
+          ? {
+              state: "pending-confirmation",
+              reconciliationToken: result.reconciliationToken,
+              execution: found.execution,
+              target,
+            }
+          : result.outcome === "unnecessary"
+            ? { state: "unnecessary", reason: result.reason }
+            : result.outcome === "rejected"
+              ? { state: "downgraded", reason: result.reason }
+              : {
+                  state: "downgraded",
+                  reason: result.outcome === "stale-fence" ? "stale-fence" : "unsupported-runtime",
+                };
+    this.setPreemption(intent.id, { ...status, attempted: true, ...next });
+    if (result.outcome === "pending-confirmation") {
+      this.defer(intent.id, "preemption-reconciliation", 30_000);
+      return true;
+    }
+    return false;
+  }
+  private setPreemption(
+    intentId: DeliveryId,
+    status: Record<string, unknown>,
+    allowExpired = false,
+  ) {
+    const encoded = JSON.stringify(status),
+      row = this.store
+        .query<{ preemption_status_json: string; deadline_ms: number | null }, [DeliveryId]>(
+          "SELECT preemption_status_json,deadline_ms FROM delivery_intents WHERE id=?",
+        )
+        .get(intentId),
+      previous = row?.preemption_status_json;
+    if (!row || (!allowExpired && row.deadline_ms !== null && row.deadline_ms <= Date.now()))
+      return;
+    let changed = false;
+    this.store.write(() => {
+      const now = Date.now();
+      const updated = this.store
+        .query(
+          allowExpired
+            ? "UPDATE delivery_intents SET preemption_status_json=?,updated_at_ms=? WHERE id=?"
+            : "UPDATE delivery_intents SET preemption_status_json=?,updated_at_ms=? WHERE id=? AND (deadline_ms IS NULL OR deadline_ms>?)",
+        )
+        .run(...(allowExpired ? [encoded, now, intentId] : [encoded, now, intentId, now]));
+      if (updated.changes !== 1 || previous === encoded) return;
+      changed = true;
+      const task = this.store
+        .query<{ task_id: string }, [DeliveryId]>("SELECT task_id FROM delivery_intents WHERE id=?")
+        .get(intentId);
+      if (!task) return;
+      const snapshot = this.store
+        .query<{ a2a_snapshot_json: string; next_event_sequence: number }, [string]>(
+          "SELECT a2a_snapshot_json,next_event_sequence FROM a2a_tasks WHERE id=?",
+        )
+        .get(task.task_id);
+      if (!snapshot) return;
+      this.store
+        .query(
+          "INSERT INTO task_events(id,task_id,sequence,event_type,actor_principal_id,payload_json,created_at_ms) VALUES(?,?,?,?,?,?,?)",
+        )
+        .run(
+          id("evt"),
+          task.task_id,
+          snapshot.next_event_sequence,
+          "delivery-deferred",
+          null,
+          JSON.stringify({ preemption: status, snapshot: JSON.parse(snapshot.a2a_snapshot_json) }),
+          now,
+        );
+      this.store
+        .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
+        .run(task.task_id);
+    });
+    if (!changed) return;
+    this.store.audit(
+      null,
+      `delivery.preemption.${String(status.state)}`,
+      "delivery-intent",
+      intentId,
+      {
+        requested: status.requested === true,
+        attempted: status.attempted === true,
+        reason: typeof status.reason === "string" ? status.reason : undefined,
+      },
+    );
+    telemetry.increment("acs_peer_preemption_total", { state: String(status.state) });
+  }
+  private auditPreemptionDelivery(intentId: DeliveryId, outcome: string) {
+    const row = this.store
+      .query<{ preemption_status_json: string }, [DeliveryId]>(
+        "SELECT preemption_status_json FROM delivery_intents WHERE id=?",
+      )
+      .get(intentId);
+    if (!row || !parsePreemption(row.preemption_status_json).requested) return;
+    this.store.audit(null, "delivery.preemption.delivery", "delivery-intent", intentId, {
+      outcome,
+    });
   }
   private defer(intentId: string, reason: string, delay: number) {
     const now = Date.now(),
@@ -862,7 +1131,7 @@ export class DeliveryScheduler {
         .run(failed, reason, Date.now(), intentId);
     });
   }
-  private async runtimeDeliver(request: RuntimeDeliveryRequest) {
+  private async runtimeDeliver(request: RuntimeDeliveryRequest, signal: AbortSignal) {
     const started = performance.now();
     telemetry.increment("acs_delivery_attempts_total", {
       adapter: this.adapter.descriptor.adapterId,
@@ -879,9 +1148,7 @@ export class DeliveryScheduler {
       Math.max(25, Math.floor(this.options.leaseMs / 2)),
     );
     try {
-      return await telemetry.trace("runtime.deliver", () =>
-        this.adapter.deliver(request, this.abort.signal),
-      );
+      return await telemetry.trace("runtime.deliver", () => this.adapter.deliver(request, signal));
     } finally {
       clearInterval(renew);
       telemetry.observe("acs_delivery_latency_ms", performance.now() - started, {
@@ -1160,6 +1427,106 @@ function interruptOnCancel(json: string) {
     value.interruptOnCancel === true
   );
 }
+function allowPeerPreemption(json: string) {
+  const value: unknown = JSON.parse(json);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "allowPeerPreemption" in value &&
+    value.allowPeerPreemption === true
+  );
+}
+function hasPreemptionScope(json: string) {
+  try {
+    const value: unknown = JSON.parse(json);
+    return Array.isArray(value) && value.includes("a2a:preempt");
+  } catch {
+    return false;
+  }
+}
+type PreemptionStatus = Record<string, unknown> & {
+  requested: boolean;
+  attempted: boolean;
+  state: string;
+};
+function isPreemptionStatus(value: unknown): value is PreemptionStatus {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "requested" in value &&
+    "attempted" in value &&
+    "state" in value &&
+    typeof value.requested === "boolean" &&
+    typeof value.attempted === "boolean" &&
+    typeof value.state === "string"
+  );
+}
+function parsePreemption(json: string): PreemptionStatus {
+  const value: unknown = JSON.parse(json);
+  if (isPreemptionStatus(value)) return value;
+  return { requested: false, attempted: false, state: "not-requested" };
+}
+function preemptionExecution(status: PreemptionStatus): RuntimeExecutionRef | undefined {
+  const value = status.execution;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("opaqueId" in value) ||
+    typeof value.opaqueId !== "string" ||
+    !("session" in value) ||
+    typeof value.session !== "object" ||
+    value.session === null ||
+    !("opaqueId" in value.session) ||
+    typeof value.session.opaqueId !== "string" ||
+    !("installationId" in value.session) ||
+    typeof value.session.installationId !== "string" ||
+    !value.session.installationId.startsWith("ins_")
+  )
+    return undefined;
+  return {
+    ...value,
+    opaqueId: value.opaqueId,
+    session: {
+      ...value.session,
+      opaqueId: value.session.opaqueId,
+      installationId: `ins_${value.session.installationId.slice(4)}`,
+    },
+  };
+}
+function preemptionTarget(status: PreemptionStatus) {
+  const value = status.target;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("bindingId" in value) ||
+    typeof value.bindingId !== "string" ||
+    !value.bindingId.startsWith("bnd_") ||
+    !("bindingEpoch" in value) ||
+    typeof value.bindingEpoch !== "number" ||
+    !("session" in value) ||
+    typeof value.session !== "object" ||
+    value.session === null ||
+    !("opaqueId" in value.session) ||
+    typeof value.session.opaqueId !== "string" ||
+    !("installationId" in value.session) ||
+    typeof value.session.installationId !== "string" ||
+    !value.session.installationId.startsWith("ins_")
+  )
+    return undefined;
+  const bindingId: BindingId = `bnd_${value.bindingId.slice(4)}`,
+    installationId: RuntimeInstallationId = `ins_${value.session.installationId.slice(4)}`;
+  return {
+    bindingId,
+    bindingEpoch: value.bindingEpoch,
+    session: {
+      installationId,
+      opaqueId: value.session.opaqueId,
+    },
+  };
+}
+function preemptionToken(status: PreemptionStatus) {
+  return typeof status.reconciliationToken === "string" ? status.reconciliationToken : undefined;
+}
 function runtimeState(value: string | null) {
   if (
     value === "offline" ||
@@ -1182,6 +1549,11 @@ function interactivePresence(value: string | null) {
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new Error(`missing ${name}`);
   return value;
+}
+
+function deadlineSignal(parent: AbortSignal, deadlineMs: number | null): AbortSignal {
+  if (deadlineMs === null) return parent;
+  return AbortSignal.any([parent, AbortSignal.timeout(Math.max(0, deadlineMs - Date.now()))]);
 }
 
 export function retryDelay(attempt: number, random = Math.random, base = 250, cap = 30_000) {

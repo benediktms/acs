@@ -64,13 +64,15 @@ function delivery(metadata: Record<string, unknown> | undefined): DeliveryPrefer
   const raw = metadata?.[extension],
     value = raw === undefined ? {} : raw;
   if (!isRecord(value)) throw new Error("VALIDATION_FAILED: delivery extension must be an object");
-  const allowed = new Set(["priority", "notifyOn", "replyExpected", "expiresAt"]);
+  const allowed = new Set(["priority", "preempt", "notifyOn", "replyExpected", "expiresAt"]);
   if (Object.keys(value).some((key) => !allowed.has(key)))
     throw new Error("VALIDATION_FAILED: unknown delivery option");
   const priority = value.priority ?? "normal",
     notifyOn = value.notifyOn ?? ["input-required", "terminal"];
   if (priority !== "low" && priority !== "normal" && priority !== "high")
     throw new Error("VALIDATION_FAILED: invalid priority");
+  if (value.preempt !== undefined && typeof value.preempt !== "boolean")
+    throw new Error("VALIDATION_FAILED: invalid preempt");
   if (!Array.isArray(notifyOn) || !notifyOn.every(isNotifyState))
     throw new Error("VALIDATION_FAILED: invalid notifyOn");
   if (value.replyExpected !== undefined && typeof value.replyExpected !== "boolean")
@@ -82,6 +84,7 @@ function delivery(metadata: Record<string, unknown> | undefined): DeliveryPrefer
     throw new Error("VALIDATION_FAILED: invalid expiresAt");
   return {
     priority,
+    preempt: value.preempt ?? false,
     notifyOn,
     replyExpected: value.replyExpected ?? true,
     expiresAt: value.expiresAt,

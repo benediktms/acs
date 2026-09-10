@@ -120,6 +120,7 @@ export interface DeliveryIntentRow {
   runtime_execution_id: RuntimeExecutionId | null;
   created_at_ms: number;
   updated_at_ms: number;
+  preemption_status_json: string;
 }
 
 export interface AuthenticatedPrincipalRow {
@@ -150,6 +151,7 @@ export type StoredAttestation =
       readonly bindingEpoch: number;
       readonly agentId: `agt_${string}`;
       readonly principalId: `prn_${string}`;
+      readonly scopes: readonly string[];
       readonly slug: string;
       readonly displayName: string;
       readonly evidenceFingerprint: string;
@@ -169,7 +171,9 @@ export interface BindingOptions {
   /** Internal compatibility shape while storage policy JSON is simplified. */
   deliveryPolicy?: Partial<{
     interruptOnCancel: boolean;
+    allowPeerPreemption: boolean;
   }>;
+  grantPeerPreemption?: boolean;
   installationId?: RuntimeInstallationId;
   revokeExisting?: boolean;
 }
@@ -182,6 +186,7 @@ export interface DeliveryOptions {
   /** Internal storage selector. Public A2A/MCP callers cannot choose a mode. */
   mode?: "direct";
   priority?: "low" | "normal" | "high";
+  preempt?: boolean;
   notifyOn?: string[];
   replyExpected?: boolean;
   expiresAt?: string;
@@ -276,6 +281,7 @@ export interface ControlStoragePort extends SqlPort {
     agent: string,
     principalId: string,
     ttlSeconds?: number,
+    options?: BindingOptions,
   ): { claimId: string; claimCode: string; expiresAt: string };
   bind(agent: string, sessionId: string, options?: BindingOptions): BindingHandle;
   claim(code: string, sessionId: string, options?: BindingOptions): ClaimBindingResult;
@@ -365,6 +371,14 @@ export interface ControlStoragePort extends SqlPort {
 
 export interface DeliveryStoragePort extends SqlPort {
   write<Result>(operation: () => Result): Result;
+  audit(
+    actorPrincipalId: string | null,
+    action: string,
+    resourceType: string,
+    resourceId?: string,
+    details?: Record<string, unknown>,
+    correlationId?: string,
+  ): void;
   agent(value: string): AgentRow | null;
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult): void;
   markRuntimeOffline(installationId: RuntimeInstallationId): void;

@@ -17,6 +17,12 @@ import type {
   RuntimeCapabilities,
   RuntimeCancelRequest,
   RuntimeCancelResult,
+  RuntimeFindActiveExecutionRequest,
+  RuntimeFindActiveExecutionResult,
+  RuntimeInterruptExecutionRequest,
+  RuntimeInterruptExecutionResult,
+  RuntimeReconcileInterruptRequest,
+  RuntimeReconcileInterruptResult,
   RuntimeDeliveryEnvelopeV1,
   DeliveryId,
   RuntimeDeliveryRequest,
@@ -36,7 +42,11 @@ import type {
 } from "../../../contracts/runtime-adapter";
 import { CodexAppServerClient } from "./app-server-client";
 import { telemetry } from "../../observability/src/index";
-import { CODEX_PROTOCOL_FINGERPRINT, supportsCodexVersion } from "./protocol-codec";
+import {
+  CODEX_PROTOCOL_FINGERPRINT,
+  supportsCodexVersion,
+  supportsPeerPreemption,
+} from "./protocol-codec";
 import { deriveAgentState } from "../../domain/src/index";
 
 export { SUPPORTED_CODEX_VERSIONS, TESTED_CODEX_VERSION } from "./protocol-codec";
@@ -76,6 +86,7 @@ const capabilities: RuntimeCapabilities = {
   directDelivery: true,
   // A shared app-server attachment does not establish isolated execution ownership.
   cancelOwnedExecution: false,
+  peerPreemption: false,
   reconcileDelivery: true,
   callerAttestationSchemes: ["codex-mcp-thread-meta-v1"],
   supportedPartKinds: ["text", "uri", "data"],
@@ -84,6 +95,7 @@ const disabledCapabilities = (): RuntimeCapabilities => ({
   ...capabilities,
   directDelivery: false,
   cancelOwnedExecution: false,
+  peerPreemption: false,
   reconcileDelivery: false,
 });
 const runtimeStates: RuntimeState[] = [
@@ -122,6 +134,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
   private completedExecutions = new Set<string>();
+  private interruptedExecutions = new Set<string>();
   private observations = new Map<
     string,
     Pick<RuntimeSessionSnapshot, "runtimeState" | "blockingReason" | "interactivePresence">
@@ -152,6 +165,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       this.client = undefined;
       this.runtimeVersion = undefined;
       this.observations.clear();
+      this.interruptedExecutions.clear();
       if (!this.stopped) this.emit({ type: "adapter.connection", state: "offline" });
     };
     try {
@@ -172,6 +186,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.client = undefined;
     this.runtimeVersion = undefined;
     this.observations.clear();
+    this.interruptedExecutions.clear();
     this.wake();
   }
   async probe(signal?: AbortSignal): Promise<RuntimeProbeResult> {
@@ -200,7 +215,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         observedAt: new Date().toISOString(),
         runtimeVersion: this.runtimeVersion,
         protocolFingerprint: CODEX_PROTOCOL_FINGERPRINT,
-        capabilities,
+        capabilities: {
+          ...capabilities,
+          peerPreemption: supportsPeerPreemption(this.runtimeVersion),
+        },
         diagnostics: [],
       };
     } catch (error) {
@@ -501,6 +519,116 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // thread. This shared-endpoint adapter cannot prove exclusive ownership.
     return { outcome: "rejected", reason: "not-owned", retryable: false };
   }
+  async findActiveExecution(
+    request: RuntimeFindActiveExecutionRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeFindActiveExecutionResult> {
+    this.assertRunning();
+    if (!supportsCodexVersion(this.runtimeVersion)) return { outcome: "unsupported" };
+    try {
+      const turn = await this.requireClient().newestActiveTurn(
+        {
+          threadId: request.target.session.opaqueId,
+          cursor: null,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        },
+        signal,
+      );
+      return turn
+        ? { outcome: "found", execution: { opaqueId: turn.id, session: request.target.session } }
+        : { outcome: "no-active-execution" };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return { outcome: "unsupported" };
+    }
+  }
+  async interruptExecution(
+    request: RuntimeInterruptExecutionRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeInterruptExecutionResult> {
+    this.assertRunning();
+    if (!supportsCodexVersion(this.runtimeVersion)) return { outcome: "unsupported" };
+    if (request.execution.session.opaqueId !== request.target.session.opaqueId)
+      return { outcome: "rejected", reason: "execution-session-mismatch" };
+    const authority = await request.assertAuthorityFence(signal);
+    if (!authority.valid) return { outcome: "stale-fence" };
+    const binding = await this.requireContext().assertBindingFence(
+      request.target.bindingId,
+      request.target.bindingEpoch,
+      signal,
+    );
+    if (!binding.valid) return { outcome: "stale-fence" };
+    let flushed = false;
+    try {
+      await this.requireClient().interruptTurn(
+        request.target.session.opaqueId,
+        request.execution.opaqueId,
+        () => {
+          flushed = true;
+        },
+        signal,
+      );
+      // TurnInterruptResponse has no terminal status. Confirm the exact turn before reporting success.
+      return {
+        outcome: "pending-confirmation",
+        reconciliationToken: preemptionToken(
+          request.target.session.opaqueId,
+          request.execution.opaqueId,
+        ),
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const failure = appServerFailure(error);
+      if (failure.kind === CodexAppServerFailureKind.StaleExecution)
+        return { outcome: "unnecessary", reason: "stale-execution" };
+      if (
+        (failure.kind === CodexAppServerFailureKind.ConnectionLost ||
+          failure.kind === CodexAppServerFailureKind.RequestTimedOut ||
+          failure.kind === CodexAppServerFailureKind.RequestAbortedAfterWrite ||
+          failure.kind === CodexAppServerFailureKind.RequestMarkerFailedAfterWrite) &&
+        (failure.requestFlushed || flushed)
+      )
+        return {
+          outcome: "pending-confirmation",
+          reconciliationToken: preemptionToken(
+            request.target.session.opaqueId,
+            request.execution.opaqueId,
+          ),
+        };
+      return { outcome: "rejected", reason: failure.kind };
+    }
+  }
+  async reconcileInterrupt(
+    request: RuntimeReconcileInterruptRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeReconcileInterruptResult> {
+    this.assertRunning();
+    if (
+      request.reconciliationToken !== undefined &&
+      request.reconciliationToken !==
+        preemptionToken(request.target.session.opaqueId, request.execution.opaqueId)
+    )
+      return { outcome: "unresolved" };
+    const key = executionKey(request.target.session.opaqueId, request.execution.opaqueId);
+    if (this.interruptedExecutions.has(key)) return { outcome: "achieved" };
+    try {
+      const execution = await this.requireClient().readExecution(
+        request.target.session.opaqueId,
+        request.execution.opaqueId,
+        signal,
+      );
+      if (this.interruptedExecutions.has(key)) return { outcome: "achieved" };
+      if (!execution) return { outcome: "terminal" };
+      if (execution.status === "interrupted") return { outcome: "achieved" };
+      if (execution.status === "inProgress") return { outcome: "pending-confirmation" };
+      return { outcome: "terminal" };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return { outcome: "unresolved" };
+    }
+  }
   private async observeAcceptedExecution(
     request: DeliveryReference,
     turnId: string,
@@ -679,6 +807,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (method === "turn/completed" && isTurnCompleted(params)) {
       const event = params,
         execution = this.executions.get(executionKey(event.threadId, event.turn.id));
+      if (event.turn.status === "interrupted")
+        this.interruptedExecutions.add(executionKey(event.threadId, event.turn.id));
       if (execution) {
         const outcome =
           event.turn.status === "completed"
@@ -925,5 +1055,9 @@ function interactivePresence(value: string): InteractivePresence {
 }
 
 function executionKey(threadId: string, turnId: string) {
+  return JSON.stringify([threadId, turnId]);
+}
+
+function preemptionToken(threadId: string, turnId: string) {
   return JSON.stringify([threadId, turnId]);
 }

@@ -372,6 +372,9 @@ describe("control protocol", () => {
             claimCode: claim.claimCode,
             continuityPolicy: "strict",
             deliveryPolicy: { interruptOnCancel: false },
+            grantPeerPreemption: true,
+            allowPeerPreemption: true,
+            unknownEscalation: true,
             evidence: evidence("claimed-thread"),
           })
         ).json(),
@@ -390,6 +393,13 @@ describe("control protocol", () => {
     });
     const claimedResult = record(claimed.result),
       claimedBinding = record(claimedResult.binding);
+    expect(
+      store.db
+        .query<{ scopes_json: string }, [string]>(
+          "SELECT scopes_json FROM principals WHERE binding_id=? AND disabled_at_ms IS NULL",
+        )
+        .get(String(claimedBinding.id))?.scopes_json,
+    ).not.toContain("a2a:preempt");
     expect(
       await (
         await call("bindings.claim", {
@@ -570,7 +580,13 @@ describe("control protocol", () => {
       await (
         await call(
           "bindings.register",
-          { slug: "self-service", evidence: evidence("self-service-thread") },
+          {
+            slug: "self-service",
+            grantPeerPreemption: true,
+            allowPeerPreemption: true,
+            unknownEscalation: true,
+            evidence: evidence("self-service-thread"),
+          },
           "1",
           bridgeToken,
         )
@@ -582,6 +598,21 @@ describe("control protocol", () => {
         idempotent: false,
       },
     });
+    const selfRegistration = store.db
+      .query<{ id: string; delivery_policy_json: string }, [string]>(
+        "SELECT id,delivery_policy_json FROM runtime_bindings WHERE session_opaque_id=? AND status='active'",
+      )
+      .get("self-service-thread");
+    expect(selfRegistration?.delivery_policy_json).toBe(
+      '{"interruptOnCancel":false,"allowPeerPreemption":false}',
+    );
+    expect(
+      store.db
+        .query<{ scopes_json: string }, [string]>(
+          "SELECT scopes_json FROM principals WHERE binding_id=? AND disabled_at_ms IS NULL",
+        )
+        .get(required(selfRegistration, "self registration").id)?.scopes_json,
+    ).not.toContain("a2a:preempt");
     adapter.probe = originalProbe;
     expect(
       await (

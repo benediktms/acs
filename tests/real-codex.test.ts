@@ -6,6 +6,8 @@ import type {
   DeliveryId,
   RuntimeDeliveryRequest,
   RuntimeEvent,
+  RuntimeExecutionRef,
+  RuntimeFindActiveExecutionRequest,
 } from "../contracts/runtime-adapter";
 import { CodexRuntimeAdapter, TESTED_CODEX_VERSION } from "../packages/runtime-codex/src/index";
 import { CodexAppServerClient } from "../packages/runtime-codex/src/app-server-client";
@@ -290,6 +292,238 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
   30_000,
 );
 
+test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
+  "real Codex discovers, rejects stale, interrupts one exact user turn, then falls back once",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-native-codex-preempt-")),
+      socket = join(root, "app.sock"),
+      started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      requests: Record<string, unknown>[] = [];
+    const model = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        requests.push(record(await request.json()));
+        started.resolve();
+        await release.promise;
+        return new Response(modelResponse(requests.length, "preemption probe"), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    writeFileSync(
+      join(root, "config.toml"),
+      [
+        'model_provider = "acs_probe"',
+        'model = "acs-probe"',
+        "[model_providers.acs_probe]",
+        'name = "Isolated ACS test"',
+        `base_url = "${model.url.origin}/v1"`,
+        'wire_api = "responses"',
+        "requires_openai_auth = false",
+      ].join("\n"),
+    );
+    const child = Bun.spawn(
+        [process.env.ACS_CODEX_BINARY ?? "codex", "app-server", "--listen", `unix://${socket}`],
+        {
+          env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: root },
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
+      owner = new CodexAppServerClient(socket),
+      adapter = new CodexRuntimeAdapter(socket),
+      context = {
+        installationId: "ins_native" as const,
+        instanceId: "native-preempt-test",
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        clock: { now: () => new Date().toISOString() },
+        assertBindingFence: async () => ({ valid: true as const }),
+      };
+    try {
+      await until(() => existsSync(socket), "Codex app-server socket");
+      await owner.start();
+      const created = record(
+          await owner.startThread({
+            cwd: root,
+            ephemeral: false,
+            approvalPolicy: "never",
+            sandbox: "read-only",
+          }),
+        ),
+        threadId = string(record(created.thread).id),
+        target = {
+          session: { installationId: "ins_native" as const, opaqueId: threadId },
+          bindingId: "bnd_native" as const,
+          bindingEpoch: 1,
+        };
+      await adapter.start(context);
+      expect((await adapter.probe()).capabilities.peerPreemption).toBe(true);
+      await owner.startTurn({ threadId, input: [{ type: "text", text: "wait for interruption" }] });
+      await bounded(started.promise, "blocked user turn");
+      const found = await adapter.findActiveExecution?.({ target });
+      expect(found).toMatchObject({ outcome: "found", execution: { session: target.session } });
+      if (!found || found.outcome !== "found") throw new Error("missing exact active turn");
+      expect(
+        await adapter.interruptExecution?.({
+          target,
+          execution: { ...found.execution, opaqueId: "stale-turn-id" },
+          reason: "stale probe",
+          assertAuthorityFence: async () => ({ valid: true }),
+        }),
+      ).toMatchObject({ outcome: "unnecessary", reason: "stale-execution" });
+      const interrupt = await adapter.interruptExecution?.({
+        target,
+        execution: found.execution,
+        reason: "authorized peer delivery",
+        assertAuthorityFence: async () => ({ valid: true }),
+      });
+      expect(interrupt).toMatchObject({ outcome: "pending-confirmation" });
+      if (!interrupt || interrupt.outcome !== "pending-confirmation")
+        throw new Error("expected pending interrupt confirmation");
+      expect(
+        await reconcileUntilInterrupted(
+          adapter,
+          target,
+          found.execution,
+          interrupt.reconciliationToken,
+        ),
+      ).toMatchObject({ outcome: "achieved" });
+      expect(await adapter.deliver(delivery(threadId, "int_preempt_fallback"))).toMatchObject({
+        outcome: "accepted",
+      });
+      expect(requests).toHaveLength(1);
+    } finally {
+      release.resolve();
+      await adapter.stop({ reason: "shutdown" });
+      owner.close();
+      child.kill("SIGKILL");
+      await child.exited;
+      await model.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
+  "real Codex reconciles one flushed interrupt before one fallback delivery",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-native-codex-preempt-loss-")),
+      socket = join(root, "app.sock"),
+      lossSocket = join(root, "loss.sock"),
+      started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      requests: Record<string, unknown>[] = [];
+    const model = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        requests.push(record(await request.json()));
+        started.resolve();
+        await release.promise;
+        return new Response(modelResponse(requests.length, "preemption loss probe"), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    writeFileSync(
+      join(root, "config.toml"),
+      [
+        'model_provider = "acs_probe"',
+        'model = "acs-probe"',
+        "[model_providers.acs_probe]",
+        'name = "Isolated ACS test"',
+        `base_url = "${model.url.origin}/v1"`,
+        'wire_api = "responses"',
+        "requires_openai_auth = false",
+      ].join("\n"),
+    );
+    const child = Bun.spawn(
+        [process.env.ACS_CODEX_BINARY ?? "codex", "app-server", "--listen", `unix://${socket}`],
+        {
+          env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: root },
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
+      owner = new CodexAppServerClient(socket),
+      proxy = responseLossProxy(lossSocket, socket, "turn/interrupt"),
+      lossy = new CodexRuntimeAdapter(lossSocket),
+      reconnected = new CodexRuntimeAdapter(socket),
+      context = {
+        installationId: "ins_native" as const,
+        instanceId: "native-preempt-loss-test",
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        clock: { now: () => new Date().toISOString() },
+        assertBindingFence: async () => ({ valid: true as const }),
+      };
+    try {
+      await until(() => existsSync(socket), "Codex app-server socket");
+      await owner.start();
+      const created = record(
+          await owner.startThread({
+            cwd: root,
+            ephemeral: false,
+            approvalPolicy: "never",
+            sandbox: "read-only",
+          }),
+        ),
+        threadId = string(record(created.thread).id),
+        target = {
+          session: { installationId: "ins_native" as const, opaqueId: threadId },
+          bindingId: "bnd_native" as const,
+          bindingEpoch: 1,
+        };
+      await lossy.start(context);
+      await owner.startTurn({ threadId, input: [{ type: "text", text: "wait for interruption" }] });
+      await bounded(started.promise, "blocked user turn");
+      const found = await lossy.findActiveExecution?.({ target });
+      if (!found || found.outcome !== "found") throw new Error("missing exact active turn");
+      const interrupted = lossy.interruptExecution?.({
+        target,
+        execution: found.execution,
+        reason: "authorized peer delivery",
+        assertAuthorityFence: async () => ({ valid: true }),
+      });
+      await bounded(
+        proxy.requestFlushed.promise,
+        "turn/interrupt flushed through response-loss proxy",
+      );
+      proxy.disconnect();
+      expect(await interrupted).toMatchObject({ outcome: "pending-confirmation" });
+      await reconnected.start(context);
+      const reconciled = await reconcileUntilInterrupted(
+        reconnected,
+        target,
+        found.execution,
+        JSON.stringify([threadId, found.execution.opaqueId]),
+      );
+      expect(reconciled).toMatchObject({ outcome: "achieved" });
+      expect(proxy.interceptedCount()).toBe(1);
+      expect(
+        await reconnected.deliver(delivery(threadId, "int_preempt_loss_fallback")),
+      ).toMatchObject({
+        outcome: "accepted",
+      });
+      expect(proxy.interceptedCount()).toBe(1);
+      expect(requests).toHaveLength(1);
+    } finally {
+      release.resolve();
+      await lossy.stop({ reason: "shutdown" });
+      await reconnected.stop({ reason: "shutdown" });
+      proxy.close();
+      owner.close();
+      child.kill("SIGKILL");
+      await child.exited;
+      await model.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
 // Optional semantic smoke test. This uses the operator's existing authentication
 // only when explicitly opted in; it is NOT a test of desktop/TUI ownership.
 test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
@@ -378,14 +612,20 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
   150_000,
 );
 
-function responseLossProxy(socketPath: string, upstreamPath: string) {
-  const turnStartFlushed = Promise.withResolvers<void>();
+function responseLossProxy(
+  socketPath: string,
+  upstreamPath: string,
+  responseLossMethod: "turn/start" | "turn/interrupt" = "turn/start",
+) {
+  const requestFlushed = Promise.withResolvers<void>();
   let upstream: { write(data: Uint8Array): unknown; end(): void } | undefined,
     client: { write(data: Uint8Array): unknown; end(): void } | undefined,
     pending: Buffer[] = [],
     clientFrames = Buffer.alloc(0),
     upgraded = false,
-    suppressResponses = false;
+    suppressResponses = false,
+    interceptedWhilePending = false,
+    intercepted = 0;
   const server = Bun.listen({
     unix: socketPath,
     socket: {
@@ -398,6 +638,10 @@ function responseLossProxy(socketPath: string, upstreamPath: string) {
               upstream = connection;
               for (const data of pending) connection.write(data);
               pending = [];
+              if (interceptedWhilePending) {
+                suppressResponses = true;
+                requestFlushed.resolve();
+              }
             },
             data(_connection, data) {
               if (!suppressResponses) client?.write(data);
@@ -412,23 +656,29 @@ function responseLossProxy(socketPath: string, upstreamPath: string) {
         }).catch(() => client?.end());
       },
       data(_socket, data) {
-        if (containsTurnStart(Buffer.from(data))) {
-          suppressResponses = true;
-          turnStartFlushed.resolve();
+        const interceptedRequest = containsMethod(Buffer.from(data));
+        if (interceptedRequest) intercepted++;
+        if (upstream) {
+          upstream.write(data);
+          if (interceptedRequest) {
+            suppressResponses = true;
+            requestFlushed.resolve();
+          }
+        } else {
+          pending.push(Buffer.from(data));
+          interceptedWhilePending ||= interceptedRequest;
         }
-        if (upstream) upstream.write(data);
-        else pending.push(Buffer.from(data));
       },
       close() {
-        upstream?.end();
+        if (!suppressResponses) upstream?.end();
       },
       error() {
-        upstream?.end();
+        if (!suppressResponses) upstream?.end();
       },
     },
   });
 
-  function containsTurnStart(data: Buffer) {
+  function containsMethod(data: Buffer) {
     clientFrames = Buffer.concat([clientFrames, data]);
     if (!upgraded) {
       const end = clientFrames.indexOf("\r\n\r\n");
@@ -441,13 +691,17 @@ function responseLossProxy(socketPath: string, upstreamPath: string) {
       const frame = clientFrame(clientFrames);
       if (!frame) break;
       clientFrames = clientFrames.subarray(frame.consumed);
-      found ||= record(JSON.parse(frame.text)).method === "turn/start";
+      found ||= record(JSON.parse(frame.text)).method === responseLossMethod;
     }
     return found;
   }
 
   return {
-    turnStartFlushed,
+    turnStartFlushed: requestFlushed,
+    requestFlushed,
+    interceptedCount() {
+      return intercepted;
+    },
     disconnect() {
       client?.end();
     },
@@ -583,4 +837,18 @@ async function bounded<T>(promise: Promise<T>, label: string, timeout = 10_000):
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+async function reconcileUntilInterrupted(
+  adapter: CodexRuntimeAdapter,
+  target: RuntimeFindActiveExecutionRequest["target"],
+  execution: RuntimeExecutionRef,
+  reconciliationToken: string,
+) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const result = await adapter.reconcileInterrupt({ target, execution, reconciliationToken });
+    if (result.outcome === "achieved") return result;
+    if (result.outcome !== "pending-confirmation") return result;
+    await Bun.sleep(25);
+  }
+  throw new Error("timed out: interrupt confirmation");
 }

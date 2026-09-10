@@ -91,6 +91,8 @@ export interface RuntimeCapabilities {
   readonly observeExecutions: boolean;
   readonly directDelivery: boolean;
   readonly cancelOwnedExecution: boolean;
+  /** Disabled until the adapter's isolated interruption matrix is verified. */
+  readonly peerPreemption: boolean;
   readonly reconcileDelivery: boolean;
   readonly callerAttestationSchemes: readonly string[];
   readonly supportedPartKinds: readonly NeutralPart["kind"][];
@@ -325,6 +327,49 @@ export interface RuntimeCancelRequest {
   readonly reason?: string;
 }
 
+/** A runtime-owned execution; its identifiers remain opaque to ACS core. */
+export interface RuntimeFindActiveExecutionRequest {
+  readonly target: {
+    readonly session: RuntimeSessionRef;
+    readonly bindingId: BindingId;
+    readonly bindingEpoch: number;
+  };
+}
+
+export type RuntimeFindActiveExecutionResult =
+  | { readonly outcome: "found"; readonly execution: RuntimeExecutionRef }
+  | { readonly outcome: "no-active-execution" }
+  | { readonly outcome: "unsupported" };
+
+export interface RuntimeInterruptExecutionRequest extends RuntimeFindActiveExecutionRequest {
+  readonly execution: RuntimeExecutionRef;
+  readonly reason: string;
+  /** Re-reads sender authority and recipient policy immediately before mutation. */
+  readonly assertAuthorityFence: (signal?: AbortSignal) => Promise<{ readonly valid: boolean }>;
+}
+
+export type RuntimeInterruptExecutionResult =
+  /** Exact terminal evidence confirmed the requested interruption. */
+  | { readonly outcome: "achieved" }
+  | { readonly outcome: "unnecessary"; readonly reason: "stale-execution" | "not-running" }
+  | { readonly outcome: "unsupported" }
+  | { readonly outcome: "stale-fence" }
+  | { readonly outcome: "rejected"; readonly reason: string }
+  /** The write may have succeeded, but only exact terminal evidence confirms interruption. */
+  | { readonly outcome: "pending-confirmation"; readonly reconciliationToken: string };
+
+export interface RuntimeReconcileInterruptRequest extends RuntimeFindActiveExecutionRequest {
+  readonly execution: RuntimeExecutionRef;
+  /** Identifies the exact execution whose interrupt is pending confirmation. */
+  readonly reconciliationToken?: string;
+}
+
+export type RuntimeReconcileInterruptResult =
+  | { readonly outcome: "achieved" }
+  | { readonly outcome: "pending-confirmation" }
+  | { readonly outcome: "terminal" }
+  | { readonly outcome: "unresolved" };
+
 export type RuntimeCancelResult =
   | {
       readonly outcome: "accepted";
@@ -432,6 +477,22 @@ export interface RuntimeAdapter {
   ): Promise<RuntimeReconcileResult>;
 
   cancel(request: RuntimeCancelRequest, signal?: AbortSignal): Promise<RuntimeCancelResult>;
+
+  findActiveExecution?(
+    request: RuntimeFindActiveExecutionRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeFindActiveExecutionResult>;
+
+  /** Performs at most one vendor interrupt mutation for this exact execution. */
+  interruptExecution?(
+    request: RuntimeInterruptExecutionRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeInterruptExecutionResult>;
+
+  reconcileInterrupt?(
+    request: RuntimeReconcileInterruptRequest,
+    signal?: AbortSignal,
+  ): Promise<RuntimeReconcileInterruptResult>;
 }
 
 export interface HostInvocationEvidence {

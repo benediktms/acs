@@ -503,6 +503,7 @@ describe("schema migrations", () => {
       agent = store.createAgent("legacy-worker"),
       binding = store.bind(agent.id, "legacy-session"),
       principal = authenticated(store),
+      claim = store.createClaim(agent.id, principal.id),
       accepted = ["wake_when_idle", "append_context", "join_active"].map((messageId) =>
         store.accept(agent.id, principal.id, requestMessage(messageId), {}),
       );
@@ -536,7 +537,8 @@ describe("schema migrations", () => {
             .query("UPDATE delivery_intents SET mode=? WHERE id=?")
             .run(mode, delivery.deliveryId);
         }
-        legacy.query("DELETE FROM schema_migrations WHERE version=2").run();
+        // Rebuilding the historical delivery-intents table also removes migration 6's column.
+        legacy.query("DELETE FROM schema_migrations WHERE version IN (2,6)").run();
       })
       .immediate();
     legacy.exec("PRAGMA foreign_keys=ON");
@@ -554,8 +556,22 @@ describe("schema migrations", () => {
       upgraded.db.query("SELECT mode FROM delivery_intents ORDER BY created_at_ms").all(),
     ).toEqual([{ mode: "direct" }, { mode: "direct" }, { mode: "direct" }]);
     expect(
+      upgraded.db
+        .query("SELECT principal_scopes_json FROM binding_claims WHERE id=?")
+        .all(claim.claimId),
+    ).toEqual([
+      { principal_scopes_json: '["a2a:send","a2a:read","a2a:cancel","executor","inbox"]' },
+    ]);
+    expect(
       upgraded.db.query("SELECT version FROM schema_migrations ORDER BY version").all(),
-    ).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }, { version: 5 }]);
+    ).toEqual([
+      { version: 1 },
+      { version: 2 },
+      { version: 3 },
+      { version: 4 },
+      { version: 5 },
+      { version: 6 },
+    ]);
     expect(
       upgraded.db
         .query("SELECT intent_id,binding_id FROM delivery_attempts WHERE id='att_legacy'")
@@ -583,6 +599,127 @@ describe("schema migrations", () => {
     reopened.close();
   });
 
+  test("adds all peer-preemption columns to a pre-migration schema", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("partial-schema-worker"),
+      principal = authenticated(store),
+      claim = store.createClaim(agent.id, principal.id),
+      accepted = store.accept(agent.id, principal.id, requestMessage("partial-schema"), {});
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy
+      .transaction(() => {
+        legacy.exec(
+          "ALTER TABLE binding_claims DROP COLUMN delivery_policy_json; ALTER TABLE delivery_intents DROP COLUMN preemption_status_json",
+        );
+        legacy.query("DELETE FROM schema_migrations WHERE version=6").run();
+      })
+      .immediate();
+    legacy.close();
+
+    const upgraded = new Store(config);
+    expect(
+      upgraded.db
+        .query("SELECT principal_scopes_json,delivery_policy_json FROM binding_claims WHERE id=?")
+        .get(claim.claimId),
+    ).toEqual({
+      principal_scopes_json: '["a2a:send","a2a:read","a2a:cancel","executor","inbox"]',
+      delivery_policy_json: '{"interruptOnCancel":false,"allowPeerPreemption":false}',
+    });
+    expect(
+      upgraded.db
+        .query("SELECT preemption_status_json FROM delivery_intents WHERE id=?")
+        .get(accepted.deliveryId),
+    ).toEqual({
+      preemption_status_json: '{"requested":false,"attempted":false,"state":"not-requested"}',
+    });
+    expect(
+      upgraded.db
+        .query(
+          "SELECT name FROM pragma_table_info('binding_claims') WHERE name IN ('principal_scopes_json','delivery_policy_json') ORDER BY name",
+        )
+        .all(),
+    ).toEqual([{ name: "delivery_policy_json" }, { name: "principal_scopes_json" }]);
+    expect(
+      upgraded.db
+        .query(
+          "SELECT name FROM pragma_table_info('delivery_intents') WHERE name='preemption_status_json'",
+        )
+        .all(),
+    ).toEqual([{ name: "preemption_status_json" }]);
+    expect(
+      upgraded.db.query("SELECT count(*) count FROM schema_migrations WHERE version=6").get(),
+    ).toEqual({ count: 1 });
+    upgraded.close();
+  });
+
+  test("keeps peer-preemption grants local-user owned and binding scoped", () => {
+    const store = fixture(),
+      operator = authenticated(store),
+      agent = store.createAgent("preemption-grant"),
+      granted = store.bind(agent.id, "preemption-granted", {
+        grantPeerPreemption: true,
+        deliveryPolicy: { allowPeerPreemption: true },
+      });
+    expect(
+      store.authenticate(store.issueToken(granted.principalId, ["a2a:preempt"])),
+    ).toMatchObject({ scopes: ["a2a:preempt"] });
+    const replacement = store.bind(agent.id, "preemption-rebound", { revokeExisting: true });
+    expect(() => store.issueToken(granted.principalId, ["a2a:preempt"])).toThrow("STALE_PRINCIPAL");
+    expect(() => store.issueToken(replacement.principalId, ["a2a:preempt"])).toThrow(
+      "SCOPE_NOT_GRANTED",
+    );
+    const claim = store.createClaim(agent.id, operator.id);
+    const claimed = store.claim(claim.claimCode, "preemption-claim", {
+      grantPeerPreemption: true,
+      deliveryPolicy: { allowPeerPreemption: true },
+      revokeExisting: true,
+    });
+    expect(() => store.issueToken(claimed.principalId, ["a2a:preempt"])).toThrow(
+      "SCOPE_NOT_GRANTED",
+    );
+    expect(store.binding(claimed.id)?.delivery_policy_json).toBe(
+      '{"interruptOnCancel":false,"allowPeerPreemption":false}',
+    );
+    store.close();
+  });
+  test("audits a durably accepted requested preemption before runtime processing", () => {
+    const store = fixture(),
+      sender = store.createAgent("offline-preempt-sender"),
+      recipient = store.createAgent("offline-preempt-recipient"),
+      binding = store.bind(sender.id, "offline-preempt-sender-thread", {
+        grantPeerPreemption: true,
+      }),
+      accepted = store.accept(
+        recipient.id,
+        binding.principalId,
+        Message.fromJSON({
+          messageId: "offline-preempt",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { preempt: true },
+      );
+    expect(store.task(accepted.task.id, binding.principalId)?.metadata).toMatchObject({
+      "urn:agent-communications:delivery-status:v1": {
+        preemption: { requested: true, attempted: false, state: "requested" },
+      },
+    });
+    expect(
+      store.db
+        .query<{ action: string; details_json: string }, [string]>(
+          "SELECT action,details_json FROM audit_events WHERE resource_id=?",
+        )
+        .all(accepted.deliveryId),
+    ).toContainEqual({
+      action: "delivery.preemption.requested",
+      details_json: '{"requested":true,"attempted":false}',
+    });
+    store.close();
+  });
+
   test("rolls back a failed legacy migration without recording version 2", () => {
     const store = fixture(),
       config = store.config,
@@ -599,7 +736,7 @@ describe("schema migrations", () => {
         legacy
           .query("UPDATE delivery_intents SET target_agent_id='agt_missing' WHERE id=?")
           .run(accepted.deliveryId);
-        legacy.query("DELETE FROM schema_migrations WHERE version=2").run();
+        legacy.query("DELETE FROM schema_migrations WHERE version IN (2,6)").run();
       })
       .immediate();
     legacy.exec("PRAGMA foreign_keys=ON");
@@ -640,11 +777,12 @@ describe("schema migrations", () => {
       { version: 3 },
       { version: 4 },
       { version: 5 },
+      { version: 6 },
     ]);
     store.close();
     const reopened = new Store(config);
     expect(reopened.db.query("SELECT count(*) count FROM schema_migrations").get()).toEqual({
-      count: 5,
+      count: 6,
     });
     reopened.close();
   });

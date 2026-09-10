@@ -45,6 +45,7 @@ type Fixture = {
     method: string,
     failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
   ): void;
+  holdNext(method: string): () => void;
   disconnect(): void;
   request(method: string, params: unknown): void;
   setFence(valid: boolean): void;
@@ -199,6 +200,75 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       expect(checks).toBe(1);
       expect(fixture.methods).not.toContain("thread/resume");
       expect(fixture.methods).not.toContain("turn/start");
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+    test("waits for exact terminal evidence after interrupt acceptance", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      fixture.setStatus("active");
+      const target = delivery().target;
+      const found = await fixture.adapter.findActiveExecution?.({ target });
+      expect(found).toMatchObject({ outcome: "found", execution: { opaqueId: "turn-active" } });
+      if (!found || found.outcome !== "found") throw new Error("expected active execution");
+      let authorityChecks = 0;
+      const interrupted = await fixture.adapter.interruptExecution?.({
+        target,
+        execution: found.execution,
+        reason: "test",
+        assertAuthorityFence: async () => {
+          authorityChecks++;
+          expect(fixture.methods).toContain("thread/turns/list");
+          expect(fixture.methods).not.toContain("turn/interrupt");
+          return { valid: true };
+        },
+      });
+      expect(interrupted).toMatchObject({ outcome: "pending-confirmation" });
+      if (!interrupted || interrupted.outcome !== "pending-confirmation")
+        throw new Error("expected pending interrupt confirmation");
+      expect(
+        await fixture.adapter.reconcileInterrupt?.({
+          target,
+          execution: found.execution,
+          reconciliationToken: interrupted.reconciliationToken,
+        }),
+      ).toMatchObject({ outcome: "pending-confirmation" });
+      fixture.notify("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: "turn-active", status: "interrupted" },
+      });
+      expect(
+        await fixture.adapter.reconcileInterrupt?.({
+          target,
+          execution: found.execution,
+          reconciliationToken: interrupted.reconciliationToken,
+        }),
+      ).toMatchObject({ outcome: "achieved" });
+      expect(authorityChecks).toBe(1);
+      expect(mutations(fixture.methods)).toEqual(["turn/interrupt"]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
+    test("prefers an interrupt notification received while the exact read is pending", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      fixture.setStatus("active");
+      const target = delivery().target,
+        found = await fixture.adapter.findActiveExecution?.({ target });
+      if (!found || found.outcome !== "found") throw new Error("expected active execution");
+      const releaseRead = fixture.holdNext("thread/read"),
+        reconciliation = fixture.adapter.reconcileInterrupt?.({
+          target,
+          execution: found.execution,
+        });
+      await waitForMethod(fixture.methods, "thread/read");
+      fixture.notify("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: "turn-active", status: "interrupted" },
+      });
+      releaseRead();
+      expect(await reconciliation).toMatchObject({ outcome: "achieved" });
       await fixture.adapter.stop({ reason: "shutdown" });
       fixture.close();
     });
@@ -483,7 +553,10 @@ test("Codex runtime adapter enables direct delivery for supported runtimes", asy
     expect(await adapter.probe()).toMatchObject({
       state: "ready",
       runtimeVersion: version,
-      capabilities: { directDelivery: true },
+      capabilities: {
+        directDelivery: true,
+        peerPreemption: version === TESTED_CODEX_VERSION,
+      },
     });
     expect(await adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
     expect(mutations(methods)).toEqual(["turn/start"]);
@@ -500,7 +573,7 @@ test("Codex runtime adapter disables mutations for an untested runtime", async (
     state: "incompatible",
     runtimeVersion: "99.0.0",
     protocolFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-    capabilities: { directDelivery: false, cancelOwnedExecution: false },
+    capabilities: { directDelivery: false, cancelOwnedExecution: false, peerPreemption: false },
   });
   expect(await adapter.deliver(delivery())).toMatchObject({
     outcome: "rejected",
@@ -517,7 +590,8 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
   const path = join(root, "codex.sock"),
     methods: string[] = [],
     buffers = new WeakMap<object, Buffer>(),
-    failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">();
+    failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">(),
+    holds = new Map<string, { promise: Promise<void>; release: () => void }>();
   let fence = true,
     canAcceptDirectInput = true,
     presence: "present" | "absent" | "unknown" = "present",
@@ -587,29 +661,36 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
                 }),
               ),
             );
-          else if (typeof request.id === "number")
-            socket.write(
-              serverFrame(
-                JSON.stringify({
-                  id: request.id,
-                  result:
-                    failure === "malformed"
-                      ? {}
-                      : response(
-                          method,
-                          status,
-                          userAgent,
-                          historyDelivery,
-                          source,
-                          request.params,
-                          sessionPages,
-                          loadedOnly,
-                          canAcceptDirectInput,
-                          presence,
-                        ),
-                }),
-              ),
-            );
+          else if (typeof request.id === "number") {
+            const reply = () =>
+                socket.write(
+                  serverFrame(
+                    JSON.stringify({
+                      id: request.id,
+                      result:
+                        failure === "malformed"
+                          ? {}
+                          : response(
+                              method,
+                              status,
+                              userAgent,
+                              historyDelivery,
+                              source,
+                              request.params,
+                              sessionPages,
+                              loadedOnly,
+                              canAcceptDirectInput,
+                              presence,
+                            ),
+                    }),
+                  ),
+                ),
+              hold = holds.get(method);
+            if (hold) {
+              holds.delete(method);
+              void hold.promise.then(reply);
+            } else reply();
+          }
         }
         buffers.set(socket, pending);
       },
@@ -630,6 +711,11 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     methods,
     failNext(method, failure) {
       failures.set(method, failure);
+    },
+    holdNext(method) {
+      const pending = Promise.withResolvers<void>();
+      holds.set(method, { promise: pending.promise, release: pending.resolve });
+      return pending.resolve;
     },
     disconnect() {
       if (!disconnect) throw new Error("emulator is not connected");
@@ -741,6 +827,10 @@ function response(
       ),
     };
   }
+  if (method === "thread/turns/list")
+    return status === "active"
+      ? { data: [{ id: "turn-active", status: "inProgress" }] }
+      : { data: [] };
   if (method === "turn/start") return { turn: { id: "turn-1" } };
   return {};
 }
@@ -784,7 +874,9 @@ function thread(
             ],
           },
         ]
-      : [],
+      : status === "active"
+        ? [{ id: "turn-active", status: "inProgress", items: [] }]
+        : [],
   };
 }
 

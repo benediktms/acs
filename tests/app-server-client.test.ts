@@ -30,7 +30,9 @@ describe("Codex app-server transport", () => {
     let received = "",
       respond = true,
       batchTurn = false,
-      threadNotLoaded = false;
+      threadNotLoaded = false,
+      staleInterrupt = false,
+      emptyActiveTurnId = false;
     const server = Bun.listen({
       unix: path,
       socket: {
@@ -84,6 +86,29 @@ describe("Codex app-server transport", () => {
             );
             return;
           }
+          if (request.method === "thread/turns/list") {
+            socket.write(
+              serverFrame({
+                id: request.id,
+                result: {
+                  data: [{ id: emptyActiveTurnId ? "" : "turn-active", status: "inProgress" }],
+                },
+              }),
+            );
+            return;
+          }
+          if (staleInterrupt && request.method === "turn/interrupt") {
+            socket.write(
+              serverFrame({
+                id: request.id,
+                error: {
+                  code: -32000,
+                  message: "expected active turn id turn-new but found turn-old",
+                },
+              }),
+            );
+            return;
+          }
           socket.write(
             serverFrame({
               id: request.id,
@@ -115,7 +140,18 @@ describe("Codex app-server transport", () => {
         }),
       }),
     );
+    emptyActiveTurnId = true;
     await Bun.sleep(10);
+    await expect(
+      client.newestActiveTurn({
+        threadId: "thread-1",
+        cursor: null,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      }),
+    ).rejects.toThrow("invalid app-server newest turn id");
+    emptyActiveTurnId = false;
     batchTurn = true;
     const order: string[] = [];
     client.onNotification = (method) => order.push(method);
@@ -139,6 +175,34 @@ describe("Codex app-server transport", () => {
       expect(error.failure.kind).toBe(CodexAppServerFailureKind.SessionNotFound);
     }
     threadNotLoaded = false;
+    expect(
+      await client.newestActiveTurn({
+        threadId: "thread-1",
+        cursor: null,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      }),
+    ).toEqual({ id: "turn-active", status: "inProgress" });
+    expect(requests).toContainEqual(
+      expect.objectContaining({
+        method: "thread/turns/list",
+        params: {
+          threadId: "thread-1",
+          cursor: null,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        },
+      }),
+    );
+    let interruptFlushes = 0;
+    await client.interruptTurn("thread-1", "turn-active", () => interruptFlushes++);
+    expect(interruptFlushes).toBe(1);
+    staleInterrupt = true;
+    await expect(client.interruptTurn("thread-1", "turn-old")).rejects.toMatchObject({
+      failure: { kind: CodexAppServerFailureKind.StaleExecution },
+    });
     respond = false;
     const abort = new AbortController(),
       pending = client.request("thread/list", {}, undefined, abort.signal);

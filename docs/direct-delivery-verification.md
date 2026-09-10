@@ -66,7 +66,12 @@ this operator-driven matrix:
    promise a particular desktop message-card presentation.
 
 No authenticated model or human-interactive matrix result is claimed by the
-credential-free test run. The urgency/preemption follow-up is not implemented or
+credential-free test run. Peer-preemption requests are independently recorded and downgrade
+to ordinary delivery unless the current operator-granted sender binding and recipient opt-in
+pass their final fences; the shared Codex adapter remains disabled until isolated real-Codex
+evidence is obtained.
+When that matrix is added, discovery must use only newest-first `thread/turns/list` with
+omitted items; `thread/read` may reconcile an already-known exact turn but never select one.
 certified by this branch.
 
 ## 2026-09-09–10 verification run

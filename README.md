@@ -88,7 +88,10 @@ messages with a diagnostic reason. `acs_inbox_list` and `acs_task_get` are usefu
 for inspection, not a replacement for automatic delivery. There is no history
 append fallback or wake-policy flag. Canceling a task never confers ownership of
 a shared turn; the shared-endpoint Codex adapter does not advertise interruption.
-Urgency/preemption remains a separate OpenSpec change, not an implemented feature.
+Priority only affects scheduling. Operator-created bindings and claims may separately grant
+peer preemption; requests without the grant or recipient opt-in are delivered normally and
+record a sender-visible downgrade. The shared Codex adapter keeps interruption disabled until
+its isolated real-Codex ownership matrix has passed.
 
 ACS derives each peer's `state` from Codex runtime status and blocking flags plus
 interactive-presence observations when the runtime provides them: `ready`,

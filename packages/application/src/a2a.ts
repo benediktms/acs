@@ -23,6 +23,7 @@ export class A2AApplication implements A2AApplicationPort {
       {
         mode: "direct",
         priority: command.delivery.priority,
+        preempt: command.delivery.preempt,
         notifyOn: [...command.delivery.notifyOn],
         replyExpected: command.delivery.replyExpected,
         expiresAt: command.delivery.expiresAt,

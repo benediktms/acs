@@ -373,6 +373,11 @@ describe("A2A JSON-RPC", () => {
         record(duplicate.result?.task?.metadata)["urn:agent-communications:delivery-status:v1"],
       );
     expect(delivery).toMatchObject({ state: "queued", duplicate: false });
+    expect(delivery.preemption).toMatchObject({
+      requested: false,
+      attempted: false,
+      state: "not-requested",
+    });
     expect(duplicateDelivery).toMatchObject({ deliveryId: delivery.deliveryId, duplicate: true });
     expect(deliverySignals).toBe(1);
     const roleConflict = await call("SendMessage", {
@@ -651,6 +656,7 @@ describe("A2A JSON-RPC", () => {
         messageMetadata: {},
         delivery: {
           priority: "normal",
+          preempt: false,
           notifyOn: ["terminal"],
           replyExpected: true,
         },

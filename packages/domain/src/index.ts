@@ -146,6 +146,7 @@ const deliveryTransitions: Record<DeliveryState, readonly DeliveryState[]> = {
     DeliveryState.Attempting,
     DeliveryState.Deferred,
     DeliveryState.Pending,
+    DeliveryState.FailedTerminal,
     DeliveryState.Canceled,
   ],
   [DeliveryState.Attempting]: [
@@ -164,6 +165,7 @@ const deliveryTransitions: Record<DeliveryState, readonly DeliveryState[]> = {
   [DeliveryState.AcceptanceUnknown]: [
     DeliveryState.Accepted,
     DeliveryState.Pending,
+    DeliveryState.FailedTerminal,
     DeliveryState.Canceled,
   ],
   [DeliveryState.FailedTerminal]: [],

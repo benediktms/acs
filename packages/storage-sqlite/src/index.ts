@@ -4,6 +4,7 @@ import directDeliveryMigration from "../../../storage/002_direct_delivery.sql" w
 import runtimeExecutionRelationshipMigration from "../../../storage/003_runtime_execution_relationship.sql" with { type: "text" };
 import taskAcknowledgementMigration from "../../../storage/004_task_acknowledgement.sql" with { type: "text" };
 import agentObservationsMigration from "../../../storage/005_agent_observations_and_reaping.sql" with { type: "text" };
+import peerPreemptionMigration from "../../../storage/006_peer_preemption.sql" with { type: "text" };
 import {
   agentSlug,
   BindingState,
@@ -47,6 +48,14 @@ import type {
 import { z } from "zod";
 
 const a2aAgentRole = 2;
+const peerPreemptionMigrationSteps = peerPreemptionMigration
+  .trim()
+  .split("\n")
+  .map((sql) => {
+    const match = /^ALTER TABLE (\w+) ADD COLUMN (\w+)/.exec(sql);
+    if (!match) throw new Error("STORAGE_MIGRATION_INVALID");
+    return { table: match[1], column: match[2], sql };
+  });
 const migrations = [
   {
     version: 1,
@@ -96,6 +105,28 @@ const migrations = [
           "SELECT 1 FROM pragma_table_info('runtime_bindings') WHERE name='last_observed_runtime_state'",
         )
         .get(),
+  },
+  {
+    version: 6,
+    name: "peer-preemption",
+    sql: peerPreemptionMigration,
+    rebuildsForeignKeys: false,
+    required: (db: Database) =>
+      peerPreemptionMigrationSteps.some(
+        (step) =>
+          !db
+            .query(`SELECT 1 FROM pragma_table_info('${step.table}') WHERE name=?`)
+            .get(step.column),
+      ),
+    apply: (db: Database) => {
+      for (const step of peerPreemptionMigrationSteps)
+        if (
+          !db
+            .query(`SELECT 1 FROM pragma_table_info('${step.table}') WHERE name=?`)
+            .get(step.column)
+        )
+          db.exec(step.sql);
+    },
   },
 ];
 export type {
@@ -265,7 +296,10 @@ export class Store {
       try {
         this.db
           .transaction(() => {
-            if (step.required(this.db)) this.db.exec(step.sql);
+            if (step.required(this.db)) {
+              if (step.apply) step.apply(this.db);
+              else this.db.exec(step.sql);
+            }
             if (this.db.query("PRAGMA foreign_key_check").get())
               throw new Error("STORAGE_CORRUPT: foreign key check failed");
             this.db
@@ -711,6 +745,7 @@ export class Store {
       ),
       policy = {
         interruptOnCancel: options.deliveryPolicy?.interruptOnCancel ?? false,
+        allowPeerPreemption: options.deliveryPolicy?.allowPeerPreemption ?? false,
       };
     return this.write(() => {
       const active = this.db
@@ -775,7 +810,14 @@ export class Store {
           agent.id,
           bindingId,
           agent.slug,
-          '["a2a:send","a2a:read","a2a:cancel","executor","inbox"]',
+          JSON.stringify([
+            "a2a:send",
+            "a2a:read",
+            "a2a:cancel",
+            "executor",
+            "inbox",
+            ...(options.grantPeerPreemption ? ["a2a:preempt"] : []),
+          ]),
           now,
         );
       this.db
@@ -967,7 +1009,12 @@ export class Store {
     });
     return this.binding(bindingId);
   }
-  createClaim(agentValue: string, principalId: string, ttlSeconds = this.limits.claimTtlSeconds) {
+  createClaim(
+    agentValue: string,
+    principalId: string,
+    ttlSeconds = this.limits.claimTtlSeconds,
+    options: BindingOptions = {},
+  ) {
     const agent = this.agent(agentValue);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
     const claimCode = bindingClaimCode(),
@@ -976,9 +1023,28 @@ export class Store {
       expires = now + Math.min(Math.max(ttlSeconds, 1), 3600) * 1000;
     this.db
       .query(
-        "INSERT INTO binding_claims(id,agent_id,code_hash,created_by_principal_id,created_at_ms,expires_at_ms) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO binding_claims(id,agent_id,code_hash,created_by_principal_id,created_at_ms,expires_at_ms,principal_scopes_json,delivery_policy_json) VALUES(?,?,?,?,?,?,?,?)",
       )
-      .run(claimId, agent.id, this.hashToken(claimCode), principalId, now, expires);
+      .run(
+        claimId,
+        agent.id,
+        this.hashToken(claimCode),
+        principalId,
+        now,
+        expires,
+        JSON.stringify([
+          "a2a:send",
+          "a2a:read",
+          "a2a:cancel",
+          "executor",
+          "inbox",
+          ...(options.grantPeerPreemption ? ["a2a:preempt"] : []),
+        ]),
+        JSON.stringify({
+          interruptOnCancel: false,
+          allowPeerPreemption: options.deliveryPolicy?.allowPeerPreemption ?? false,
+        }),
+      );
     return { claimId, claimCode, expiresAt: new Date(expires).toISOString() };
   }
   claim(code: string, sessionId: string, options: BindingOptions = {}): ClaimBindingResult {
@@ -993,10 +1059,12 @@ export class Store {
               expires_at_ms: number;
               consumed_at_ms: number | null;
               consumed_by_binding_id: BindingId | null;
+              principal_scopes_json: string;
+              delivery_policy_json: string;
             },
             [Uint8Array]
           >(
-            "SELECT id,agent_id,code_hash,expires_at_ms,consumed_at_ms,consumed_by_binding_id FROM binding_claims WHERE code_hash=? LIMIT 2",
+            "SELECT id,agent_id,code_hash,expires_at_ms,consumed_at_ms,consumed_by_binding_id,principal_scopes_json,delivery_policy_json FROM binding_claims WHERE code_hash=? LIMIT 2",
           )
           .all(verifier);
       if (matches.length > 1) throw new Error("CLAIM_AMBIGUOUS");
@@ -1041,7 +1109,11 @@ export class Store {
         };
       }
       if (row.expires_at_ms <= Date.now()) throw new Error("CLAIM_EXPIRED");
-      const binding = this.bind(row.agent_id, sessionId, options),
+      const binding = this.bind(row.agent_id, sessionId, {
+          ...options,
+          grantPeerPreemption: JSON.parse(row.principal_scopes_json).includes("a2a:preempt"),
+          deliveryPolicy: JSON.parse(row.delivery_policy_json),
+        }),
         consumed = this.db
           .query(
             "UPDATE binding_claims SET consumed_at_ms=?,consumed_by_binding_id=? WHERE id=? AND consumed_at_ms IS NULL",
@@ -1067,12 +1139,13 @@ export class Store {
           epoch: number;
           agent_id: `agt_${string}`;
           principal_id: `prn_${string}`;
+          scopes_json: string;
           slug: string;
           display_name: string;
         },
         [RuntimeInstallationId, string]
       >(
-        "SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,a.slug,a.display_name FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id JOIN agents a ON a.id=b.agent_id WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active' AND p.disabled_at_ms IS NULL",
+        "SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,p.scopes_json,a.slug,a.display_name FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id JOIN agents a ON a.id=b.agent_id WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active' AND p.disabled_at_ms IS NULL",
       )
       .get(session.installationId, session.opaqueId);
     return row
@@ -1084,6 +1157,7 @@ export class Store {
           bindingEpoch: row.epoch,
           agentId: row.agent_id,
           principalId: row.principal_id,
+          scopes: JSON.parse(row.scopes_json),
           slug: row.slug,
           displayName: row.display_name,
           evidenceFingerprint,
@@ -1091,6 +1165,15 @@ export class Store {
       : { kind: "unattested", reason: "unbound-session" };
   }
   issueToken(principalId: string, scopes: readonly string[], ttlSeconds = 300) {
+    const principal = this.db
+      .query<{ scopes_json: string }, [string]>(
+        "SELECT scopes_json FROM principals WHERE id=? AND disabled_at_ms IS NULL",
+      )
+      .get(principalId);
+    if (!principal) throw new Error("STALE_PRINCIPAL");
+    const granted: string[] = JSON.parse(principal.scopes_json);
+    if (!granted.includes("*") && scopes.some((scope) => !granted.includes(scope)))
+      throw new Error("SCOPE_NOT_GRANTED");
     const token = randomBytes(32).toString("base64url"),
       now = Date.now();
     this.db
@@ -1279,10 +1362,16 @@ export class Store {
     const task = parseTask(snapshotJson),
       delivery = this.db
         .query<
-          { id: string; state: DeliveryState; state_reason: string | null; attempt_count: number },
+          {
+            id: string;
+            state: DeliveryState;
+            state_reason: string | null;
+            attempt_count: number;
+            preemption_status_json: string;
+          },
           [string]
         >(
-          "SELECT id,state,state_reason,attempt_count FROM delivery_intents WHERE task_id=? AND kind='a2a-message' ORDER BY rowid DESC LIMIT 1",
+          "SELECT id,state,state_reason,attempt_count,preemption_status_json FROM delivery_intents WHERE task_id=? AND kind='a2a-message' ORDER BY rowid DESC LIMIT 1",
         )
         .get(taskId);
     if (!delivery) return task;
@@ -1295,6 +1384,7 @@ export class Store {
           deliveryId: delivery.id,
           attemptCount: delivery.attempt_count,
           ...(delivery.state_reason ? { reason: delivery.state_reason } : {}),
+          preemption: JSON.parse(delivery.preemption_status_json),
         },
       },
     };
@@ -1466,7 +1556,13 @@ export class Store {
         artifacts: continuation ? (JSON.parse(continuation.a2a_snapshot_json).artifacts ?? []) : [],
         history,
         metadata: {
-          "urn:agent-communications:delivery-status:v1": { state: "queued", deliveryId },
+          "urn:agent-communications:delivery-status:v1": {
+            state: "queued",
+            deliveryId,
+            preemption: options.preempt
+              ? { requested: true, attempted: false, state: "requested" }
+              : { requested: false, attempted: false, state: "not-requested" },
+          },
         },
       };
       if (!continuation)
@@ -1537,7 +1633,7 @@ export class Store {
       };
       this.db
         .query(
-          "INSERT INTO delivery_intents(id,kind,task_id,message_id,target_agent_id,mode,priority,state,not_before_ms,deadline_ms,payload_json,payload_hash,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO delivery_intents(id,kind,task_id,message_id,target_agent_id,mode,priority,state,not_before_ms,deadline_ms,payload_json,payload_hash,preemption_status_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           deliveryId,
@@ -1552,9 +1648,21 @@ export class Store {
           options.expiresAt ? Date.parse(options.expiresAt) : null,
           JSON.stringify(payload),
           this.payloadHash(payload),
+          JSON.stringify(
+            options.preempt
+              ? { requested: true, attempted: false, state: "requested" }
+              : { requested: false, attempted: false, state: "not-requested" },
+          ),
           now,
           now,
         );
+      if (options.preempt) {
+        this.audit(principalId, "delivery.preemption.requested", "delivery-intent", deliveryId, {
+          requested: true,
+          attempted: false,
+        });
+        telemetry.increment("acs_peer_preemption_total", { state: "requested" });
+      }
       if (requester.binding_id && options.notifyOn?.length) {
         const subscription = this.db
           .query<{ id: string }, [string, string, BindingId]>(

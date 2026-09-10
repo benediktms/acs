@@ -117,6 +117,7 @@ export interface RuntimeBindingDto {
   readonly continuityPolicy: "follow-pending" | "strict";
   readonly deliveryPolicy: {
     readonly interruptOnCancel: boolean;
+    readonly allowPeerPreemption: boolean;
   };
   readonly createdAt: string;
   readonly activatedAt?: string;
@@ -181,6 +182,7 @@ export type BridgeAttestationDto =
       readonly bindingEpoch: number;
       readonly agentId: string;
       readonly principalId: string;
+      readonly scopes: readonly string[];
       readonly evidenceFingerprint: string;
     }
   | {
@@ -300,6 +302,8 @@ export interface ControlMethodMap {
     readonly params: {
       readonly agent: string;
       readonly ttlSeconds?: number;
+      readonly grantPeerPreemption?: boolean;
+      readonly allowPeerPreemption?: boolean;
     };
     readonly result: {
       readonly claimId: string;
@@ -315,6 +319,7 @@ export interface ControlMethodMap {
       readonly session: RuntimeSessionRef | string;
       readonly continuityPolicy?: "follow-pending" | "strict";
       readonly deliveryPolicy?: Partial<RuntimeBindingDto["deliveryPolicy"]>;
+      readonly grantPeerPreemption?: boolean;
       readonly revokeExisting?: boolean;
     };
     readonly result: { readonly binding: RuntimeBindingDto };
@@ -324,7 +329,6 @@ export interface ControlMethodMap {
     readonly params: {
       readonly claimCode: string;
       readonly continuityPolicy?: "follow-pending" | "strict";
-      readonly deliveryPolicy?: Partial<RuntimeBindingDto["deliveryPolicy"]>;
       readonly revokeExisting?: boolean;
       readonly evidence: {
         readonly harnessId: "codex";
@@ -453,7 +457,7 @@ export interface ControlMethodMap {
       readonly evidence: ExecutorTaskEvidence["evidence"];
       readonly bindingId: string;
       readonly bindingEpoch: number;
-      readonly scopes: readonly ("a2a:send" | "a2a:read" | "a2a:cancel")[];
+      readonly scopes: readonly ("a2a:send" | "a2a:read" | "a2a:cancel" | "a2a:preempt")[];
       readonly ttlSeconds?: number;
     };
     readonly result: {

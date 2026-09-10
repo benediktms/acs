@@ -46,6 +46,239 @@ describe("delivery scheduler", () => {
     capacity.release();
     expect(capacity.tryAcquire()).toBe(true);
   });
+  test("reconciles a recovered preemption attempt before its one fallback delivery", async () => {
+    const store = fixture(),
+      sender = store.createAgent("preempt-sender"),
+      recipient = store.createAgent("preempt-recipient"),
+      senderBinding = store.bind(sender.id, "preempt-sender-session", {
+        grantPeerPreemption: true,
+      }),
+      recipientBinding = store.bind(recipient.id, "preempt-recipient-session", {
+        deliveryPolicy: { allowPeerPreemption: true },
+      }),
+      adapter = new FakeRuntimeAdapter();
+    const recipientRow = store.binding(recipientBinding.id);
+    if (!recipientRow) throw new Error("missing recipient binding");
+    adapter.probe = async () => ({
+      state: "ready",
+      observedAt: new Date().toISOString(),
+      capabilities: { ...adapter.descriptor.capabilities, peerPreemption: true },
+      diagnostics: [],
+    });
+    let interrupts = 0,
+      reconciliations = 0,
+      deliveries = 0;
+    const reconciliationSessions: string[] = [];
+    adapter.findActiveExecution = async () => ({
+      outcome: "found",
+      execution: {
+        opaqueId: "exact-user-turn",
+        session: {
+          installationId: recipientRow.installation_id,
+          opaqueId: "preempt-recipient-session",
+        },
+      },
+    });
+    adapter.interruptExecution = async () => {
+      interrupts++;
+      return { outcome: "pending-confirmation", reconciliationToken: "exact-token" };
+    };
+    adapter.reconcileInterrupt = async (request) => {
+      reconciliations++;
+      reconciliationSessions.push(request.target.session.opaqueId);
+      return reconciliations === 1 ? { outcome: "pending-confirmation" } : { outcome: "terminal" };
+    };
+    adapter.deliver = async () => {
+      deliveries++;
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "fallback-turn", relationship: "unknown" },
+        evidence: { scheme: "fake", value: "fallback" },
+      };
+    };
+    const accepted = store.accept(
+      recipient.id,
+      senderBinding.principalId,
+      Message.fromJSON({
+        messageId: "preempt-recover",
+        role: "ROLE_USER",
+        parts: [{ text: "work" }],
+      }),
+      { preempt: true },
+    );
+    const scheduler = new DeliveryScheduler(store, adapter, "preempt-recover");
+    await scheduler.start();
+    await until(() => interrupts === 1);
+    expect(deliveries).toBe(0);
+    const rebound = store.bind(recipient.id, "preempt-recipient-rebound", { revokeExisting: true });
+    store.db
+      .query(
+        "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
+      )
+      .run(rebound.id);
+    store.db
+      .query("UPDATE delivery_intents SET not_before_ms=? WHERE id=?")
+      .run(Date.now() - 1, accepted.deliveryId);
+    scheduler.signal();
+    await until(() => reconciliations === 1);
+    expect(deliveries).toBe(0);
+    store.db
+      .query("UPDATE delivery_intents SET not_before_ms=? WHERE id=?")
+      .run(Date.now() - 1, accepted.deliveryId);
+    scheduler.signal();
+    await until(() => deliveries === 1);
+    expect(interrupts).toBe(1);
+    expect(reconciliations).toBe(2);
+    expect(reconciliationSessions).toEqual([
+      "preempt-recipient-session",
+      "preempt-recipient-session",
+    ]);
+    expect(
+      store
+        .eventsAfter(accepted.task.id, 0)
+        .some((event) => event.eventType === "delivery-deferred"),
+    ).toBe(true);
+    await scheduler.stop();
+    store.close();
+  });
+  test("expires an ambiguous preemption without claiming an independent delivery outcome", async () => {
+    const store = fixture(),
+      sender = store.createAgent("expired-preempt-sender"),
+      recipient = store.createAgent("expired-preempt-recipient"),
+      senderBinding = store.bind(sender.id, "expired-preempt-sender-session", {
+        grantPeerPreemption: true,
+      }),
+      recipientBinding = store.bind(recipient.id, "expired-preempt-recipient-session", {
+        deliveryPolicy: { allowPeerPreemption: true },
+      }),
+      accepted = store.accept(
+        recipient.id,
+        senderBinding.principalId,
+        Message.fromJSON({
+          messageId: "expired-preempt",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        { preempt: true, expiresAt: new Date(Date.now() - 1).toISOString() },
+      );
+    const recipientRow = store.binding(recipientBinding.id);
+    if (!recipientRow) throw new Error("missing recipient binding");
+    store.db.query("UPDATE delivery_intents SET preemption_status_json=? WHERE id=?").run(
+      JSON.stringify({
+        requested: true,
+        attempted: true,
+        state: "pending-confirmation",
+        execution: {
+          opaqueId: "exact-turn",
+          session: {
+            installationId: recipientRow.installation_id,
+            opaqueId: recipientRow.session_opaque_id,
+          },
+        },
+        target: {
+          bindingId: recipientRow.id,
+          bindingEpoch: recipientRow.epoch,
+          session: {
+            installationId: recipientRow.installation_id,
+            opaqueId: recipientRow.session_opaque_id,
+          },
+        },
+      }),
+      accepted.deliveryId,
+    );
+    const scheduler = new DeliveryScheduler(store, new FakeRuntimeAdapter(), "expired-preempt");
+    try {
+      await scheduler.start();
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+      expect(deliveryState(store, accepted.deliveryId)?.state_reason).toBe("deadline-expired");
+      expect(store.task(accepted.task.id, senderBinding.principalId)?.metadata).toMatchObject({
+        "urn:agent-communications:delivery-status:v1": {
+          preemption: { state: "unresolved", reason: "deadline-expired" },
+        },
+      });
+    } finally {
+      await scheduler.stop();
+      store.close();
+    }
+  });
+  test("deadline expiry fences a leased preemption and its late result", async () => {
+    const store = fixture(),
+      sender = store.createAgent("deadline-race-sender"),
+      recipient = store.createAgent("deadline-race-recipient"),
+      senderBinding = store.bind(sender.id, "deadline-race-sender-session", {
+        grantPeerPreemption: true,
+      }),
+      recipientBinding = store.bind(recipient.id, "deadline-race-recipient-session", {
+        deliveryPolicy: { allowPeerPreemption: true },
+      }),
+      adapter = new FakeRuntimeAdapter(),
+      interrupt =
+        Promise.withResolvers<
+          Awaited<ReturnType<NonNullable<typeof adapter.interruptExecution>>>
+        >(),
+      interruptStarted = Promise.withResolvers<void>();
+    adapter.probe = async () => ({
+      state: "ready",
+      observedAt: new Date().toISOString(),
+      capabilities: { ...adapter.descriptor.capabilities, peerPreemption: true },
+      diagnostics: [],
+    });
+    const recipientRow = store.binding(recipientBinding.id);
+    if (!recipientRow) throw new Error("missing recipient binding");
+    let deliveries = 0;
+    adapter.findActiveExecution = async () => ({
+      outcome: "found",
+      execution: {
+        opaqueId: "deadline-race-turn",
+        session: {
+          installationId: recipientRow.installation_id,
+          opaqueId: recipientRow.session_opaque_id,
+        },
+      },
+    });
+    adapter.interruptExecution = async () => {
+      interruptStarted.resolve();
+      return interrupt.promise;
+    };
+    adapter.deliver = async () => {
+      deliveries++;
+      return { outcome: "rejected", reason: "runtime-protocol-error", retryable: false };
+    };
+    const accepted = store.accept(
+      recipient.id,
+      senderBinding.principalId,
+      Message.fromJSON({
+        messageId: "deadline-race",
+        role: "ROLE_USER",
+        parts: [{ text: "work" }],
+      }),
+      { preempt: true, expiresAt: new Date(Date.now() + 500).toISOString() },
+    );
+    const scheduler = new DeliveryScheduler(store, adapter, "deadline-race");
+    try {
+      await scheduler.start();
+      await interruptStarted.promise;
+      store.db
+        .query("UPDATE delivery_intents SET deadline_ms=? WHERE id=?")
+        .run(Date.now() - 1, accepted.deliveryId);
+      scheduler.signal();
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+      interrupt.resolve({ outcome: "pending-confirmation", reconciliationToken: "deadline-race" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(deliveries).toBe(0);
+      expect(store.task(accepted.task.id, senderBinding.principalId)?.metadata).toMatchObject({
+        "urn:agent-communications:delivery-status:v1": {
+          state: "failed-terminal",
+          reason: "deadline-expired",
+          preemption: { state: "unresolved", reason: "deadline-expired" },
+        },
+      });
+    } finally {
+      await scheduler.stop();
+      store.close();
+    }
+  });
   test("releases shared delivery capacity when leasing fails", async () => {
     const store = fixture(),
       agent = store.createAgent("lease-failure"),

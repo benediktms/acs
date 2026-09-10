@@ -16,7 +16,7 @@ ACS SHALL preserve `low`, `normal`, and `high` delivery priority as scheduling i
 
 ### Requirement: Preemption failure preserves delivery
 
-Once a message is authorized and durably accepted for ordinary delivery, ACS SHALL treat preemption as best-effort acceleration. If interruption is unauthorized, disabled by recipient policy, unsupported, unnecessary, or rejected, ACS SHALL proceed through ordinary direct delivery and SHALL expose that delivery proceeded without interruption.
+Once a message is authorized and durably accepted for ordinary delivery, ACS SHALL treat preemption as best-effort acceleration. If interruption is unauthorized, disabled by recipient policy, stale, unsupported, unnecessary, or rejected, ACS SHALL proceed through ordinary direct delivery and SHALL expose that delivery proceeded without interruption.
 
 #### Scenario: Preemption authority is absent
 
@@ -27,6 +27,11 @@ Once a message is authorized and durably accepted for ordinary delivery, ACS SHA
 
 - **WHEN** a message is authorized for ordinary delivery but the recipient binding has not opted into peer preemption
 - **THEN** ACS skips interruption, proceeds with ordinary direct delivery, and reports the preemption downgrade
+
+#### Scenario: Sender or recipient authority becomes stale
+
+- **WHEN** the sender principal or binding is disabled, the recipient binding changes, or recipient preemption policy is missing before interruption
+- **THEN** ACS makes no interrupt mutation, proceeds with ordinary direct delivery, and reports the classified preemption downgrade
 
 #### Scenario: Runtime cannot interrupt
 
@@ -40,12 +45,17 @@ Once a message is authorized and durably accepted for ordinary delivery, ACS SHA
 
 ### Requirement: Preemption is interrupt-then-deliver
 
-For an eligible preemption request, ACS SHALL interrupt only the exact runtime execution authorized by policy, establish a safely deliverable runtime state, and then submit the peer message through the existing direct-delivery path. Runtime interruption itself SHALL NOT carry or upgrade peer content. Runtime acceptance of an interruption request SHALL NOT by itself be reported as confirmed interruption.
+For an eligible preemption request, ACS SHALL revalidate the current sender principal, matching binding, and `a2a:preempt` scope and the exact recipient binding epoch and `allowPeerPreemption` policy immediately before adapter invocation. ACS SHALL interrupt only the exact runtime execution authorized by that current policy, establish a safely deliverable runtime state, and then submit the peer message through the existing direct-delivery path. Immediately before `turn/interrupt`, the adapter SHALL repeat the complete sender and recipient fence; no stale scheduler gate may call the runtime mutation. Runtime interruption itself SHALL NOT carry or upgrade peer content. Runtime acceptance of an interruption request SHALL NOT by itself be reported as confirmed interruption.
 
 #### Scenario: Eligible active execution
 
 - **WHEN** ACS proves the target execution is current, active, interruptible, and authorized for preemption
 - **THEN** ACS interrupts that execution and submits the peer message through direct delivery once the session is safely deliverable
+
+#### Scenario: Sender authority changes after scheduling
+
+- **WHEN** scheduling found both preemption gates valid but the sender principal, sender binding, sender `a2a:preempt` scope, recipient binding epoch, or `allowPeerPreemption` changes before `turn/interrupt`
+- **THEN** the final fence makes zero interrupt mutations, records a classified noisy downgrade, and continues ordinary direct delivery
 
 #### Scenario: No active execution
 
@@ -67,6 +77,11 @@ For an eligible preemption request, ACS SHALL interrupt only the exact runtime e
 - **WHEN** an interruption request may have been accepted but ACS cannot prove the resulting runtime state
 - **THEN** ACS keeps the message pending, reconciles runtime state without blind mutation retries, and delivers as soon as a safe direct-delivery state is established within the message deadline
 
+#### Scenario: Flushed interruption response is lost
+
+- **WHEN** the exact runtime interrupt request was flushed but ACS receives no definitive response
+- **THEN** ACS records the exact execution for reconciliation, performs no second interrupt mutation for that message, and reconciles that exact execution before ordinary delivery
+
 ### Requirement: Preemption and delivery outcomes are independently visible
 
 ACS SHALL expose whether preemption was requested, attempted, pending confirmation, achieved, unnecessary, downgraded with a reason, or unresolved independently from the message's delivery state. A successful delivery after failed interruption SHALL remain successful while retaining the preemption outcome for the sender.
@@ -83,7 +98,7 @@ ACS SHALL expose whether preemption was requested, attempted, pending confirmati
 
 #### Scenario: Codex interruption is rejected definitively
 
-- **WHEN** the Codex adapter classifies a generic interruption RPC error as unsupported, not running, or definitively rejected
+- **WHEN** the Codex adapter classifies a generic interruption RPC error as unsupported or definitively rejected
 - **THEN** ACS records the classified downgrade, preserves safe diagnostic detail for audit, and proceeds with ordinary delivery
 
 #### Scenario: Fallback reaches an active Codex turn
@@ -116,9 +131,35 @@ Application and domain code SHALL express interruption through runtime-neutral c
 
 ### Requirement: Delivery priority is bounded
 
-Delivery scheduling SHALL include anti-starvation behavior so sustained higher-priority traffic cannot indefinitely block eligible lower-priority messages. Preemption attempts SHALL be rate-limited or otherwise bounded by policy.
+An eligible intent waiting at least 60 seconds SHALL sort ahead of fresh traffic while preserving per-recipient serialization. Priority alone SHALL NOT cause runtime interruption.
 
 #### Scenario: Sustained high-priority traffic
 
 - **WHEN** high-priority messages continue to arrive while normal or low-priority messages remain pending
 - **THEN** the scheduler eventually services eligible lower-priority traffic according to its anti-starvation policy
+
+#### Scenario: Eligible intent reaches the age threshold
+
+- **WHEN** a pending eligible intent has waited at least 60 seconds
+- **THEN** ACS sorts it ahead of fresh traffic without interrupting active work solely because of priority
+
+## MODIFIED Requirements
+
+### Requirement: Local approvals and owned cancellation
+
+ACS SHALL leave permission and user-input responses to the local owner and SHALL interrupt only executions created and correlated by ACS, except that it MAY interrupt an active user-owned Codex turn for its current bound agent when the current sender principal belongs to its matching enabled binding, has `a2a:preempt`, and the current recipient binding matches the exact fenced epoch with `allowPeerPreemption: true` immediately before `turn/interrupt`.
+
+#### Scenario: Fanned-out user-input request
+
+- **WHEN** Codex sends ACS a request for local user input
+- **THEN** ACS records the wait without answering the request
+
+#### Scenario: Unrelated active turn
+
+- **WHEN** interruption would affect a turn that is neither created and correlated by ACS nor an active user-owned Codex turn for the current recipient binding with all final sender and recipient fences satisfied
+- **THEN** ACS does not interrupt that turn
+
+#### Scenario: Bound agent has an active user-owned Codex turn
+
+- **WHEN** the current recipient binding has an active user-owned Codex turn and the final sender principal/binding/`a2a:preempt` and recipient binding/`allowPeerPreemption` fences all hold
+- **THEN** ACS MAY interrupt that exact turn before continuing ordinary direct delivery

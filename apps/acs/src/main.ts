@@ -172,10 +172,23 @@ async function main() {
     .command("create <slug>")
     .description("create an agent")
     .option("--claim", "create a claim code")
+    .option("--grant-peer-preemption", "grant the claimed agent peer interruption authority")
+    .option("--allow-peer-preemption", "allow peer interruption for the claimed agent")
     .option("--name <name>", "display name")
     .option("--description <text>", "agent description")
     .action(
-      async (slug: string, options: { claim?: boolean; name?: string; description?: string }) => {
+      async (
+        slug: string,
+        options: {
+          claim?: boolean;
+          name?: string;
+          description?: string;
+          grantPeerPreemption?: boolean;
+          allowPeerPreemption?: boolean;
+        },
+      ) => {
+        if (!options.claim && (options.grantPeerPreemption || options.allowPeerPreemption))
+          throw new Error("--grant-peer-preemption and --allow-peer-preemption require --claim");
         const call = await controlClient(),
           created = await call("agents.create", {
             slug,
@@ -184,7 +197,14 @@ async function main() {
           });
         print(
           options.claim
-            ? { created, claim: await call("agents.createClaim", { agent: slug }) }
+            ? {
+                created,
+                claim: await call("agents.createClaim", {
+                  agent: slug,
+                  grantPeerPreemption: options.grantPeerPreemption,
+                  allowPeerPreemption: options.allowPeerPreemption,
+                }),
+              }
             : created,
         );
       },
@@ -501,6 +521,8 @@ type BindingOptions = {
   continuity?: "follow-pending" | "strict";
   revokeExisting?: boolean;
   account?: string;
+  grantPeerPreemption?: boolean;
+  allowPeerPreemption?: boolean;
 };
 type ResolutionOptions = {
   accepted?: boolean;
@@ -522,6 +544,11 @@ function bindingOptions(command: Command, sessionRequired: boolean) {
       ]),
     )
     .option("--revoke-existing", "revoke existing binding")
+    .option("--grant-peer-preemption", "grant this bound agent peer interruption authority")
+    .option(
+      "--allow-peer-preemption",
+      "allow this bound agent to be interrupted by authorized peers",
+    )
     .option("--account <label>", "Codex account label");
 }
 
@@ -1038,7 +1065,11 @@ function bindingParams(
     agent,
     session,
     continuityPolicy: options.continuity ?? "follow-pending",
-    deliveryPolicy: { interruptOnCancel: true },
+    deliveryPolicy: {
+      interruptOnCancel: true,
+      allowPeerPreemption: Boolean(options.allowPeerPreemption),
+    },
+    grantPeerPreemption: Boolean(options.grantPeerPreemption),
     revokeExisting: Boolean(options.revokeExisting),
     installationId,
   };

@@ -81,6 +81,7 @@ const partSchema = z.discriminatedUnion("kind", [
     deliveryPolicy: z
       .strictObject({
         interruptOnCancel: z.boolean().optional(),
+        allowPeerPreemption: z.boolean().optional(),
       })
       .optional(),
     displayName: z.string().optional(),
@@ -97,6 +98,8 @@ const partSchema = z.discriminatedUnion("kind", [
       ])
       .optional(),
     fromBindingId: z.string().optional(),
+    grantPeerPreemption: z.boolean().optional(),
+    allowPeerPreemption: z.boolean().optional(),
     installationId: z.string().optional(),
     question: z.string().optional(),
     reason: z.string().optional(),
@@ -126,7 +129,7 @@ const partSchema = z.discriminatedUnion("kind", [
         }),
       )
       .optional(),
-    scopes: z.array(z.enum(["a2a:send", "a2a:read", "a2a:cancel"])).optional(),
+    scopes: z.array(z.enum(["a2a:send", "a2a:read", "a2a:cancel", "a2a:preempt"])).optional(),
     slug: z.string().optional(),
     summary: z.string().optional(),
     continuityPolicy: z.enum(["follow-pending", "strict"]).optional(),
@@ -320,7 +323,10 @@ export function controlHandler(
           return ok(rpc.id, { deleted: true });
         case "agents.createClaim":
           admin(principal.kind);
-          const claim = store.createClaim(required(p.agent, "agent"), principal.id, p.ttlSeconds);
+          const claim = store.createClaim(required(p.agent, "agent"), principal.id, p.ttlSeconds, {
+            grantPeerPreemption: p.grantPeerPreemption,
+            deliveryPolicy: { allowPeerPreemption: p.allowPeerPreemption },
+          });
           audit("binding.claim.create", "claim", claim.claimId);
           return ok(rpc.id, claim);
         case "agents.get": {
@@ -398,6 +404,7 @@ export function controlHandler(
           const createdBinding = store.bind(required(p.agent, "agent"), sessionId, {
             continuityPolicy: p.continuityPolicy,
             deliveryPolicy: p.deliveryPolicy,
+            grantPeerPreemption: p.grantPeerPreemption,
             installationId: bindSnapshot.session.installationId,
             revokeExisting: p.revokeExisting,
           });
@@ -426,7 +433,6 @@ export function controlHandler(
               {
                 installationId: proof.session.installationId,
                 continuityPolicy: p.continuityPolicy,
-                deliveryPolicy: p.deliveryPolicy,
                 revokeExisting: p.revokeExisting,
               },
             );
@@ -1012,6 +1018,7 @@ function publicAttestation(context: BridgeAttestationContext): BridgeAttestation
     bindingEpoch: context.bindingEpoch,
     agentId: context.agentId,
     principalId: context.principalId,
+    scopes: context.scopes,
     evidenceFingerprint: context.evidenceFingerprint,
   };
 }
@@ -1110,7 +1117,8 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     observeExecutions = false,
     directDelivery = false,
     cancelOwnedExecution = false,
-    reconcileDelivery = false;
+    reconcileDelivery = false,
+    peerPreemption = false;
   const callerAttestationSchemes = new Set<string>(),
     supportedPartKinds = new Set<RuntimeCapabilities["supportedPartKinds"][number]>();
   for (const probe of probes) {
@@ -1121,6 +1129,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery ||= capabilities.directDelivery;
     cancelOwnedExecution ||= capabilities.cancelOwnedExecution;
     reconcileDelivery ||= capabilities.reconcileDelivery;
+    peerPreemption ||= capabilities.peerPreemption;
     for (const scheme of capabilities.callerAttestationSchemes)
       callerAttestationSchemes.add(scheme);
     for (const kind of capabilities.supportedPartKinds) supportedPartKinds.add(kind);
@@ -1132,6 +1141,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery,
     cancelOwnedExecution,
     reconcileDelivery,
+    peerPreemption,
     callerAttestationSchemes: [...callerAttestationSchemes],
     supportedPartKinds: [...supportedPartKinds],
   };

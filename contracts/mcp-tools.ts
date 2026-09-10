@@ -172,6 +172,7 @@ export interface AcsMcpToolMap {
       readonly taskId?: string;
       readonly contextId?: string;
       readonly priority?: "low" | "normal" | "high";
+      readonly preempt?: boolean;
       readonly replyExpected?: boolean;
       readonly notifyOn?: readonly (
         | "working"

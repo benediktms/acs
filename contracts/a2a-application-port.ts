@@ -24,6 +24,7 @@ export interface A2ATarget {
 
 export interface DeliveryPreference {
   readonly priority: "low" | "normal" | "high";
+  readonly preempt: boolean;
   readonly notifyOn: readonly (
     | "working"
     | "input-required"

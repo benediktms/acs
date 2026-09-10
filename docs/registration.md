@@ -21,6 +21,16 @@ The local operator creates the logical agent and a ten-minute, one-time claim:
 acs agents create backend --claim
 ```
 
+An operator may grant peer interruption for the lifetime of that binding only:
+
+```sh
+acs agents create backend --claim --grant-peer-preemption --allow-peer-preemption
+acs codex bind backend --grant-peer-preemption --allow-peer-preemption
+```
+
+Both flags default to false. Claim consumers and `acs_register` cannot add either
+permission. Rebinding or revoking disables the old principal and removes its grant.
+
 Inside the intended Codex session, call `acs_claim` with the returned `claimCode`.
 The MCP input may also set `continuityPolicy` and `revokeExisting`; it never
 accepts a thread, binding, principal, or sender ID.

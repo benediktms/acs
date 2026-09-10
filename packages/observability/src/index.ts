@@ -6,6 +6,7 @@ export type MetricName =
   | "acs_delivery_attempts_total"
   | "acs_delivery_latency_ms"
   | "acs_acceptance_unknown_total"
+  | "acs_peer_preemption_total"
   | "acs_runtime_sessions_by_state"
   | "acs_sqlite_busy_total"
   | "acs_control_requests_total";
@@ -29,6 +30,7 @@ const metricNames: MetricName[] = [
   "acs_delivery_attempts_total",
   "acs_delivery_latency_ms",
   "acs_acceptance_unknown_total",
+  "acs_peer_preemption_total",
   "acs_runtime_sessions_by_state",
   "acs_sqlite_busy_total",
   "acs_control_requests_total",

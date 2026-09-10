@@ -9,6 +9,10 @@
       "enum": ["low", "normal", "high"],
       "default": "normal"
     },
+    "preempt": {
+      "type": "boolean",
+      "default": false
+    },
     "notifyOn": {
       "type": "array",
       "uniqueItems": true,

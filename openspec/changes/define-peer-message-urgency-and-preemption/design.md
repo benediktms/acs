@@ -29,6 +29,14 @@ The existing `priority?: "low" | "normal" | "high"` contract remains unchanged. 
 
 Priority controls ordering among pending deliveries. Preemption asks ACS to accelerate one delivery by interrupting eligible active work. A high-priority message need not request preemption, and a normal-priority message may request it.
 
+### Make interruption authority operator-owned and binding-lifetime
+
+Only the local-user control plane can grant `a2a:preempt` while directly binding an agent or creating its claim. The grant is stored on the bound principal and lasts only for that binding. Rebinding or revoking disables the old principal and ends its grant.
+
+Only that same local-user path can enable `allowPeerPreemption` on a recipient binding; it defaults to `false`. Claim creation persists both operator-selected values. `acs_claim` can supply only consumer-owned session, continuity, and replacement inputs and cannot add scopes or delivery policy. `acs_register` always creates safe defaults. Neither ordinary `a2a:send`, priority, message content, nor unrecognized control input grants interruption authority.
+
+Token issuance rejects every requested scope outside the enabled, current principal's durable scopes. The trusted bridge first freshly attests that principal: for `preempt: true`, it requests `a2a:preempt` only when that attestation confirms the durable grant; otherwise it omits the extra scope, sends with ordinary authority, and records `downgraded/missing-sender-authority`.
+
 ### Treat preemption as best-effort acceleration
 
 Ordinary send authorization is evaluated first. Once ACS durably accepts a message, failure to preempt is not a delivery failure.
@@ -41,9 +49,11 @@ ACS attempts interruption only when:
 4. the adapter advertises interruption support;
 5. the exact active execution is known and eligible under local policy.
 
-If any check fails, or the runtime reports unsupported, not-running, or rejected, ACS skips or stops interruption and immediately proceeds through the existing direct-delivery path. It records a noisy downgrade rather than silently pretending preemption succeeded.
+If sender authority or recipient policy/fencing fails, or the runtime reports unsupported or rejected, ACS skips or stops interruption and immediately proceeds through the existing direct-delivery path with a noisy downgrade. If there is no active execution, interruption is unnecessary rather than downgraded, and ACS immediately proceeds through ordinary delivery.
 
 This reuses the existing binding delivery-policy boundary for recipient opt-in. It does not treat peer content, priority, or ordinary `a2a:send` authority as permission to interrupt.
+
+The scheduler rechecks the sender's current non-disabled principal, matching binding, and `a2a:preempt` scope plus the recipient's current binding epoch and `allowPeerPreemption` immediately before adapter invocation. Immediately before `turn/interrupt`, the adapter repeats that complete sender and recipient fence; no stale scheduling gate may authorize a runtime mutation. Missing or stale authority or policy produces a classified noisy downgrade and ordinary delivery continues; sender authority is not snapshotted when delivery is accepted.
 
 ### Report preemption separately from delivery
 
@@ -64,7 +74,8 @@ The preferred sequence is:
 ```text
 durably accept message
   -> validate preemption authority and target policy
-  -> interrupt exact active execution when eligible
+  -> discover one exact in-progress execution through newest-first thread/turns/list
+  -> revalidate complete authority fence and interrupt that exact execution once
   -> establish a safely deliverable runtime state
   -> submit through existing direct delivery
   -> report interruption and delivery outcomes separately
@@ -74,15 +85,17 @@ Codex returning success from `turn/interrupt` proves only that the interrupt req
 
 If interruption acceptance is ambiguous, ACS does not blindly issue another interruption or start conflicting replacement work. It reconciles runtime state, keeps the message pending, and delivers as soon as the adapter can establish a safe direct-delivery state. Existing message deadlines remain authoritative; without a deadline, ambiguity delays rather than abandons delivery.
 
-For Codex, reconciliation uses turn notifications and `thread/read` with turns included. Idle thread state may establish that interruption is unnecessary, while generic RPC rejection is classified by the adapter as unsupported, not running, definitively rejected, or unresolved. Because Codex does not provide typed interruption rejection outcomes, ACS retains the underlying safe error detail for audit without exposing harness-specific identifiers through domain contracts.
+For Codex, discovery uses only `thread/turns/list` with `cursor: null`, `limit: 1`, descending sort, and omitted items; only a sole non-empty `inProgress` ID is eligible. The reconciliation read with turns included applies only to that already-known exact ID; it is not a lookup for an active execution. Exact stale-ID and no-active rejection are unnecessary, not a retry signal; generic RPC rejection is classified as unsupported, definitive, or unresolved without exposing harness-specific identifiers through domain contracts.
 
 Fallback delivery continues to use `turn/start` with named `toolOutput`, including when Codex queues that input behind active work. ACS does not use `turn/steer`, because steering represents peer content as user input and would lose the existing named-tool provenance boundary.
 
 ### Keep interruption harness-neutral
 
-The runtime contract gains an interruption capability and an operation over opaque execution references. Application and domain code never branch on the harness identity or expose Codex turn IDs.
+The runtime contract gains separate find-active, exact-interrupt, and exact-reconciliation operations over opaque execution references. Application and domain code never branch on the harness identity or expose Codex turn IDs.
 
-The Codex adapter maps an eligible request to exact `turn/interrupt(threadId, turnId)`. It advertises the capability only after real-Codex tests establish the pinned runtime's state transitions and ambiguous-write behavior.
+The Codex adapter maps an eligible request to exact `turn/interrupt(threadId, turnId)`. An active user-owned Codex turn may be eligible only when it belongs to the current recipient binding and the complete final sender and recipient fence still holds. It advertises the capability only after real-Codex tests establish the pinned runtime's state transitions and ambiguous-write behavior.
+
+One preemption request makes at most one interrupt mutation. After a flushed request with no definitive response, ACS persists the exact reconciliation identity, reconciles exact turn state, and never blindly retries the interrupt.
 
 The runtime-neutral interruption result distinguishes request acceptance from confirmed interruption and exposes only the minimum states needed by delivery orchestration: pending confirmation, interrupted, unnecessary, downgraded with a reason, or unresolved. Sender authorization and recipient policy failures are ACS decisions, not Codex outcomes; runtime delivery success or failure remains independent.
 
@@ -92,7 +105,7 @@ Durable acceptance, interruption outcome, runtime delivery acceptance, explicit 
 
 ### Bound priority without redesigning it
 
-Existing numeric priority storage and ordering stay in place. The scheduler adds the smallest anti-starvation rule needed to ensure sustained high-priority traffic cannot indefinitely block eligible normal or low-priority deliveries.
+Existing numeric priority storage and ordering stay in place. An eligible intent waiting at least 60 seconds sorts ahead of fresh traffic while preserving per-recipient serialization.
 
 ## Risks / Trade-offs
 
@@ -106,4 +119,4 @@ Existing numeric priority storage and ordering stay in place. The scheduler adds
 
 ## Migration Plan
 
-Add `preempt` as an optional field defaulting to `false`, so existing callers and stored messages keep their current behavior. Extend delivery status additively. Advertise runtime interruption only after conformance evidence passes; otherwise preemption requests noisily downgrade to ordinary delivery.
+Add `preempt` as an optional field defaulting to `false`, so existing callers and stored messages keep their current behavior. Persist preemption request and outcome separately from delivery state in one JSON column on `delivery_intents`, leaving the accepted payload hash unchanged. Extend delivery status additively. Advertise runtime interruption only after conformance evidence passes; otherwise preemption requests noisily downgrade to ordinary delivery.
