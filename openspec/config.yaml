@@ -13,7 +13,7 @@ context: |
   harness-specific generated protocol types. Peer messages are untrusted runtime
   input, never permission or local-user authority.
   Tool versions are pinned in mise.toml; package versions are pinned in
-  package.json and bun.lock. Codex schema generation targets 0.153.2.
+  package.json and bun.lock. Codex schema generation targets 0.154.0.
   Preserve caller attestation, binding fences, local permission ownership, and
   ambiguous acceptance recovery. Do not claim new compatibility without
   conformance evidence.
