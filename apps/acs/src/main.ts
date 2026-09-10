@@ -49,6 +49,7 @@ import {
   stopUnmanagedDaemon,
 } from "./service";
 
+const MCP_ATTESTATION_VERIFIED_CODEX_VERSIONS = Object.freeze(["0.153.2", "0.153.4"]);
 const args = Bun.argv.slice(2);
 let config: ReturnType<typeof paths>,
   settings: ReturnType<typeof loadConfig>,
@@ -1163,7 +1164,7 @@ async function doctor() {
     phaseZero: {
       a2aOnBun: "verified by pinned TCK",
       standaloneExecutable: "verified by clean-machine release matrix",
-      mcpAttestation: "verified on Codex 0.153.2 and 0.153.4",
+      mcpAttestation: `verified on Codex ${MCP_ATTESTATION_VERIFIED_CODEX_VERSIONS.join(" and ")}`,
       directDelivery: "named tool-output submission is the only automatic peer-message path",
       deliveryReconciliation:
         "exact delivery markers are required; inconclusive writes remain operator-owned",

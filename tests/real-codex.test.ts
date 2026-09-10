@@ -7,7 +7,7 @@ import type {
   RuntimeDeliveryRequest,
   RuntimeEvent,
 } from "../contracts/runtime-adapter";
-import { CodexRuntimeAdapter } from "../packages/runtime-codex/src/index";
+import { CodexRuntimeAdapter, TESTED_CODEX_VERSION } from "../packages/runtime-codex/src/index";
 import { CodexAppServerClient } from "../packages/runtime-codex/src/app-server-client";
 
 // A genuine Codex process and two independent app-server clients. Only the
@@ -61,7 +61,9 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
     try {
       await until(() => existsSync(socket), "Codex app-server socket");
       const initialized = await owner.start();
-      expect(initialized.userAgent).toContain(process.env.ACS_EXPECTED_CODEX_VERSION ?? "0.153.2");
+      expect(initialized.userAgent).toContain(
+        process.env.ACS_EXPECTED_CODEX_VERSION ?? TESTED_CODEX_VERSION,
+      );
       const created = record(
           await owner.startThread({
             cwd: root,
