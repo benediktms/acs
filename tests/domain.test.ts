@@ -138,6 +138,20 @@ describe("domain", () => {
     ).toBe("ready");
     expect(
       deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "unknown",
+        interactivePresence: "present",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
+        runtimeState: "idle",
+        blockingReason: "unknown",
+        interactivePresence: "present",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
         runtimeState: "offline",
         blockingReason: "none",
         interactivePresence: "present",

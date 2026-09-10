@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2035,19 +2035,100 @@ describe("delivery scheduler", () => {
     expect(unreadable.store.agent(unreadable.agent.id)?.id).toBe(unreadable.agent.id);
     await guardedReaper.stop();
     unreadable.store.close();
-    const disabled = setup("disabled-reap");
-    const noReaper = new DeliveryScheduler(
-      disabled.store,
-      new FakeRuntimeAdapter(),
-      "disabled-reap",
-      {
-        offlineRetentionMs: undefined,
-      },
-    );
+    const disabled = setup("disabled-reap"),
+      disabledAdapter = new FakeRuntimeAdapter();
+    let disabledNow = Date.now(),
+      disabledPresence: "present" | "absent" = "present";
+    const clock = spyOn(Date, "now").mockImplementation(() => disabledNow);
+    disabledAdapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: disabledPresence,
+      observedAt: new Date(disabledNow).toISOString(),
+      attributes: {},
+    });
+    const noReaper = new DeliveryScheduler(disabled.store, disabledAdapter, "disabled-reap", {
+      offlineRetentionMs: undefined,
+    });
     await noReaper.start();
     expect(disabled.store.agent(disabled.agent.id)?.id).toBe(disabled.agent.id);
+    disabledPresence = "absent";
+    disabledNow += 60_001;
+    noReaper.signal();
+    await until(
+      () =>
+        disabled.store.db
+          .query<{ offline_since_ms: number | null }, [string]>(
+            "SELECT offline_since_ms FROM agents WHERE id=?",
+          )
+          .get(disabled.agent.id)?.offline_since_ms === disabledNow,
+    );
+    expect(disabled.store.agent(disabled.agent.id)?.id).toBe(disabled.agent.id);
     await noReaper.stop();
+    clock.mockRestore();
     disabled.store.close();
+  });
+
+  test("does not accept a late runtime result after its target is reaped", async () => {
+    const store = fixture(),
+      agent = store.createAgent("reaped-in-flight"),
+      binding = store.bind(agent.id, "reaped-in-flight-session"),
+      requester = authenticated(store),
+      accepted = store.accept(
+        agent.id,
+        requester.id,
+        Message.fromJSON({
+          messageId: "reaped-in-flight",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        {},
+      ),
+      started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      adapter = new FakeRuntimeAdapter();
+    adapter.deliver = async () => {
+      started.resolve();
+      await release.promise;
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "late-execution", relationship: "started" },
+        evidence: { scheme: "fake", value: "late-execution" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "reaped-in-flight");
+    await scheduler.start();
+    await started.promise;
+    const stored = store.binding(binding.id);
+    if (!stored) throw new Error("missing binding");
+    store.observeSession({
+      session: {
+        installationId: stored.installation_id,
+        opaqueId: stored.session_opaque_id,
+      },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    expect(store.reapOfflineAgents(0)).toEqual([agent.id]);
+    release.resolve();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+    expect(
+      store.db.query<{ count: number }, []>("SELECT count(*) count FROM runtime_executions").get(),
+    ).toEqual({ count: 0 });
+    expect(
+      store.db
+        .query<{ outcome: string }, [string]>(
+          "SELECT outcome FROM delivery_attempts WHERE intent_id=?",
+        )
+        .get(accepted.deliveryId),
+    ).toEqual({ outcome: "rejected" });
+    await scheduler.stop();
+    store.close();
   });
 });
 

@@ -635,6 +635,12 @@ export class DeliveryScheduler {
       },
     });
     const completed = Date.now();
+    const currentAttempt = this.store
+      .query(
+        "SELECT 1 FROM delivery_intents WHERE id=? AND state='attempting' AND lease_owner=? AND attempt_count=?",
+      )
+      .get(intent.id, this.instanceId, number);
+    if (!currentAttempt) return;
     if (result.outcome === "accepted") {
       const execution = result.execution,
         executionId = execution ? id("exe") : null;
@@ -1113,7 +1119,6 @@ export class DeliveryScheduler {
       .run(now, now, snapshot.session.installationId, snapshot.session.opaqueId);
   }
   private async reap() {
-    if (this.options.offlineRetentionMs === undefined) return;
     const now = Date.now();
     if (now < this.nextReapAt) return;
     this.nextReapAt = now + 60_000;
@@ -1125,6 +1130,7 @@ export class DeliveryScheduler {
         return;
       }
     }
+    if (this.options.offlineRetentionMs === undefined) return;
     this.store.reapOfflineAgents(this.options.offlineRetentionMs, now, installationId);
   }
 }

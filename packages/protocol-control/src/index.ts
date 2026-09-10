@@ -456,6 +456,11 @@ export function controlHandler(
           if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
           const proof = await callerAttestor.attest(evidence);
           if (proof.kind !== "attested") throw new Error(`UNATTESTED_CALLER: ${proof.reason}`);
+          const registerAdapter = adapterFor(proof.session.installationId);
+          if (!registerAdapter) throw new Error("RUNTIME_UNAVAILABLE");
+          const registerSnapshot = await registerAdapter.inspectSession(proof.session);
+          if (deriveAgentState(registerSnapshot) === "offline")
+            throw new Error("RUNTIME_UNAVAILABLE: session not found");
           const registered = store.write(() => {
             const current = store.attestSession(
               proof.session,
@@ -480,6 +485,7 @@ export function controlHandler(
               });
             return { agent, binding, idempotent: false };
           });
+          store.observeSession(registerSnapshot);
           if (!registered.idempotent) {
             audit("agent.create", "agent", registered.agent.id, { source: "self-registration" });
             audit("binding.register", "binding", registered.binding.id);

@@ -431,6 +431,71 @@ test("starts the offline interval when a runtime disconnects", () => {
   store.close();
 });
 
+test("pauses offline retention while an agent is disabled", () => {
+  const store = fixture(),
+    agent = store.createAgent("disabled-offline-retention"),
+    binding = store.bind(agent.id, "disabled-offline-retention-session"),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  const observeOffline = (observedAt: number) =>
+    store.observeSession({
+      session: {
+        installationId: stored.installation_id,
+        opaqueId: stored.session_opaque_id,
+      },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date(observedAt).toISOString(),
+      attributes: {},
+    });
+  observeOffline(1_000);
+  store.updateAgent(agent.id, { enabled: false });
+  observeOffline(2_000);
+  store.updateAgent(agent.id, { enabled: true });
+  expect(
+    store.db
+      .query<{ offline_since_ms: number | null }, [string]>(
+        "SELECT offline_since_ms FROM agents WHERE id=?",
+      )
+      .get(agent.id)?.offline_since_ms,
+  ).toBeNull();
+  expect(store.reapOfflineAgents(0, 3_000)).toEqual([]);
+  observeOffline(4_000);
+  expect(store.reapOfflineAgents(0, 4_000)).toEqual([agent.id]);
+  store.close();
+});
+
+test("reaps tasks pinned to a superseded binding", () => {
+  const store = fixture(),
+    agent = store.createAgent("rebound-reap"),
+    original = store.bind(agent.id, "rebound-reap-original"),
+    requester = authenticated(store),
+    accepted = store.accept(agent.id, requester.id, requestMessage("rebound-reap"), {});
+  store.db
+    .query(
+      "UPDATE delivery_intents SET state='accepted',pinned_binding_id=?,pinned_binding_epoch=? WHERE id=?",
+    )
+    .run(original.id, original.epoch, accepted.deliveryId);
+  const replacement = store.bind(agent.id, "rebound-reap-replacement", { revokeExisting: true }),
+    stored = store.binding(replacement.id);
+  if (!stored) throw new Error("missing replacement binding");
+  store.observeSession({
+    session: {
+      installationId: stored.installation_id,
+      opaqueId: stored.session_opaque_id,
+    },
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date().toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(0)).toEqual([agent.id]);
+  expect(store.task(accepted.task.id, requester.id)?.status?.state).toBe(4);
+  store.close();
+});
+
 describe("schema migrations", () => {
   test("upgrades legacy delivery intents without losing durable state", () => {
     const store = fixture(),

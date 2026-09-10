@@ -51,6 +51,7 @@ export function deriveAgentState(observation: AgentObservation): AgentState {
   if (observation.blockingReason === "approval") return "auth-required";
   if (observation.blockingReason === "user-input") return "input-required";
   if (observation.runtimeState === "system-error") return "error";
+  if (observation.blockingReason === "unknown") return "unknown";
   if (observation.runtimeState === "active") return "working";
   if (observation.runtimeState === "idle") return "ready";
   return "unknown";

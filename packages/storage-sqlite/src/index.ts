@@ -581,15 +581,17 @@ export class Store {
   ) {
     const agent = this.agent(value);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
+    const enabled = patch.enabled === undefined ? agent.enabled : Number(patch.enabled);
     this.db
       .query(
-        "UPDATE agents SET slug=?,display_name=?,description=?,enabled=?,skills_json=?,profile_revision=profile_revision+1,updated_at_ms=? WHERE id=?",
+        "UPDATE agents SET slug=?,display_name=?,description=?,enabled=?,offline_since_ms=CASE WHEN ?=0 THEN NULL ELSE offline_since_ms END,skills_json=?,profile_revision=profile_revision+1,updated_at_ms=? WHERE id=?",
       )
       .run(
         patch.slug ? agentSlug(patch.slug) : agent.slug,
         patch.displayName ?? agent.display_name,
         patch.description ?? agent.description,
-        patch.enabled === undefined ? agent.enabled : Number(patch.enabled),
+        enabled,
+        enabled,
         JSON.stringify(patch.skills ?? JSON.parse(agent.skills_json)),
         Date.now(),
         agent.id,
@@ -825,7 +827,7 @@ export class Store {
         );
       this.db
         .query(
-          "UPDATE agents SET offline_since_ms=CASE WHEN ?='offline' THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id=?",
+          "UPDATE agents SET offline_since_ms=CASE WHEN enabled=0 THEN NULL WHEN ?='offline' THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id=?",
         )
         .run(state, observedAt, observedAt, binding.agent_id);
     });
@@ -858,7 +860,7 @@ export class Store {
         .run(now, installationId);
       this.db
         .query(
-          "UPDATE agents SET offline_since_ms=coalesce(offline_since_ms,?),updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND status='active')",
+          "UPDATE agents SET offline_since_ms=CASE WHEN enabled=1 THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND status='active')",
         )
         .run(now, now, installationId);
     });
@@ -905,7 +907,20 @@ export class Store {
           .all(agentId);
       if (!actor) throw new Error("BINDING_NOT_FOUND");
       for (const row of tasks)
-        this.transitionTask(row.id, actor.principal_id, TaskState.Failed, reason, { reason }, now);
+        this.transitionTask(
+          row.id,
+          actor.principal_id,
+          TaskState.Failed,
+          reason,
+          { reason },
+          now,
+          false,
+        );
+      this.db
+        .query(
+          "UPDATE delivery_attempts SET completed_at_ms=?,outcome='rejected',error_code='target-reaped' WHERE outcome IS NULL AND intent_id IN (SELECT id FROM delivery_intents WHERE target_agent_id=? AND state IN ('leased','attempting','acceptance-unknown'))",
+        )
+        .run(now, agentId);
       this.db
         .query(
           "DELETE FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','deferred') AND NOT EXISTS(SELECT 1 FROM delivery_attempts WHERE intent_id=delivery_intents.id)",
@@ -1765,16 +1780,19 @@ export class Store {
     summary: string,
     details: Record<string, unknown>,
     transitionedAt = Date.now(),
+    enforceAssignment = true,
   ): StoredTask {
     return this.write(() => {
       const row = this.db
         .query<TaskRow, [string]>("SELECT * FROM a2a_tasks WHERE id=?")
         .get(taskId);
       if (!row) throw new Error("TASK_NOT_FOUND");
-      if (row.requester_principal_id === principalId) {
-        if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
-      } else {
-        this.assignedTask(taskId, principalId);
+      if (enforceAssignment) {
+        if (row.requester_principal_id === principalId) {
+          if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
+        } else {
+          this.assignedTask(taskId, principalId);
+        }
       }
       const task = parseTask(row.a2a_snapshot_json);
       if (row.state === next && terminalTaskState(next)) {

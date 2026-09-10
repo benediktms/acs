@@ -577,7 +577,7 @@ describe("control protocol", () => {
       ).json(),
     ).toMatchObject({
       result: {
-        agent: { slug: "self-service" },
+        agent: { slug: "self-service", state: "ready" },
         binding: { session: { opaqueId: "self-service-thread" }, epoch: 1 },
         idempotent: false,
       },
@@ -1105,6 +1105,8 @@ describe("control protocol", () => {
         "expired-thread",
         "invalid-thread",
         "new-claimed-thread",
+        "self-service-thread",
+        "name-collision-thread",
       ]),
     );
     expect(inspected.length).toBeGreaterThan(1);
