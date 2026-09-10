@@ -154,8 +154,8 @@ export class DeliveryScheduler {
       },
     };
     this.recoverExpiredLeases();
-    this.reap();
     await this.connect();
+    await this.reap();
     this.timer = setInterval(() => void this.tick(), 250);
   }
   signal() {
@@ -173,11 +173,14 @@ export class DeliveryScheduler {
     if (this.scheduling) return;
     this.scheduling = true;
     try {
-      this.reap();
       if (!this.connected) {
         if (Date.now() >= this.nextConnectAt) await this.connect();
-        return;
+        if (!this.connected) {
+          await this.reap();
+          return;
+        }
       }
+      await this.reap();
       if (await this.reconcileOne()) return;
       if (await this.cancelOne()) return;
       while (this.inFlight.size < this.options.concurrency) {
@@ -1096,12 +1099,31 @@ export class DeliveryScheduler {
       )
       .run(now, now, snapshot.session.installationId, snapshot.session.opaqueId);
   }
-  private reap() {
+  private async reap() {
     if (this.options.offlineRetentionMs === undefined) return;
     const now = Date.now();
     if (now < this.nextReapAt) return;
     this.nextReapAt = now + 60_000;
-    this.store.reapOfflineAgents(this.options.offlineRetentionMs, now);
+    const installationId = required(this.context, "adapter context").installationId;
+    if (this.connected) {
+      const candidates = this.store
+        .query<{ session_opaque_id: string }, [RuntimeInstallationId, number]>(
+          "SELECT b.session_opaque_id FROM agents a JOIN runtime_bindings b ON b.agent_id=a.id WHERE b.installation_id=? AND b.status='active' AND a.enabled=1 AND a.deleted_at_ms IS NULL AND a.offline_since_ms IS NOT NULL AND a.offline_since_ms<=? ORDER BY a.offline_since_ms,a.id LIMIT 100",
+        )
+        .all(installationId, now - this.options.offlineRetentionMs);
+      try {
+        for (const candidate of candidates)
+          this.observeSession(
+            await this.adapter.inspectSession({
+              installationId,
+              opaqueId: candidate.session_opaque_id,
+            }),
+          );
+      } catch {
+        return;
+      }
+    }
+    this.store.reapOfflineAgents(this.options.offlineRetentionMs, now, installationId);
   }
 }
 

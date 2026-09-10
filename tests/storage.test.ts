@@ -254,11 +254,14 @@ test("preserves removed Codex installations as offline records", () => {
   if (!work) throw new Error("missing work installation");
   const agent = store.createAgent("work-agent"),
     binding = store.bind(agent.id, "work-session", { installationId: work.id });
-  store.db
-    .query(
-      "UPDATE runtime_bindings SET last_observed_runtime_state='idle',last_observed_blocking_reason='none',last_observed_interactive_presence='present' WHERE id=?",
-    )
-    .run(binding.id);
+  store.observeSession({
+    session: { installationId: work.id, opaqueId: "work-session" },
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date().toISOString(),
+    attributes: {},
+  });
   store.syncCodexInstallations([]);
   expect(
     store.db
@@ -274,14 +277,24 @@ test("preserves removed Codex installations as offline records", () => {
       )
       .get(binding.id),
   ).toEqual({ runtimeState: "unknown", presence: "unknown" });
+  expect(
+    store.db
+      .query<{ offline_since_ms: number | null }, [string]>(
+        "SELECT offline_since_ms FROM agents WHERE id=?",
+      )
+      .get(agent.id)?.offline_since_ms,
+  ).toBeNull();
 });
 
 test("reaps only continuously offline active bindings and fails queued work", () => {
   const store = fixture(),
     agent = store.createAgent("reaped-worker"),
     binding = store.bind(agent.id, "reaped-session"),
-    requester = authenticated(store),
-    accepted = store.accept(agent.id, requester.id, requestMessage("reaped-task"), {}),
+    requester = store.createAgent("reap-requester"),
+    requesterBinding = store.bind(requester.id, "reap-requester-session"),
+    accepted = store.accept(agent.id, requesterBinding.principalId, requestMessage("reaped-task"), {
+      notifyOn: ["terminal"],
+    }),
     stored = store.binding(binding.id);
   if (!stored) throw new Error("missing binding");
   const oldToken = store.issueToken(binding.principalId, ["executor"]);
@@ -298,8 +311,20 @@ test("reaps only continuously offline active bindings and fails queued work", ()
   expect(store.agent(agent.id)).toBeNull();
   expect(store.binding(binding.id)?.status).toBe(BindingState.Revoked);
   expect(store.authenticate(oldToken)).toBeNull();
-  expect(store.task(accepted.task.id, requester.id)?.status?.state).toBe(4);
+  const task = store.task(accepted.task.id, requesterBinding.principalId);
+  expect(task?.status?.state).toBe(4);
+  expect(task?.status?.message?.parts.at(0)?.content).toEqual({
+    $case: "text",
+    value: "target-reaped",
+  });
   expect(store.eventsAfter(accepted.task.id, 0).at(-1)).toMatchObject({ eventType: "task-failed" });
+  expect(
+    store.db
+      .query<{ count: number }, [string, string]>(
+        "SELECT count(*) count FROM delivery_intents WHERE task_id=? AND kind='task-event-notification' AND target_agent_id=? AND state='pending'",
+      )
+      .get(accepted.task.id, requester.id),
+  ).toEqual({ count: 1 });
   expect(
     store.db
       .query(
@@ -345,6 +370,46 @@ test("clears the offline interval for reconnects and unsupported observations", 
   });
   expect(store.reapOfflineAgents(1)).toEqual([]);
   expect(store.agent(agent.id)?.id).toBe(agent.id);
+  store.close();
+});
+
+test("ignores stale session observations", () => {
+  const store = fixture(),
+    agent = store.createAgent("stale-observation"),
+    binding = store.bind(agent.id, "stale-observation-session"),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  const session = {
+    installationId: stored.installation_id,
+    opaqueId: "stale-observation-session",
+  };
+  store.observeSession({
+    session,
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "present",
+    observedAt: new Date(2_000).toISOString(),
+    attributes: {},
+  });
+  store.observeSession({
+    session,
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date(1_000).toISOString(),
+    attributes: {},
+  });
+  expect(store.binding(binding.id)).toMatchObject({
+    last_observed_interactive_presence: "present",
+    last_observed_at_ms: 2_000,
+  });
+  expect(
+    store.db
+      .query<{ offline_since_ms: number | null }, [string]>(
+        "SELECT offline_since_ms FROM agents WHERE id=?",
+      )
+      .get(agent.id)?.offline_since_ms,
+  ).toBeNull();
   store.close();
 });
 

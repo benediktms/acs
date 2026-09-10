@@ -282,7 +282,11 @@ export interface ControlStoragePort extends SqlPort {
   binding(bindingId: string): BindingRow | null;
   revokeBinding(bindingId: string, reason?: string): BindingRow | null;
   observeSession(snapshot: RuntimeSessionSnapshot): void;
-  reapOfflineAgents(retentionMs: number, now?: number): string[];
+  reapOfflineAgents(
+    retentionMs: number,
+    now?: number,
+    installationId?: RuntimeInstallationId,
+  ): string[];
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult): void;
   attestSession(
     session: RuntimeSessionRef,
@@ -365,7 +369,11 @@ export interface DeliveryStoragePort extends SqlPort {
   observeRuntime(installationId: RuntimeInstallationId, probe: RuntimeProbeResult): void;
   markRuntimeOffline(installationId: RuntimeInstallationId): void;
   observeSession(snapshot: RuntimeSessionSnapshot): void;
-  reapOfflineAgents(retentionMs: number, now?: number): string[];
+  reapOfflineAgents(
+    retentionMs: number,
+    now?: number,
+    installationId?: RuntimeInstallationId,
+  ): string[];
   setTaskState(
     taskId: string,
     principalId: string,

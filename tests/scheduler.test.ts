@@ -1993,13 +1993,33 @@ describe("delivery scheduler", () => {
       return { store, agent };
     };
     const overdue = setup("startup-reap");
-    const reaper = new DeliveryScheduler(overdue.store, new FakeRuntimeAdapter(), "startup-reap", {
+    const offlineAdapter = new FakeRuntimeAdapter();
+    offlineAdapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    const reaper = new DeliveryScheduler(overdue.store, offlineAdapter, "startup-reap", {
       offlineRetentionMs: 1,
     });
     await reaper.start();
     expect(overdue.store.agent(overdue.agent.id)).toBeNull();
     await reaper.stop();
     overdue.store.close();
+    const live = setup("startup-live");
+    const safeReaper = new DeliveryScheduler(
+      live.store,
+      new FakeRuntimeAdapter(),
+      "startup-live",
+      { offlineRetentionMs: 1 },
+    );
+    await safeReaper.start();
+    expect(live.store.agent(live.agent.id)?.id).toBe(live.agent.id);
+    await safeReaper.stop();
+    live.store.close();
     const disabled = setup("disabled-reap");
     const noReaper = new DeliveryScheduler(
       disabled.store,

@@ -336,6 +336,11 @@ export class Store {
           "UPDATE runtime_bindings SET last_observed_runtime_state='unknown',last_observed_blocking_reason='unknown',last_observed_interactive_presence='unknown',last_observed_at_ms=? WHERE status='active' AND installation_id IN (SELECT id FROM runtime_installations WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?)))",
         )
         .run(now, JSON.stringify([...configured]));
+      this.db
+        .query(
+          "UPDATE agents SET offline_since_ms=NULL,updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE status='active' AND installation_id IN (SELECT id FROM runtime_installations WHERE harness_id='codex' AND label NOT IN (SELECT value FROM json_each(?))))",
+        )
+        .run(now, JSON.stringify([...configured]));
     });
     return this.db
       .query<{ id: RuntimeInstallationId; label: string }, []>(
@@ -806,6 +811,7 @@ export class Store {
         )
         .get(snapshot.session.installationId, snapshot.session.opaqueId);
       if (!binding) return;
+      if (binding.last_observed_at_ms && observedAt < binding.last_observed_at_ms) return;
       this.db
         .query(
           "UPDATE runtime_bindings SET last_observed_runtime_state=?,last_observed_blocking_reason=?,last_observed_interactive_presence=?,last_observed_at_ms=? WHERE id=?",
@@ -857,14 +863,21 @@ export class Store {
         .run(now, now, installationId);
     });
   }
-  reapOfflineAgents(retentionMs: number, now = Date.now()) {
+  reapOfflineAgents(
+    retentionMs: number,
+    now = Date.now(),
+    installationId?: RuntimeInstallationId,
+  ) {
     if (!Number.isFinite(retentionMs) || retentionMs < 0) return [];
     return this.write(() => {
       const candidates = this.db
-        .query<{ id: `agt_${string}` }, [number]>(
-          "SELECT id FROM agents WHERE enabled=1 AND deleted_at_ms IS NULL AND offline_since_ms IS NOT NULL AND offline_since_ms<=? ORDER BY offline_since_ms,id LIMIT 100",
+        .query<
+          { id: `agt_${string}` },
+          [number, RuntimeInstallationId | null, RuntimeInstallationId | null]
+        >(
+          "SELECT a.id FROM agents a WHERE a.enabled=1 AND a.deleted_at_ms IS NULL AND a.offline_since_ms IS NOT NULL AND a.offline_since_ms<=? AND (? IS NULL OR EXISTS(SELECT 1 FROM runtime_bindings b WHERE b.agent_id=a.id AND b.installation_id=? AND b.status='active')) ORDER BY a.offline_since_ms,a.id LIMIT 100",
         )
-        .all(now - retentionMs);
+        .all(now - retentionMs, installationId ?? null, installationId ?? null);
       const agents = candidates.filter((agent) => {
         const binding = this.db
           .query<BindingRow, [`agt_${string}`]>(
@@ -889,34 +902,8 @@ export class Store {
           "SELECT * FROM a2a_tasks WHERE target_agent_id=? AND state NOT IN ('completed','failed','canceled','rejected')",
         )
         .all(agentId);
-      for (const row of tasks) {
-        const task = parseTask(row.a2a_snapshot_json);
-        task.status = {
-          state: taskStates[TaskState.Failed],
-          timestamp: new Date(now).toISOString(),
-        };
-        this.db
-          .query(
-            "UPDATE a2a_tasks SET state=?,state_version=state_version+1,summary=?,a2a_snapshot_json=?,updated_at_ms=?,terminal_at_ms=? WHERE id=?",
-          )
-          .run(TaskState.Failed, reason, JSON.stringify(task), now, now, row.id);
-        this.db
-          .query(
-            "INSERT INTO task_events(id,task_id,sequence,event_type,actor_principal_id,payload_json,created_at_ms) VALUES(?,?,?,?,?,?,?)",
-          )
-          .run(
-            id("evt"),
-            row.id,
-            row.next_event_sequence,
-            "task-failed",
-            null,
-            JSON.stringify({ reason, snapshot: task }),
-            now,
-          );
-        this.db
-          .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
-          .run(row.id);
-      }
+      for (const row of tasks)
+        this.transitionTask(row.id, null, TaskState.Failed, reason, { reason }, now);
       this.db
         .query(
           "DELETE FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','deferred') AND NOT EXISTS(SELECT 1 FROM delivery_attempts WHERE intent_id=delivery_intents.id)",
@@ -1771,20 +1758,23 @@ export class Store {
   }
   private transitionTask(
     taskId: string,
-    principalId: string,
+    principalId: string | null,
     next: TaskState,
     summary: string,
     details: Record<string, unknown>,
+    transitionedAt = Date.now(),
   ): StoredTask {
     return this.write(() => {
       const row = this.db
         .query<TaskRow, [string]>("SELECT * FROM a2a_tasks WHERE id=?")
         .get(taskId);
       if (!row) throw new Error("TASK_NOT_FOUND");
-      if (row.requester_principal_id === principalId) {
-        if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
-      } else {
-        this.assignedTask(taskId, principalId);
+      if (principalId !== null) {
+        if (row.requester_principal_id === principalId) {
+          if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
+        } else {
+          this.assignedTask(taskId, principalId);
+        }
       }
       const task = parseTask(row.a2a_snapshot_json);
       if (row.state === next && terminalTaskState(next)) {
@@ -1797,7 +1787,7 @@ export class Store {
         throw new Error("TASK_STATE_CONFLICT");
       }
       const state = transition(row.state, next),
-        now = Date.now();
+        now = transitionedAt;
       task.status = {
         state: taskStates[state],
         message: summary
@@ -1851,6 +1841,7 @@ export class Store {
         .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
         .run(taskId);
       if (
+        principalId !== null &&
         !terminalTaskState(state) &&
         row.requester_principal_id !== principalId &&
         [TaskState.Working, TaskState.InputRequired, TaskState.AuthRequired].includes(state)
