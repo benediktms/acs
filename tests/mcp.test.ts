@@ -92,9 +92,9 @@ describe("Codex MCP bridge", () => {
         expiresAt: "2026-09-09T00:30:00.000Z",
       },
     });
-    expect(() => agentView({ ...view, id: "agt_2", displayName: "Worker", enabled: false })).toThrow(
-      "AGENT_NOT_FOUND",
-    );
+    expect(() =>
+      agentView({ ...view, id: "agt_2", displayName: "Worker", enabled: false }),
+    ).toThrow("AGENT_NOT_FOUND");
   });
 
   test("validates the exact acknowledgement and activity tool inputs", () => {

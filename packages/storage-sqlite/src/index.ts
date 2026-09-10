@@ -863,11 +863,7 @@ export class Store {
         .run(now, now, installationId);
     });
   }
-  reapOfflineAgents(
-    retentionMs: number,
-    now = Date.now(),
-    installationId?: RuntimeInstallationId,
-  ) {
+  reapOfflineAgents(retentionMs: number, now = Date.now(), installationId?: RuntimeInstallationId) {
     if (!Number.isFinite(retentionMs) || retentionMs < 0) return [];
     return this.write(() => {
       const candidates = this.db

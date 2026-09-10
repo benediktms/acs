@@ -2010,12 +2010,9 @@ describe("delivery scheduler", () => {
     await reaper.stop();
     overdue.store.close();
     const live = setup("startup-live");
-    const safeReaper = new DeliveryScheduler(
-      live.store,
-      new FakeRuntimeAdapter(),
-      "startup-live",
-      { offlineRetentionMs: 1 },
-    );
+    const safeReaper = new DeliveryScheduler(live.store, new FakeRuntimeAdapter(), "startup-live", {
+      offlineRetentionMs: 1,
+    });
     await safeReaper.start();
     expect(live.store.agent(live.agent.id)?.id).toBe(live.agent.id);
     await safeReaper.stop();
