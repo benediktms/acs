@@ -17,8 +17,9 @@ bun test tests/config.test.ts tests/storage.test.ts tests/a2a.test.ts tests/cont
 bun run test:codex-real
 ```
 
-The full suite and A2A TCK run in CI. The native CI matrix selects Codex `0.153.2`
-and `0.153.4` independently of schema generation, which remains pinned to `0.153.2`.
+The full suite and A2A TCK run in CI. The native CI matrix selects Codex `0.153.2`,
+`0.153.4`, and `0.154.0` independently of schema generation, which remains pinned
+to `0.154.0`.
 
 The native test uses an actual Codex executable, two independent app-server
 clients on one Unix socket, a fresh isolated HOME/CODEX_HOME, and a local mocked

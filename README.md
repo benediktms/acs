@@ -150,7 +150,7 @@ requirement-level allowlist.
 
 Activate mise in your shell, or prefix commands with `mise exec --`.
 `mise.toml` pins Bun, Node (for OpenSpec), OpenSpec, Python, and uv (for the A2A
-TCK). JavaScript dependencies, including Codex `0.153.2`, are already pinned
+TCK). JavaScript dependencies, including Codex `0.154.0`, are already pinned
 in `package.json` and `bun.lock`.
 
 Behavioral and architectural requirements live in [OpenSpec specs](openspec/specs),
@@ -179,7 +179,8 @@ mock Responses API. It verifies idle and active delivery, several distinct
 messages sharing one turn, tool rather than local-user provenance, delayed model
 input inclusion, exact persisted marker reconciliation, and rejection of
 empty-input context-only steering. No credentials or billable inference are used.
-The native CI matrix checks the supported `0.153.2` and `0.153.4` binaries.
+The native CI matrix checks the supported `0.153.2`, `0.153.4`, and `0.154.0`
+binaries.
 
 `bun run test:codex-model` is a separate explicit opt-in that uses configured
 Codex authentication and real inference. It has not been run as part of the

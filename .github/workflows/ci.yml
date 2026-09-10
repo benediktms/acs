@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        codex: ["0.153.2", "0.153.4"]
+        codex: ["0.153.2", "0.153.4", "0.154.0"]
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v4
