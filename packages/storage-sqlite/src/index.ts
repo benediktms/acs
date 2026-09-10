@@ -893,13 +893,19 @@ export class Store {
     now: number,
   ) {
     if (reap) {
-      const tasks = this.db
-        .query<TaskRow, [`agt_${string}`]>(
-          "SELECT * FROM a2a_tasks WHERE target_agent_id=? AND state NOT IN ('completed','failed','canceled','rejected')",
-        )
-        .all(agentId);
+      const actor = this.db
+          .query<{ principal_id: string }, [`agt_${string}`]>(
+            "SELECT p.id principal_id FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id WHERE b.agent_id=? AND b.status='active' AND p.disabled_at_ms IS NULL",
+          )
+          .get(agentId),
+        tasks = this.db
+          .query<TaskRow, [`agt_${string}`]>(
+            "SELECT * FROM a2a_tasks WHERE target_agent_id=? AND state NOT IN ('completed','failed','canceled','rejected')",
+          )
+          .all(agentId);
+      if (!actor) throw new Error("BINDING_NOT_FOUND");
       for (const row of tasks)
-        this.transitionTask(row.id, null, TaskState.Failed, reason, { reason }, now);
+        this.transitionTask(row.id, actor.principal_id, TaskState.Failed, reason, { reason }, now);
       this.db
         .query(
           "DELETE FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','deferred') AND NOT EXISTS(SELECT 1 FROM delivery_attempts WHERE intent_id=delivery_intents.id)",
@@ -1754,7 +1760,7 @@ export class Store {
   }
   private transitionTask(
     taskId: string,
-    principalId: string | null,
+    principalId: string,
     next: TaskState,
     summary: string,
     details: Record<string, unknown>,
@@ -1765,12 +1771,10 @@ export class Store {
         .query<TaskRow, [string]>("SELECT * FROM a2a_tasks WHERE id=?")
         .get(taskId);
       if (!row) throw new Error("TASK_NOT_FOUND");
-      if (principalId !== null) {
-        if (row.requester_principal_id === principalId) {
-          if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
-        } else {
-          this.assignedTask(taskId, principalId);
-        }
+      if (row.requester_principal_id === principalId) {
+        if (next !== TaskState.Canceled) throw new Error("TASK_NOT_ASSIGNED");
+      } else {
+        this.assignedTask(taskId, principalId);
       }
       const task = parseTask(row.a2a_snapshot_json);
       if (row.state === next && terminalTaskState(next)) {
@@ -1837,7 +1841,6 @@ export class Store {
         .query("UPDATE a2a_tasks SET next_event_sequence=next_event_sequence+1 WHERE id=?")
         .run(taskId);
       if (
-        principalId !== null &&
         !terminalTaskState(state) &&
         row.requester_principal_id !== principalId &&
         [TaskState.Working, TaskState.InputRequired, TaskState.AuthRequired].includes(state)

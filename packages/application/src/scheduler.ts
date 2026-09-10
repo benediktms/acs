@@ -154,8 +154,8 @@ export class DeliveryScheduler {
       },
     };
     this.recoverExpiredLeases();
-    await this.connect();
-    await this.reap();
+    const reconciled = await this.connect();
+    if (!this.connected || reconciled) await this.reap();
     this.timer = setInterval(() => void this.tick(), 250);
   }
   signal() {
@@ -310,13 +310,19 @@ export class DeliveryScheduler {
       const probe = await this.adapter.probe();
       this.capabilities = probe.capabilities;
       this.store.observeRuntime(required(this.context, "adapter context").installationId, probe);
-      await this.reconcileBoundSessions();
       this.connected = true;
       this.reconnectAttempts = 0;
       this.observeTask = this.observe();
+      try {
+        await this.reconcileBoundSessions();
+        return true;
+      } catch {
+        return false;
+      }
     } catch {
       this.store.markRuntimeOffline(required(this.context, "adapter context").installationId);
       this.scheduleReconnect();
+      return false;
     }
   }
   private async reconcileBoundSessions() {
@@ -497,8 +503,15 @@ export class DeliveryScheduler {
       blockingReason: blockingReason(binding.last_observed_blocking_reason),
       interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
     });
-    if (!["ready", "working"].includes(state))
-      return this.defer(intent.id, state === "input-required" ? "local-input" : state, 30_000);
+    if (!["ready", "working"].includes(state)) {
+      const reason =
+        state === "input-required" || state === "auth-required"
+          ? "local-input"
+          : state === "error" || state === "unknown"
+            ? "unsupported-active-state"
+            : state;
+      return this.defer(intent.id, reason, 30_000);
+    }
     const payload: DeliveryPayload = JSON.parse(intent.payload_json),
       isTaskEventNotification = intent.kind === "task-event-notification",
       parties = required(
@@ -1106,19 +1119,8 @@ export class DeliveryScheduler {
     this.nextReapAt = now + 60_000;
     const installationId = required(this.context, "adapter context").installationId;
     if (this.connected) {
-      const candidates = this.store
-        .query<{ session_opaque_id: string }, [RuntimeInstallationId, number]>(
-          "SELECT b.session_opaque_id FROM agents a JOIN runtime_bindings b ON b.agent_id=a.id WHERE b.installation_id=? AND b.status='active' AND a.enabled=1 AND a.deleted_at_ms IS NULL AND a.offline_since_ms IS NOT NULL AND a.offline_since_ms<=? ORDER BY a.offline_since_ms,a.id LIMIT 100",
-        )
-        .all(installationId, now - this.options.offlineRetentionMs);
       try {
-        for (const candidate of candidates)
-          this.observeSession(
-            await this.adapter.inspectSession({
-              installationId,
-              opaqueId: candidate.session_opaque_id,
-            }),
-          );
+        await this.reconcileBoundSessions();
       } catch {
         return;
       }

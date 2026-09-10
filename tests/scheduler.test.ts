@@ -1929,14 +1929,14 @@ describe("delivery scheduler", () => {
     store.close();
   });
   test("delivers only ready and working observed targets", async () => {
-    for (const [runtimeState, blockingReason, interactivePresence, expected] of [
-      ["idle", "none", "present", "accepted"],
-      ["active", "none", "present", "accepted"],
-      ["active", "user-input", "present", "deferred"],
-      ["active", "approval", "present", "deferred"],
-      ["idle", "none", "absent", "deferred"],
-      ["idle", "none", "unknown", "deferred"],
-      ["system-error", "none", "present", "deferred"],
+    for (const [runtimeState, blockingReason, interactivePresence, expected, reason] of [
+      ["idle", "none", "present", "accepted", null],
+      ["active", "none", "present", "accepted", null],
+      ["active", "user-input", "present", "deferred", "local-input"],
+      ["active", "approval", "present", "deferred", "local-input"],
+      ["idle", "none", "absent", "deferred", "offline"],
+      ["idle", "none", "unknown", "deferred", "unsupported-active-state"],
+      ["system-error", "none", "present", "deferred", "unsupported-active-state"],
     ] as const) {
       const store = fixture(),
         agent = store.createAgent(`state-${runtimeState}-${blockingReason}-${interactivePresence}`),
@@ -1970,7 +1970,10 @@ describe("delivery scheduler", () => {
       const scheduler = new DeliveryScheduler(store, adapter, `state-${agent.slug}`);
       await scheduler.start();
       await Bun.sleep(300);
-      expect(deliveryState(store, accepted.deliveryId)?.state).toBe(expected);
+      expect(deliveryState(store, accepted.deliveryId)).toMatchObject({
+        state: expected,
+        state_reason: reason,
+      });
       await scheduler.stop();
       store.close();
     }
@@ -2017,6 +2020,21 @@ describe("delivery scheduler", () => {
     expect(live.store.agent(live.agent.id)?.id).toBe(live.agent.id);
     await safeReaper.stop();
     live.store.close();
+    const unreadable = setup("startup-unreadable");
+    const unreadableAdapter = new FakeRuntimeAdapter();
+    unreadableAdapter.inspectSession = async () => {
+      throw new Error("transient read failure");
+    };
+    const guardedReaper = new DeliveryScheduler(
+      unreadable.store,
+      unreadableAdapter,
+      "startup-unreadable",
+      { offlineRetentionMs: 1 },
+    );
+    await guardedReaper.start();
+    expect(unreadable.store.agent(unreadable.agent.id)?.id).toBe(unreadable.agent.id);
+    await guardedReaper.stop();
+    unreadable.store.close();
     const disabled = setup("disabled-reap");
     const noReaper = new DeliveryScheduler(
       disabled.store,

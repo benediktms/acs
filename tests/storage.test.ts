@@ -320,6 +320,13 @@ test("reaps only continuously offline active bindings and fails queued work", ()
   expect(store.eventsAfter(accepted.task.id, 0).at(-1)).toMatchObject({ eventType: "task-failed" });
   expect(
     store.db
+      .query<{ kind: string }, [string]>(
+        "SELECT p.kind FROM task_events e JOIN principals p ON p.id=e.actor_principal_id WHERE e.task_id=? AND e.event_type='task-failed'",
+      )
+      .get(accepted.task.id),
+  ).toEqual({ kind: "bound-agent" });
+  expect(
+    store.db
       .query<{ count: number }, [string, string]>(
         "SELECT count(*) count FROM delivery_intents WHERE task_id=? AND kind='task-event-notification' AND target_agent_id=? AND state='pending'",
       )
