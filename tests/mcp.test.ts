@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   agentView,
   activityUpdateInputSchema,
+  discoverableAgentStates,
   mcpInstructions,
   mcpMessageIdentity,
   taskAcknowledgementInputSchema,
@@ -95,6 +96,22 @@ describe("Codex MCP bridge", () => {
     expect(() =>
       agentView({ ...view, id: "agt_2", displayName: "Worker", enabled: false }),
     ).toThrow("AGENT_NOT_FOUND");
+  });
+
+  test("lists unknown agents but excludes offline agents", () => {
+    expect(discoverableAgentStates).toContain("unknown");
+    expect(discoverableAgentStates).not.toContain("offline");
+    expect(
+      agentView({
+        id: "agt_1",
+        slug: "unknown-agent",
+        displayName: "Unknown agent",
+        description: "",
+        enabled: true,
+        state: "unknown",
+        skills: [],
+      }),
+    ).toMatchObject({ slug: "unknown-agent", state: "unknown" });
   });
 
   test("validates the exact acknowledgement and activity tool inputs", () => {
