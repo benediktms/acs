@@ -711,9 +711,9 @@ test("compiled managed-worker commands fence control receipts before native laun
   const control = Bun.serve({
     unix: controlSocket,
     async fetch(request) {
-      const rpc = record(await request.json()),
-        method = string(rpc.method),
-        params = rpc.params;
+      const requestRpc = record(await request.json()),
+        method = string(requestRpc.method),
+        params = requestRpc.params;
       calls.push({ method, params });
       const result =
         method === "system.initialize"
@@ -728,14 +728,14 @@ test("compiled managed-worker commands fence control receipts before native laun
       if (method === "runtimes.sessions.createManaged" && createResult === "ambiguous")
         return Response.json({
           jsonrpc: "2.0",
-          id: rpc.id,
+          id: requestRpc.id,
           error: {
             code: -32000,
             message: "RUNTIME_AMBIGUOUS: managed creation may have succeeded",
             data: { code: "RUNTIME_AMBIGUOUS" },
           },
         });
-      return Response.json({ jsonrpc: "2.0", id: rpc.id, result });
+      return Response.json({ jsonrpc: "2.0", id: requestRpc.id, result });
     },
   });
   try {
@@ -779,7 +779,7 @@ test("compiled managed-worker commands fence control receipts before native laun
     const defaultCreated = await run("codex", "workers", "create", "default-agent");
     expect(defaultCreated.exitCode).toBe(0);
     expect(
-      calls.filter((call) => call.method === "runtimes.sessions.createManaged").at(-1)?.params,
+      calls.findLast((call) => call.method === "runtimes.sessions.createManaged")?.params,
     ).toEqual({ agent: "default-agent", installationId: installation, cwd: process.cwd() });
 
     createResult = "ambiguous";
@@ -793,13 +793,14 @@ test("compiled managed-worker commands fence control receipts before native laun
     ).not.toBe(0);
     expect(calls).toHaveLength(callsBeforeInvalid);
 
-    for (const rejected of [
-      [] as unknown[],
+    const rejectedBindings: unknown[][] = [
+      [],
       [{ ...binding, controlClass: "attached" }],
       [binding, binding],
       [{ ...binding, session: { installationId: "ins_other", opaqueId: "thread-managed" } }],
       [{ ...binding, session: { installationId: installation, opaqueId: "" } }],
-    ]) {
+    ];
+    for (const rejected of rejectedBindings) {
       bindings = rejected;
       expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
       expect(existsSync(launched)).toBe(false);
