@@ -175,14 +175,12 @@ async function main() {
     .option("--claim", "create a claim code")
     .option("--grant-peer-preemption", "grant the claimed agent peer interruption authority")
     .option("--allow-peer-preemption", "allow peer interruption for the claimed agent")
-    .option("--name <name>", "display name")
     .option("--description <text>", "agent description")
     .action(
       async (
         slug: string,
         options: {
           claim?: boolean;
-          name?: string;
           description?: string;
           grantPeerPreemption?: boolean;
           allowPeerPreemption?: boolean;
@@ -193,7 +191,6 @@ async function main() {
         const call = await controlClient(),
           created = await call("agents.create", {
             slug,
-            displayName: options.name,
             description: options.description,
           });
         print(
@@ -218,7 +215,6 @@ async function main() {
     .command("update <agent>")
     .description("update an agent")
     .option("--slug <slug>", "new slug")
-    .option("--name <name>", "display name")
     .option("--description <text>", "agent description")
     .addOption(new Option("--enable", "enable the agent").conflicts("disable"))
     .addOption(new Option("--disable", "disable the agent").conflicts("enable"))
@@ -227,7 +223,6 @@ async function main() {
         agent: string,
         options: {
           slug?: string;
-          name?: string;
           description?: string;
           enable?: boolean;
           disable?: boolean;
@@ -239,7 +234,6 @@ async function main() {
           )("agents.update", {
             agent,
             slug: options.slug,
-            displayName: options.name,
             description: options.description,
             enabled: options.enable ? true : options.disable ? false : undefined,
           }),

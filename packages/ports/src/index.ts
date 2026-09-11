@@ -153,7 +153,6 @@ export type StoredAttestation =
       readonly principalId: `prn_${string}`;
       readonly scopes: readonly string[];
       readonly slug: string;
-      readonly displayName: string;
       readonly evidenceFingerprint: string;
     };
 
@@ -248,17 +247,11 @@ export interface ControlStoragePort extends SqlPort {
     correlationId?: string,
   ): void;
   metrics(): unknown;
-  createAgent(
-    slug: string,
-    displayName?: string,
-    description?: string,
-    skills?: unknown[],
-  ): AgentRow;
+  createAgent(slug: string, description?: string, skills?: unknown[]): AgentRow;
   updateAgent(
     value: string,
     patch: {
       slug?: string;
-      displayName?: string;
       description?: string;
       enabled?: boolean;
       skills?: unknown[];

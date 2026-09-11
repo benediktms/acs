@@ -20,8 +20,7 @@ test("automatically registers started, resumed, and cleared sessions with ACS", 
   expect(config.hooks.SessionStart[0].hooks[0].command).toContain(
     "before handling the user request",
   );
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("choose a short unique");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("call acs_register");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("choose another and retry");
+  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("call acs_register immediately");
+  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("generic session-derived slug");
   expect(config.hooks.SessionStart[0].hooks[0].command).toContain("Do not ask the user");
 });

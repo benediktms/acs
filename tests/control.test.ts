@@ -581,7 +581,6 @@ describe("control protocol", () => {
         await call(
           "bindings.register",
           {
-            slug: "self-service",
             grantPeerPreemption: true,
             allowPeerPreemption: true,
             unknownEscalation: true,
@@ -593,7 +592,7 @@ describe("control protocol", () => {
       ).json(),
     ).toMatchObject({
       result: {
-        agent: { slug: "self-service", state: "ready" },
+        agent: { slug: expect.stringMatching(/^agent-[a-f0-9]{12}$/), state: "ready" },
         binding: { session: { opaqueId: "self-service-thread" }, epoch: 1 },
         idempotent: false,
       },
@@ -618,12 +617,14 @@ describe("control protocol", () => {
       await (
         await call(
           "bindings.register",
-          { slug: "ignored-on-retry", evidence: evidence("self-service-thread") },
+          { evidence: evidence("self-service-thread") },
           "1",
           bridgeToken,
         )
       ).json(),
-    ).toMatchObject({ result: { agent: { slug: "self-service" }, idempotent: true } });
+    ).toMatchObject({
+      result: { agent: { slug: expect.stringMatching(/^agent-[a-f0-9]{12}$/) }, idempotent: true },
+    });
     expect(
       await (
         await call(
@@ -633,7 +634,7 @@ describe("control protocol", () => {
           bridgeToken,
         )
       ).json(),
-    ).toMatchObject({ error: { data: { code: "AGENT_ALREADY_EXISTS" } } });
+    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
     const issued = record(
         record(
           await (
@@ -1137,7 +1138,6 @@ describe("control protocol", () => {
         "invalid-thread",
         "new-claimed-thread",
         "self-service-thread",
-        "name-collision-thread",
       ]),
     );
     expect(inspected.length).toBeGreaterThan(1);

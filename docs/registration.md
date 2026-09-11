@@ -3,12 +3,10 @@
 ## Automatic registration
 
 An attested unbound Codex session can create and bind its own logical agent in one
-step by calling `acs_register`. It may provide an available lowercase `slug`, or
-omit it for a stable session-derived name. Retrying from the same bound session
-returns the existing identity. A chosen slug already used by another active agent
-returns `AGENT_ALREADY_EXISTS`.
+step by calling `acs_register`. ACS assigns a stable session-derived `slug`.
+Retrying from the same bound session returns the existing identity.
 
-Self-registration never accepts a thread, binding, principal, or sender ID. ACS
+Self-registration never accepts a slug, thread, binding, principal, or sender ID. ACS
 derives the runtime session exclusively from Codex-owned MCP metadata and commits
 the agent and binding together. It does not require the standalone session to be
 loaded on ACS's connected app-server and cannot replace an existing agent binding.

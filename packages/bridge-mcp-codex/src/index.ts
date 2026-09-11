@@ -51,7 +51,6 @@ const execute = async (operation: () => Promise<unknown>): Promise<CallToolResul
 const agentSchema = z.looseObject({
     id: z.string(),
     slug: z.string(),
-    displayName: z.string(),
     description: z.string(),
     enabled: z.boolean(),
     state: z.enum([
@@ -304,7 +303,6 @@ export async function runMcp(port = 7432) {
             ? {
                 id: identity.agent.id,
                 slug: identity.agent.slug,
-                displayName: identity.agent.displayName,
               }
             : undefined,
           harness: "codex",
@@ -342,7 +340,6 @@ export async function runMcp(port = 7432) {
           agent: {
             id: claimed.agent.id,
             slug: claimed.agent.slug,
-            displayName: claimed.agent.displayName,
           },
           binding: claimed.binding,
           idempotent: claimed.idempotent,
@@ -353,25 +350,19 @@ export async function runMcp(port = 7432) {
     "acs_register",
     {
       description: "Create a logical ACS agent and bind this attested Codex thread",
-      inputSchema: {
-        slug: z
-          .string()
-          .regex(/^[a-z][a-z0-9-]{0,62}$/)
-          .optional(),
-      },
+      inputSchema: {},
     },
-    async ({ slug }, extra) =>
+    async (_, extra) =>
       execute(async () => {
         const registered = await typedCall(
           "bindings.register",
-          { slug, evidence: evidence(extra) },
+          { evidence: evidence(extra) },
           claimResultSchema,
         );
         return {
           agent: {
             id: registered.agent.id,
             slug: registered.agent.slug,
-            displayName: registered.agent.displayName,
           },
           binding: registered.binding,
           idempotent: registered.idempotent,

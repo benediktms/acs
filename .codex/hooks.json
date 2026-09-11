@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' 'On the first model turn after this session starts or resumes, call acs_identity before handling the user request. If it reports an unbound state, choose a short unique lowercase logical-agent name and call acs_register with it immediately. If that name already exists, choose another and retry. Do not ask the user for a name or claim code.'",
+            "command": "printf '%s\\n' 'On the first model turn after this session starts or resumes, call acs_identity before handling the user request. If it reports an unbound state, call acs_register immediately. ACS assigns a generic session-derived slug. Do not ask the user for a name or claim code.'",
             "timeout": 5,
             "statusMessage": "Loading ACS registration guidance"
           }

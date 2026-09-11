@@ -73,7 +73,6 @@ export interface ControlErrorData {
 export interface LogicalAgentDto {
   readonly id: string;
   readonly slug: string;
-  readonly displayName: string;
   readonly description: string;
   readonly enabled: boolean;
   readonly skills: readonly {
@@ -247,7 +246,6 @@ export interface ControlMethodMap {
   "agents.create": {
     readonly params: {
       readonly slug: string;
-      readonly displayName?: string;
       readonly description?: string;
       readonly skills?: readonly {
         readonly id: string;
@@ -280,7 +278,6 @@ export interface ControlMethodMap {
     readonly params: {
       readonly agent: string;
       readonly slug?: string;
-      readonly displayName?: string;
       readonly description?: string;
       readonly enabled?: boolean;
       readonly skills?: readonly {
@@ -346,8 +343,6 @@ export interface ControlMethodMap {
 
   "bindings.register": {
     readonly params: {
-      readonly slug?: string;
-      readonly displayName?: string;
       readonly evidence: {
         readonly harnessId: "codex";
         readonly bridge: "mcp";

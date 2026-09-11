@@ -586,7 +586,7 @@ export class Store {
     this.audit(principalId, "token.issue", "token", tokenId, { kind });
     return { token, principalId };
   }
-  createAgent(slugValue: string, displayName?: string, description = "", skills: unknown[] = []) {
+  createAgent(slugValue: string, description = "", skills: unknown[] = []) {
     const slug = agentSlug(slugValue),
       agentId = id("agt"),
       now = Date.now();
@@ -595,7 +595,7 @@ export class Store {
         .query(
           "INSERT INTO agents(id,slug,display_name,description,skills_json,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?)",
         )
-        .run(agentId, slug, displayName ?? slug, description, JSON.stringify(skills), now, now);
+        .run(agentId, slug, slug, description, JSON.stringify(skills), now, now);
     } catch (error) {
       if (error instanceof Error && /agents\.slug|agents_slug_active_uq/.test(error.message))
         throw new Error("AGENT_ALREADY_EXISTS", { cause: error });
@@ -607,7 +607,6 @@ export class Store {
     value: string,
     patch: {
       slug?: string;
-      displayName?: string;
       description?: string;
       enabled?: boolean;
       skills?: unknown[];
@@ -622,7 +621,7 @@ export class Store {
       )
       .run(
         patch.slug ? agentSlug(patch.slug) : agent.slug,
-        patch.displayName ?? agent.display_name,
+        patch.slug ? agentSlug(patch.slug) : agent.display_name,
         patch.description ?? agent.description,
         enabled,
         enabled,
@@ -1159,7 +1158,6 @@ export class Store {
           principalId: row.principal_id,
           scopes: JSON.parse(row.scopes_json),
           slug: row.slug,
-          displayName: row.display_name,
           evidenceFingerprint,
         }
       : { kind: "unattested", reason: "unbound-session" };

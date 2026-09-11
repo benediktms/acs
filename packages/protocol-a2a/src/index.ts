@@ -94,7 +94,7 @@ function delivery(metadata: Record<string, unknown> | undefined): DeliveryPrefer
 export function card(row: AgentRow, port: number, hostname = "127.0.0.1"): AgentCard {
   const host = hostname.includes(":") ? `[${hostname}]` : hostname;
   return AgentCard.fromJSON({
-    name: row.display_name,
+    name: row.slug,
     description: row.description,
     version: String(row.profile_revision),
     supportedInterfaces: [

@@ -201,14 +201,14 @@ test("compiled binary runs a clean-machine two-agent service workflow", async ()
       method: "tools/call",
       params: {
         name: "acs_register",
-        arguments: { slug: "self-registered" },
+        arguments: {},
         _meta: { threadId: "thread-self-registered" },
       },
     })}\n`,
   );
   const registerCall = jsonRpcResponse(await readUntil(mcp.stdout, '"id":98'), 98);
   expect(record(record(record(registerCall.result).structuredContent).data)).toMatchObject({
-    agent: { slug: "self-registered" },
+    agent: { slug: expect.stringMatching(/^agent-[a-f0-9]{12}$/) },
     binding: { status: "active", epoch: 1 },
     idempotent: false,
   });

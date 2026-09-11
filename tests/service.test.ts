@@ -432,7 +432,15 @@ test("Codex account service is account-scoped", () => {
     },
     features: { hooks: true },
     hooks: {
-      SessionStart: [{ hooks: [{ command: expect.stringContaining("call acs_identity") }] }],
+      SessionStart: [
+        {
+          hooks: [
+            {
+              command: expect.stringContaining("call acs_register immediately"),
+            },
+          ],
+        },
+      ],
     },
   });
   expect(agent.Umask).toBe(0o77);

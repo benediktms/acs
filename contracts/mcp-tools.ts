@@ -52,7 +52,6 @@ export interface AcsMcpToolMap {
       readonly agent?: {
         readonly id: string;
         readonly slug: string;
-        readonly displayName: string;
       };
       readonly harness: "codex";
       readonly bindingEpoch?: number;
@@ -70,7 +69,6 @@ export interface AcsMcpToolMap {
       readonly agent: {
         readonly id: string;
         readonly slug: string;
-        readonly displayName: string;
       };
       readonly binding: {
         readonly id: string;
@@ -82,14 +80,11 @@ export interface AcsMcpToolMap {
   };
 
   acs_register: {
-    readonly input: {
-      readonly slug?: string;
-    };
+    readonly input: Record<string, never>;
     readonly output: McpToolResult<{
       readonly agent: {
         readonly id: string;
         readonly slug: string;
-        readonly displayName: string;
       };
       readonly binding: {
         readonly id: string;

@@ -49,7 +49,6 @@ describe("Codex MCP bridge", () => {
     const view = agentView({
       id: "agt_1",
       slug: "worker",
-      displayName: "Worker",
       description: "",
       enabled: true,
       state: "ready",
@@ -93,9 +92,7 @@ describe("Codex MCP bridge", () => {
         expiresAt: "2026-09-09T00:30:00.000Z",
       },
     });
-    expect(() =>
-      agentView({ ...view, id: "agt_2", displayName: "Worker", enabled: false }),
-    ).toThrow("AGENT_NOT_FOUND");
+    expect(() => agentView({ ...view, id: "agt_2", enabled: false })).toThrow("AGENT_NOT_FOUND");
   });
 
   test("lists unknown agents but excludes offline agents", () => {
@@ -105,7 +102,6 @@ describe("Codex MCP bridge", () => {
       agentView({
         id: "agt_1",
         slug: "unknown-agent",
-        displayName: "Unknown agent",
         description: "",
         enabled: true,
         state: "unknown",

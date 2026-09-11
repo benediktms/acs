@@ -84,7 +84,6 @@ const partSchema = z.discriminatedUnion("kind", [
         allowPeerPreemption: z.boolean().optional(),
       })
       .optional(),
-    displayName: z.string().optional(),
     enabled: z.boolean().optional(),
     evidence: z
       .union([
@@ -294,19 +293,13 @@ export function controlHandler(
           return ok(rpc.id, { accepted: true });
         case "agents.create":
           admin(principal.kind);
-          const createdAgent = store.createAgent(
-            required(p.slug, "slug"),
-            p.displayName,
-            p.description,
-            p.skills,
-          );
+          const createdAgent = store.createAgent(required(p.slug, "slug"), p.description, p.skills);
           audit("agent.create", "agent", createdAgent.id);
           return ok(rpc.id, { agent: agentDto(store, createdAgent) });
         case "agents.update":
           admin(principal.kind);
           const updatedAgent = store.updateAgent(required(p.agent, "agent"), {
             slug: p.slug,
-            displayName: p.displayName,
             description: p.description,
             enabled: p.enabled,
             skills: p.skills,
@@ -457,6 +450,8 @@ export function controlHandler(
           }
         }
         case "bindings.register": {
+          if (p.slug !== undefined)
+            throw new Error("VALIDATION_FAILED: bindings.register.slug is not supported");
           const evidence = hostInvocationEvidence(p.evidence);
           const callerAttestor = attestorFor(evidenceInstallationId(evidence));
           if (!evidence || !callerAttestor) throw new Error("UNATTESTED_CALLER");
@@ -479,13 +474,11 @@ export function controlHandler(
                 binding: required(store.binding(current.bindingId), "binding"),
                 idempotent: true,
               };
-            const slug =
-                p.slug ??
-                `agent-${createHash("sha256")
-                  .update(`${proof.session.installationId}\0${proof.session.opaqueId}`)
-                  .digest("hex")
-                  .slice(0, 12)}`,
-              agent = store.createAgent(slug, p.displayName),
+            const slug = `agent-${createHash("sha256")
+                .update(`${proof.session.installationId}\0${proof.session.opaqueId}`)
+                .digest("hex")
+                .slice(0, 12)}`,
+              agent = store.createAgent(slug),
               binding = store.bind(agent.id, proof.session.opaqueId, {
                 installationId: proof.session.installationId,
               });
@@ -1251,7 +1244,6 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
   return {
     id: agent.id,
     slug: agent.slug,
-    displayName: agent.display_name,
     description: agent.description,
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
