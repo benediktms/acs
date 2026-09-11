@@ -456,6 +456,42 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       fixture.close();
     });
 
+    test("recovers an unreadable managed thread without resuming attached or stale targets", async () => {
+      const managedFixture = await create();
+      await managedFixture.adapter.start(managedFixture.context);
+      const request = delivery(),
+        managed = { ...request, target: { ...request.target, controlClass: "managed" as const } };
+      managedFixture.failNext("thread/read", "unloaded");
+      expect(await managedFixture.adapter.deliver(managed)).toMatchObject({ outcome: "accepted" });
+      expect(managedFixture.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+      expect(mutations(managedFixture.methods)).toEqual(["turn/start"]);
+      await managedFixture.adapter.stop({ reason: "shutdown" });
+      managedFixture.close();
+
+      const attachedFixture = await create();
+      await attachedFixture.adapter.start(attachedFixture.context);
+      attachedFixture.failNext("thread/read", "unloaded");
+      expect(await attachedFixture.adapter.deliver(delivery())).toMatchObject({
+        outcome: "deferred",
+        reason: "offline",
+      });
+      expect(attachedFixture.methods).not.toContain("thread/resume");
+      await attachedFixture.adapter.stop({ reason: "shutdown" });
+      attachedFixture.close();
+
+      const staleFixture = await create();
+      await staleFixture.adapter.start(staleFixture.context);
+      staleFixture.setFence(false);
+      staleFixture.failNext("thread/read", "unloaded");
+      expect(await staleFixture.adapter.deliver(managed)).toMatchObject({
+        outcome: "rejected",
+        reason: "stale-binding",
+      });
+      expect(staleFixture.methods).not.toContain("thread/resume");
+      await staleFixture.adapter.stop({ reason: "shutdown" });
+      staleFixture.close();
+    });
+
     test("delivers to a loaded managed thread without an attached subscriber", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);

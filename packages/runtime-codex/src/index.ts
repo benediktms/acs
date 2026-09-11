@@ -382,7 +382,17 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           ).thread,
         );
       } catch (error: unknown) {
-        if (sessionUnavailable(appServerFailure(error).kind))
+        const failure = appServerFailure(error);
+        if (failure.kind === CodexAppServerFailureKind.SessionNotFound)
+          return {
+            session,
+            runtimeState: "not-loaded",
+            blockingReason: "none",
+            interactivePresence: "unknown",
+            observedAt: new Date().toISOString(),
+            attributes: {},
+          };
+        if (sessionUnavailable(failure.kind))
           return {
             session,
             runtimeState: "offline",
