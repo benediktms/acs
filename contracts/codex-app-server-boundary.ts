@@ -99,6 +99,10 @@ export interface CodexThreadInjectItemsRequestDto {
   readonly items: readonly CodexJson[];
 }
 
+export interface CodexSkillsExtraRootsSetRequestDto {
+  readonly extraRoots: readonly string[];
+}
+
 export interface CodexTurnStartRequestDto {
   readonly threadId: string;
   readonly input: readonly CodexJson[];

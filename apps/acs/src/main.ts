@@ -38,6 +38,7 @@ import {
   installCodexAppServer,
   installService,
   installedDaemonControlPaths,
+  materializeSwarmSkill,
   ownedCodexAppServerPid,
   persistentEnvironment,
   removeCodexAppServers,
@@ -848,7 +849,8 @@ async function daemon() {
       ),
       adapters = new Map<`ins_${string}`, CodexRuntimeAdapter>(),
       callerAttestors = new Map<`ins_${string}`, CodexCallerAttestor>();
-    if (settings.codex.enabled)
+    if (settings.codex.enabled) {
+      const skillsRoot = dirname(dirname(materializeSwarmSkill(config.data)));
       for (const account of settings.codex.accounts) {
         const installation = required(
           installations.find((candidate) => candidate.label === account.label),
@@ -856,10 +858,16 @@ async function daemon() {
         );
         adapters.set(
           installation.id,
-          new CodexRuntimeAdapter(account.socket, settings.codex.maxInFlightRequests, account.home),
+          new CodexRuntimeAdapter(
+            account.socket,
+            settings.codex.maxInFlightRequests,
+            account.home,
+            [skillsRoot],
+          ),
         );
         callerAttestors.set(installation.id, new CodexCallerAttestor(installation.id));
       }
+    }
     const deliveryConcurrency = new DeliveryConcurrency(settings.delivery.workerConcurrency);
     schedulers = [...adapters].map(
       ([installationId, adapter]) =>

@@ -36,11 +36,42 @@ test("Codex runtime adapter rejects an app-server for another CODEX_HOME", async
   fixture.close();
 });
 
+test("Codex runtime adapter registers ACS skill roots before becoming online", async () => {
+  const root = "/tmp/acs-skills",
+    fixture = await codexFixture(`codex-cli ${TESTED_CODEX_VERSION}`, [root]),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  expect((await iterator.next()).value).toMatchObject({ state: "online" });
+  expect(fixture.methods).toEqual(["initialize", "initialized", "skills/extraRoots/set"]);
+  expect(fixture.requests.find((request) => request.method === "skills/extraRoots/set")).toEqual({
+    method: "skills/extraRoots/set",
+    params: { extraRoots: [root] },
+  });
+  fixture.disconnect();
+  expect((await iterator.next()).value).toMatchObject({ state: "offline" });
+  await fixture.adapter.start(fixture.context);
+  expect((await iterator.next()).value).toMatchObject({ state: "online" });
+  expect(fixture.methods.filter((method) => method === "skills/extraRoots/set")).toHaveLength(2);
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex runtime adapter fails closed when skill-root registration fails", async () => {
+  const fixture = await codexFixture(`codex-cli ${TESTED_CODEX_VERSION}`, ["/tmp/acs-skills"]);
+  fixture.failNext("skills/extraRoots/set", "overload");
+  await expect(fixture.adapter.start(fixture.context)).rejects.toThrow("ingress overloaded");
+  expect(fixture.methods).toEqual(["initialize", "initialized", "skills/extraRoots/set"]);
+  fixture.close();
+});
+
 type Fixture = {
   adapter: RuntimeAdapter;
   socketPath: string;
   context: RuntimeAdapterContext;
   methods: string[];
+  requests: Array<{ method: string; params: unknown }>;
   failNext(
     method: string,
     failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
@@ -584,11 +615,15 @@ test("Codex runtime adapter disables mutations for an untested runtime", async (
   fixture.close();
 });
 
-async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Promise<Fixture> {
+async function codexFixture(
+  userAgent = `codex-cli ${TESTED_CODEX_VERSION}`,
+  skillsRoots: readonly string[] = [],
+): Promise<Fixture> {
   const root = mkdtempSync(join(tmpdir(), "acs-adapter-"));
   roots.push(root);
   const path = join(root, "codex.sock"),
     methods: string[] = [],
+    requests: Array<{ method: string; params: unknown }> = [],
     buffers = new WeakMap<object, Buffer>(),
     failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
@@ -636,6 +671,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
           const request = record(JSON.parse(decoded.text)),
             method = string(request.method);
           methods.push(method);
+          requests.push({ method, params: request.params });
           const failure = failures.get(method);
           failures.delete(method);
           if (failure === "hang") continue;
@@ -699,7 +735,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
     },
   });
   return {
-    adapter: new CodexRuntimeAdapter(path),
+    adapter: new CodexRuntimeAdapter(path, 128, undefined, skillsRoots),
     socketPath: path,
     context: {
       installationId: "ins_conformance",
@@ -709,6 +745,7 @@ async function codexFixture(userAgent = `codex-cli ${TESTED_CODEX_VERSION}`): Pr
       assertBindingFence: async () => (fence ? { valid: true } : { valid: false, reason: "stale" }),
     },
     methods,
+    requests,
     failNext(method, failure) {
       failures.set(method, failure);
     },

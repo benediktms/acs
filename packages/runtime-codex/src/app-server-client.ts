@@ -7,6 +7,7 @@ import {
   type CodexThreadListRequestDto,
   type CodexThreadReadRequestDto,
   type CodexThreadTurnsListRequestDto,
+  type CodexSkillsExtraRootsSetRequestDto,
   type CodexThreadStartRequestDto,
   type CodexTurnStartRequestDto,
   type CodexWireId,
@@ -144,6 +145,9 @@ export class CodexAppServerClient {
     signal?: AbortSignal,
   ): Promise<void> {
     await this.request("thread/inject_items", params, markRequestFlushed, signal);
+  }
+  async setSkillsExtraRoots(params: CodexSkillsExtraRootsSetRequestDto): Promise<void> {
+    await this.request("skills/extraRoots/set", params);
   }
   async startTurn(
     params: CodexTurnStartRequestDto,

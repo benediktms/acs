@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   DeliveryId,
   RuntimeDeliveryRequest,
@@ -11,6 +11,51 @@ import type {
 } from "../contracts/runtime-adapter";
 import { CodexRuntimeAdapter, TESTED_CODEX_VERSION } from "../packages/runtime-codex/src/index";
 import { CodexAppServerClient } from "../packages/runtime-codex/src/app-server-client";
+import { materializeSwarmSkill } from "../apps/acs/src/service";
+
+test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
+  "real Codex discovers the ACS collaboration skill from its extra root",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-native-codex-skills-")),
+      storage = join(root, "data", "acs.db"),
+      skill = materializeSwarmSkill(storage),
+      socket = join(root, "app.sock"),
+      child = Bun.spawn(
+        [process.env.ACS_CODEX_BINARY ?? "codex", "app-server", "--listen", `unix://${socket}`],
+        {
+          env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: root },
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
+      client = new CodexAppServerClient(socket),
+      adapter = new CodexRuntimeAdapter(socket, 128, undefined, [dirname(dirname(skill))]);
+    try {
+      await until(() => existsSync(socket), "Codex app-server socket");
+      await adapter.start({
+        installationId: "ins_native",
+        instanceId: "native-skills-test",
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        clock: { now: () => new Date().toISOString() },
+        assertBindingFence: async () => ({ valid: true }),
+      });
+      await client.start();
+      const result = record(await client.request("skills/list", { forceReload: true })),
+        skills = array(result.data)
+          .map(record)
+          .flatMap((catalog) => array(catalog.skills).map(record)),
+        discovered = skills.find((candidate) => candidate.name === "acs-swarm");
+      expect(discovered).toMatchObject({ name: "acs-swarm", path: realpathSync(skill) });
+    } finally {
+      await adapter.stop({ reason: "shutdown" });
+      client.close();
+      child.kill("SIGKILL");
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 // A genuine Codex process and two independent app-server clients. Only the
 // model's HTTP responses are mocked; no account credentials or billable calls.
