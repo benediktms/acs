@@ -343,6 +343,28 @@ test("reaps only continuously offline active bindings and fails queued work", ()
   store.close();
 });
 
+test("retains managed bindings when their session is absent", () => {
+  const store = fixture(),
+    agent = store.createAgent("managed-worker"),
+    binding = store.bind(agent.id, "managed-session", { controlClass: "managed" }),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  store.observeSession({
+    session: { installationId: stored.installation_id, opaqueId: stored.session_opaque_id },
+    runtimeState: "idle",
+    blockingReason: "none",
+    interactivePresence: "absent",
+    observedAt: new Date(Date.now() - 2_000).toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(1_000)).toEqual([]);
+  expect(store.binding(binding.id)).toMatchObject({
+    status: BindingState.Active,
+    control_class: "managed",
+  });
+  store.close();
+});
+
 test("clears the offline interval for reconnects and unsupported observations", () => {
   const store = fixture(),
     agent = store.createAgent("offline-reset"),
@@ -497,6 +519,56 @@ test("reaps tasks pinned to a superseded binding", () => {
 });
 
 describe("schema migrations", () => {
+  test("adds attached control classes to legacy bindings once and rejects invalid classes", () => {
+    const store = fixture(),
+      config = store.config,
+      agent = store.createAgent("legacy-control-class"),
+      binding = store.bind(agent.id, "legacy-control-class-session");
+    store.close();
+
+    const legacy = new Database(config.data, { strict: true });
+    legacy.exec("ALTER TABLE runtime_bindings DROP COLUMN control_class");
+    legacy.query("DELETE FROM schema_migrations WHERE version=7").run();
+    legacy.close();
+
+    const upgraded = new Store(config);
+    expect(upgraded.binding(binding.id)?.control_class).toBe("attached");
+    expect(() =>
+      upgraded.db
+        .query("UPDATE runtime_bindings SET control_class='managed' WHERE id=?")
+        .run(binding.id),
+    ).toThrow("BINDING_CONTROL_CLASS_IMMUTABLE");
+    expect(upgraded.binding(binding.id)).toMatchObject({
+      epoch: binding.epoch,
+      control_class: "attached",
+    });
+    const managedAgent = upgraded.createAgent("managed-control-class"),
+      managed = upgraded.bind(managedAgent.id, "managed-control-class-session", {
+        controlClass: "managed",
+      });
+    expect(() =>
+      upgraded.db
+        .query("UPDATE runtime_bindings SET control_class='attached' WHERE id=?")
+        .run(managed.id),
+    ).toThrow("BINDING_CONTROL_CLASS_IMMUTABLE");
+    expect(upgraded.binding(managed.id)).toMatchObject({
+      epoch: managed.epoch,
+      control_class: "managed",
+    });
+    expect(() =>
+      upgraded.db
+        .query("UPDATE runtime_bindings SET control_class='invalid' WHERE id=?")
+        .run(binding.id),
+    ).toThrow("BINDING_CONTROL_CLASS_IMMUTABLE");
+    upgraded.close();
+
+    const reopened = new Store(config);
+    expect(
+      reopened.db.query("SELECT count(*) count FROM schema_migrations WHERE version=7").get(),
+    ).toEqual({ count: 1 });
+    reopened.close();
+  });
+
   test("upgrades legacy delivery intents without losing durable state", () => {
     const store = fixture(),
       config = store.config,
@@ -571,6 +643,7 @@ describe("schema migrations", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
     ]);
     expect(
       upgraded.db
@@ -778,12 +851,16 @@ describe("schema migrations", () => {
       { version: 4 },
       { version: 5 },
       { version: 6 },
+      { version: 7 },
     ]);
     store.close();
     const reopened = new Store(config);
     expect(reopened.db.query("SELECT count(*) count FROM schema_migrations").get()).toEqual({
-      count: 6,
+      count: 7,
     });
+    expect(reopened.db.query("SELECT control_class FROM runtime_bindings LIMIT 1").all()).toEqual(
+      [],
+    );
     reopened.close();
   });
 

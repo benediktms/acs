@@ -29,6 +29,7 @@ const capabilities = {
   cancelOwnedExecution: true,
   peerPreemption: false,
   reconcileDelivery: true,
+  createManagedSession: false,
   callerAttestationSchemes: [],
   supportedPartKinds: ["text", "uri", "data"],
 } satisfies RuntimeAdapter["descriptor"]["capabilities"];

@@ -38,16 +38,20 @@ export interface AgentObservation {
   readonly runtimeState: RuntimeState;
   readonly blockingReason: BlockingReason;
   readonly interactivePresence: InteractivePresence;
+  readonly controlClass?: "attached" | "managed";
 }
 
 export function deriveAgentState(observation: AgentObservation): AgentState {
+  if (observation.runtimeState === "offline") return "offline";
+  if (observation.controlClass === "managed" && observation.runtimeState === "not-loaded")
+    return "unknown";
   if (
-    observation.runtimeState === "offline" ||
-    observation.runtimeState === "not-loaded" ||
-    observation.interactivePresence === "absent"
+    observation.controlClass !== "managed" &&
+    (observation.runtimeState === "not-loaded" || observation.interactivePresence === "absent")
   )
     return "offline";
-  if (observation.interactivePresence === "unknown") return "unknown";
+  if (observation.controlClass !== "managed" && observation.interactivePresence === "unknown")
+    return "unknown";
   if (observation.blockingReason === "approval") return "auth-required";
   if (observation.blockingReason === "user-input") return "input-required";
   if (observation.runtimeState === "system-error") return "error";

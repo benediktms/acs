@@ -5,6 +5,7 @@ import runtimeExecutionRelationshipMigration from "../../../storage/003_runtime_
 import taskAcknowledgementMigration from "../../../storage/004_task_acknowledgement.sql" with { type: "text" };
 import agentObservationsMigration from "../../../storage/005_agent_observations_and_reaping.sql" with { type: "text" };
 import peerPreemptionMigration from "../../../storage/006_peer_preemption.sql" with { type: "text" };
+import bindingControlClassMigration from "../../../storage/007_runtime_binding_control_class.sql" with { type: "text" };
 import {
   agentSlug,
   BindingState,
@@ -127,6 +128,16 @@ const migrations = [
         )
           db.exec(step.sql);
     },
+  },
+  {
+    version: 7,
+    name: "runtime-binding-control-class",
+    sql: bindingControlClassMigration,
+    rebuildsForeignKeys: false,
+    required: (db: Database) =>
+      !db
+        .query("SELECT 1 FROM pragma_table_info('runtime_bindings') WHERE name='control_class'")
+        .get(),
   },
 ];
 export type {
@@ -785,7 +796,7 @@ export class Store {
         .run(transitionBinding(BindingState.Active, BindingState.Revoked), now, agent.id);
       this.db
         .query(
-          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,control_class,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           bindingId,
@@ -796,6 +807,7 @@ export class Store {
           activeState,
           options.continuityPolicy ?? "follow-pending",
           JSON.stringify(policy),
+          options.controlClass ?? "attached",
           now,
           now,
         );
@@ -834,6 +846,7 @@ export class Store {
         epoch,
         principalId,
         rebound: active !== null,
+        controlClass: options.controlClass ?? "attached",
       };
     });
   }
@@ -846,7 +859,6 @@ export class Store {
     const observedAt = Date.parse(snapshot.observedAt);
     if (!Number.isFinite(observedAt))
       throw new Error("VALIDATION_FAILED: invalid observation time");
-    const state = deriveAgentState(snapshot);
     this.write(() => {
       const binding = this.db
         .query<BindingRow, [RuntimeInstallationId, string]>(
@@ -854,6 +866,7 @@ export class Store {
         )
         .get(snapshot.session.installationId, snapshot.session.opaqueId);
       if (!binding) return;
+      const state = deriveAgentState({ ...snapshot, controlClass: binding.control_class });
       if (binding.last_observed_at_ms && observedAt < binding.last_observed_at_ms) return;
       this.db
         .query(
@@ -901,7 +914,7 @@ export class Store {
         .run(now, installationId);
       this.db
         .query(
-          "UPDATE agents SET offline_since_ms=CASE WHEN enabled=1 THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND status='active')",
+          "UPDATE agents SET offline_since_ms=CASE WHEN enabled=1 THEN coalesce(offline_since_ms,?) ELSE NULL END,updated_at_ms=? WHERE id IN (SELECT agent_id FROM runtime_bindings WHERE installation_id=? AND status='active' AND control_class='attached')",
         )
         .run(now, now, installationId);
     });
@@ -923,7 +936,11 @@ export class Store {
             "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
           )
           .get(agent.id);
-        return binding !== null && agentState(binding) === "offline";
+        return (
+          binding !== null &&
+          binding.control_class === "attached" &&
+          agentState(binding) === "offline"
+        );
       });
       for (const agent of agents) this.logicalDelete(agent.id, "target-reaped", true, now);
       return agents.map((agent) => agent.id);
@@ -1080,11 +1097,12 @@ export class Store {
                   session_opaque_id: string;
                   epoch: number;
                   status: BindingState;
+                  control_class: "attached" | "managed";
                   principal_id: `prn_${string}`;
                 },
                 [BindingId]
               >(
-                "SELECT b.id,b.agent_id,b.installation_id,b.session_opaque_id,b.epoch,b.status,p.id principal_id FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id WHERE b.id=?",
+                "SELECT b.id,b.agent_id,b.installation_id,b.session_opaque_id,b.epoch,b.status,b.control_class,p.id principal_id FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id WHERE b.id=?",
               )
               .get(row.consumed_by_binding_id)
           : null;
@@ -1105,6 +1123,7 @@ export class Store {
           principalId: consumed.principal_id,
           idempotent: true,
           rebound: false,
+          controlClass: consumed.control_class,
         };
       }
       if (row.expires_at_ms <= Date.now()) throw new Error("CLAIM_EXPIRED");
@@ -2412,6 +2431,7 @@ function agentState(binding: BindingRow) {
     runtimeState: runtimeState(binding.last_observed_runtime_state),
     blockingReason: blockingReason(binding.last_observed_blocking_reason),
     interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
+    controlClass: binding.control_class,
   });
 }
 function runtimeState(value: string | null) {

@@ -88,6 +88,7 @@ const capabilities: RuntimeCapabilities = {
   cancelOwnedExecution: false,
   peerPreemption: false,
   reconcileDelivery: true,
+  createManagedSession: false,
   callerAttestationSchemes: ["codex-mcp-thread-meta-v1"],
   supportedPartKinds: ["text", "uri", "data"],
 };
@@ -97,6 +98,7 @@ const disabledCapabilities = (): RuntimeCapabilities => ({
   cancelOwnedExecution: false,
   peerPreemption: false,
   reconcileDelivery: false,
+  createManagedSession: false,
 });
 const runtimeStates: RuntimeState[] = [
   "unknown",

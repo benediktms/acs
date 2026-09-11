@@ -1111,6 +1111,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery = false,
     cancelOwnedExecution = false,
     reconcileDelivery = false,
+    createManagedSession = false,
     peerPreemption = false;
   const callerAttestationSchemes = new Set<string>(),
     supportedPartKinds = new Set<RuntimeCapabilities["supportedPartKinds"][number]>();
@@ -1122,6 +1123,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery ||= capabilities.directDelivery;
     cancelOwnedExecution ||= capabilities.cancelOwnedExecution;
     reconcileDelivery ||= capabilities.reconcileDelivery;
+    createManagedSession ||= capabilities.createManagedSession;
     peerPreemption ||= capabilities.peerPreemption;
     for (const scheme of capabilities.callerAttestationSchemes)
       callerAttestationSchemes.add(scheme);
@@ -1134,6 +1136,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery,
     cancelOwnedExecution,
     reconcileDelivery,
+    createManagedSession,
     peerPreemption,
     callerAttestationSchemes: [...callerAttestationSchemes],
     supportedPartKinds: [...supportedPartKinds],
@@ -1247,7 +1250,9 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     description: agent.description,
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
-    state: runtimeObservation ? deriveAgentState(runtimeObservation) : "unknown",
+    state: runtimeObservation
+      ? deriveAgentState({ ...runtimeObservation, controlClass: binding?.control_class })
+      : "unknown",
     runtimeObservation,
     binding: binding
       ? {
@@ -1255,6 +1260,7 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
           harnessId: runtimeHarnessId(store, binding.installation_id),
           epoch: binding.epoch,
           status: binding.status,
+          controlClass: binding.control_class,
         }
       : undefined,
     createdAt: new Date(agent.created_at_ms).toISOString(),
@@ -1362,6 +1368,7 @@ function bindingDto(
     session: { installationId: row.installation_id, opaqueId: row.session_opaque_id },
     epoch: row.epoch,
     status: row.status,
+    controlClass: row.control_class,
     continuityPolicy: row.continuity_policy,
     deliveryPolicy: jsonRecord(row.delivery_policy_json),
     createdAt: new Date(row.created_at_ms).toISOString(),

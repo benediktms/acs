@@ -68,6 +68,62 @@ describe("domain", () => {
     ).toBe("offline");
     expect(
       deriveAgentState({
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("ready");
+    expect(
+      deriveAgentState({
+        runtimeState: "not-loaded",
+        blockingReason: "none",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
+        runtimeState: "not-loaded",
+        blockingReason: "approval",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
+        runtimeState: "not-loaded",
+        blockingReason: "user-input",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("unknown");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "none",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("working");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "approval",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("auth-required");
+    expect(
+      deriveAgentState({
+        runtimeState: "active",
+        blockingReason: "user-input",
+        interactivePresence: "absent",
+        controlClass: "managed",
+      }),
+    ).toBe("input-required");
+    expect(
+      deriveAgentState({
         runtimeState: "active",
         blockingReason: "approval",
         interactivePresence: "present",

@@ -85,6 +85,7 @@ export interface BindingRow {
   session_opaque_id: string;
   epoch: number;
   status: BindingState;
+  control_class: "attached" | "managed";
   continuity_policy: "follow-pending" | "strict";
   delivery_policy_json: string;
   metadata_json: string;
@@ -163,6 +164,7 @@ export interface BindingHandle {
   epoch: number;
   principalId: `prn_${string}`;
   rebound: boolean;
+  controlClass: "attached" | "managed";
 }
 
 export interface BindingOptions {
@@ -175,6 +177,7 @@ export interface BindingOptions {
   grantPeerPreemption?: boolean;
   installationId?: RuntimeInstallationId;
   revokeExisting?: boolean;
+  controlClass?: "attached" | "managed";
 }
 
 export interface ClaimBindingResult extends BindingHandle {

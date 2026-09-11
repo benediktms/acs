@@ -136,7 +136,7 @@ describe("control protocol", () => {
       },
     });
     expect(await (await call("system.capabilities", {})).json()).toMatchObject({
-      result: { codex: { directDelivery: true } },
+      result: { codex: { directDelivery: true, createManagedSession: false } },
     });
     store.db.query("DELETE FROM runtime_installations WHERE id=?").run(second);
     adapters.delete(second);
@@ -345,6 +345,7 @@ describe("control protocol", () => {
     ).toMatchObject({
       result: {
         binding: {
+          controlClass: "attached",
           continuityPolicy: "strict",
           deliveryPolicy: { interruptOnCancel: false },
         },
@@ -384,6 +385,7 @@ describe("control protocol", () => {
         agent: { slug: "claimed" },
         idempotent: false,
         binding: {
+          controlClass: "attached",
           installationId: installation.id,
           session: { opaqueId: "claimed-thread" },
           continuityPolicy: "strict",
@@ -598,13 +600,14 @@ describe("control protocol", () => {
       },
     });
     const selfRegistration = store.db
-      .query<{ id: string; delivery_policy_json: string }, [string]>(
-        "SELECT id,delivery_policy_json FROM runtime_bindings WHERE session_opaque_id=? AND status='active'",
+      .query<{ id: string; delivery_policy_json: string; control_class: string }, [string]>(
+        "SELECT id,delivery_policy_json,control_class FROM runtime_bindings WHERE session_opaque_id=? AND status='active'",
       )
       .get("self-service-thread");
     expect(selfRegistration?.delivery_policy_json).toBe(
       '{"interruptOnCancel":false,"allowPeerPreemption":false}',
     );
+    expect(selfRegistration?.control_class).toBe("attached");
     expect(
       store.db
         .query<{ scopes_json: string }, [string]>(

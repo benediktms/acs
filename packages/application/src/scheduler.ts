@@ -522,6 +522,7 @@ export class DeliveryScheduler {
       runtimeState: runtimeState(binding.last_observed_runtime_state),
       blockingReason: blockingReason(binding.last_observed_blocking_reason),
       interactivePresence: interactivePresence(binding.last_observed_interactive_presence),
+      controlClass: binding.control_class,
     });
     if (!["ready", "working", "unknown"].includes(state)) {
       const reason =
@@ -1377,7 +1378,18 @@ export class DeliveryScheduler {
   }
   private observeSession(snapshot: RuntimeSessionSnapshot) {
     this.store.observeSession(snapshot);
-    if (!["ready", "working"].includes(deriveAgentState(snapshot))) return;
+    const binding = this.store
+      .query<BindingRow, [RuntimeInstallationId, string]>(
+        "SELECT * FROM runtime_bindings WHERE installation_id=? AND session_opaque_id=? AND status='active'",
+      )
+      .get(snapshot.session.installationId, snapshot.session.opaqueId);
+    if (
+      !binding ||
+      !["ready", "working"].includes(
+        deriveAgentState({ ...snapshot, controlClass: binding.control_class }),
+      )
+    )
+      return;
     const now = Date.now();
     this.store
       .query(
