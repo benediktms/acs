@@ -1,12 +1,22 @@
+## Delivery ownership
+
+| Issue                                              | PR                                     | Task IDs                | Dependencies | Evidence  |
+| -------------------------------------------------- | -------------------------------------- | ----------------------- | ------------ | --------- |
+| [#64](https://github.com/benediktms/acs/issues/64) | `managed-workers/ownership`            | 1.1, 1.2, 1.3, 2.1      | —            | validated |
+| [#65](https://github.com/benediktms/acs/issues/65) | `managed-workers/create-control`       | 2.2, 2.3, 3.1, 3.2, 3.3 | #64          | pending   |
+| [#66](https://github.com/benediktms/acs/issues/66) | `managed-workers/background-delivery`  | 2.4, 2.5, 4.1, 4.2      | #64, #65     | pending   |
+| [#67](https://github.com/benediktms/acs/issues/67) | `managed-workers/operator-cli`         | 5.1, 5.2, 5.3, 5.4, 7.1 | #65, #66     | pending   |
+| [#68](https://github.com/benediktms/acs/issues/68) | `managed-workers/native-certification` | 6.1, 6.2, 7.2, 8.1, 8.2 | #64–#67      | pending   |
+
 ## 1. Durable Ownership and State
 
-- [ ] 1.1 Add `storage/007_runtime_binding_control_class.sql` with the checked `attached|managed` column and register it idempotently in the SQLite migration list; verify `tests/storage.test.ts` proves legacy rows become attached, invalid values fail, and reopening records the migration once.
-- [ ] 1.2 Extend binding rows, options, handles, and control DTO projections with `controlClass`, keeping bind, claim, and self-registration attached by default and permitting managed only from the internal managed-create path; verify focused storage and control tests prove provenance and epoch immutability.
-- [ ] 1.3 Make the shared agent-state derivation accept the binding control class and update storage, control, scheduler, discovery/activity, and observation callers; verify `tests/domain.test.ts` and `tests/storage.test.ts` cover unchanged attached behavior, managed absent idle/active and prompt states, managed unloaded unknown, and managed receipt retention without automatic reaping.
+- [x] 1.1 Add `storage/007_runtime_binding_control_class.sql` with the checked `attached|managed` column and register it idempotently in the SQLite migration list; verify `tests/storage.test.ts` proves legacy rows become attached, invalid values fail, and reopening records the migration once.
+- [x] 1.2 Extend binding rows, options, handles, and control DTO projections with `controlClass`, keeping bind, claim, and self-registration attached by default and permitting managed only from the internal managed-create path; verify focused storage and control tests prove provenance and epoch immutability.
+- [x] 1.3 Make the shared agent-state derivation accept the binding control class and update storage, control, scheduler, discovery/activity, and observation callers; verify `tests/domain.test.ts` and `tests/storage.test.ts` cover unchanged attached behavior, managed absent idle/active and prompt states, managed unloaded unknown, and managed receipt retention without automatic reaping.
 
 ## 2. Runtime Contract and Codex Adapter
 
-- [ ] 2.1 Add the minimal neutral managed-session creation capability, request/result union, optional adapter method, and delivery-target control class in `contracts/runtime-adapter.ts`; update the existing fake adapter only as required and verify `tests/runtime-adapter-conformance.test.ts` covers capability reporting without adding lifecycle stop/delete/transfer APIs.
+- [x] 2.1 Add the minimal neutral managed-session creation capability, request/result union, optional adapter method, and delivery-target control class in `contracts/runtime-adapter.ts`; update the existing fake adapter only as required and verify `tests/runtime-adapter-conformance.test.ts` covers capability reporting without adding lifecycle stop/delete/transfer APIs.
 - [ ] 2.2 Update `CodexAppServerClient.startThread` to return a validated thread ID and accept the existing request-flush signal, keeping the signature private unless the app-server boundary contract must expose it; verify `tests/app-server-client.test.ts` distinguishes definite pre-write failure from flushed/no-response ambiguity.
 - [ ] 2.3 Implement `CodexRuntimeAdapter.createManagedSession` with persistent `thread/start`, validated `cwd`, and no approval/sandbox fields; verify adapter conformance tests cover confirmed creation, rejection/deferral, `creation-unknown`, route/version checks, and absence of an initial turn.
 - [ ] 2.4 Update Codex delivery so only a current fenced managed target may resume one unloaded thread on the adapter's own recorded installation, followed by fresh inspection and existing delivery gates; verify focused adapter/scheduler tests cover loaded absent delivery, attached deferral, one managed resume, stale fence, foreign route, missing thread, unsafe direct input, and no proactive wake-up.
