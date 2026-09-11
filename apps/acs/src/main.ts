@@ -21,6 +21,7 @@ import {
 } from "../../../packages/application/src/scheduler";
 import {
   canonicalCodexHome,
+  codexSocket,
   configPath,
   loadConfig,
   migrateCodexAccounts,
@@ -479,6 +480,79 @@ async function main() {
     .action(async (label: string, options: { force?: boolean }) => {
       await loadSettingsResources();
       await adoptCodexAppServer(label, Boolean(options.force));
+    });
+
+  const workers = codex.command("workers").description("manage ACS-created Codex workers");
+  workers
+    .command("create <agent>")
+    .description("create a persistent managed Codex worker")
+    .option("--account <label>", "Codex account label")
+    .option("--cwd <absolute-dir>", "working directory", process.cwd())
+    .action(async (agent: string, options: { account?: string; cwd: string }) => {
+      if (!options.cwd.startsWith("/"))
+        throw new Error("VALIDATION_FAILED: --cwd must be absolute");
+      await loadSettingsResources();
+      const call = await controlClient();
+      const installationId = await accountInstallationId(call, options.account);
+      try {
+        print(
+          await call("runtimes.sessions.createManaged", {
+            agent,
+            installationId,
+            cwd: options.cwd,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("RUNTIME_AMBIGUOUS"))
+          console.error("Do not retry blindly; a managed thread may have been created.");
+        throw error;
+      }
+    });
+  workers
+    .command("attach <agent>")
+    .description("attach native Codex to a managed worker")
+    .action(async (agent: string) => {
+      await loadSettingsResources();
+      const call = await controlClient();
+      const page = recordValue(
+        await call("bindings.list", { agent, status: ["active"], limit: 2 }),
+      );
+      const workerBindings = arrayValue(page.items).map(recordValue);
+      if (workerBindings.length !== 1)
+        throw new Error("BINDING_CONFLICT: expected one active binding");
+      const binding = workerBindings[0];
+      if (binding.controlClass !== "managed")
+        throw new Error("BINDING_CONFLICT: binding is not managed");
+      const session = recordValue(binding.session),
+        installationId = required(binding.installationId, "installation ID");
+      if (session.installationId !== installationId)
+        throw new Error("BINDING_CONFLICT: managed binding session installation drifted");
+      const account = await managedBindingAccount(call, installationId);
+      if (!(await socketListening(account.socket)))
+        throw new Error("RUNTIME_UNAVAILABLE: managed Codex app-server is unavailable");
+      const threadId = required(session.opaqueId, "thread ID");
+      if (typeof threadId !== "string")
+        throw new Error("VALIDATION_FAILED: invalid managed thread ID");
+      console.log(
+        "Detach with Ctrl+D on an empty composer, /exit, or /quit. Ctrl+C interrupts active work.",
+      );
+      const child = Bun.spawn(
+        [
+          settings.codex.binary,
+          "--dangerously-bypass-hook-trust",
+          "--remote",
+          `unix://${account.socket}`,
+          "resume",
+          threadId,
+        ],
+        {
+          env: { ...process.env, CODEX_HOME: account.home },
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        },
+      );
+      process.exitCode = await child.exited;
     });
 
   bindingOptions(
@@ -1099,6 +1173,35 @@ async function accountInstallationId(
   } while (typeof installationId !== "string" && cursor);
   if (typeof installationId !== "string") throw new Error(`RUNTIME_UNAVAILABLE: ${label}`);
   return installationId;
+}
+async function managedBindingAccount(
+  call: (method: string, params?: unknown) => Promise<unknown>,
+  installationId: unknown,
+) {
+  if (typeof installationId !== "string")
+    throw new Error("VALIDATION_FAILED: invalid installation ID");
+  let cursor: string | undefined;
+  do {
+    const page = recordValue(await call("runtimes.list", { limit: 100, cursor }));
+    const runtime = arrayValue(page.runtimes)
+      .map(recordValue)
+      .find((candidate) => candidate.installationId === installationId);
+    if (runtime) {
+      const account = settings.codex.accounts.find((candidate) =>
+        isConfiguredCodexRuntime(runtime, candidate.label, candidate.home, candidate.socket),
+      );
+      if (!account)
+        throw new Error("RUNTIME_UNAVAILABLE: managed binding installation is unavailable");
+      if (
+        account.home !== canonicalCodexHome(account.home) ||
+        account.socket !== codexSocket(account.home, dirname(dirname(config.runtime)))
+      )
+        throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
+      return account;
+    }
+    cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+  } while (cursor);
+  throw new Error("RUNTIME_UNAVAILABLE: managed binding installation is unavailable");
 }
 async function chooseCodexSession(
   call: (method: string, params?: unknown) => Promise<unknown>,
