@@ -88,7 +88,7 @@ const capabilities: RuntimeCapabilities = {
   cancelOwnedExecution: false,
   peerPreemption: false,
   reconcileDelivery: true,
-  createManagedSession: false,
+  createManagedSession: true,
   callerAttestationSchemes: ["codex-mcp-thread-meta-v1"],
   supportedPartKinds: ["text", "uri", "data"],
 };
@@ -193,6 +193,37 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.observations.clear();
     this.interruptedExecutions.clear();
     this.wake();
+  }
+  async createManagedSession(
+    request: { readonly installationId: RuntimeInstallationId; readonly cwd: string },
+    signal?: AbortSignal,
+  ) {
+    this.assertRunning();
+    if (!request.cwd.startsWith("/"))
+      return { outcome: "rejected" as const, code: "invalid" as const };
+    if (request.installationId !== this.requireContext().installationId)
+      return { outcome: "rejected" as const, code: "unavailable" as const };
+    if (!supportsCodexVersion(this.runtimeVersion))
+      return { outcome: "rejected" as const, code: "incompatible" as const };
+    let flushed = false;
+    try {
+      const thread = await this.requireClient().startThread(
+        { cwd: request.cwd, ephemeral: false },
+        () => {
+          flushed = true;
+        },
+        signal,
+      );
+      return {
+        outcome: "created" as const,
+        session: { installationId: request.installationId, opaqueId: thread.id },
+      };
+    } catch (error) {
+      const failure = appServerFailure(error);
+      if (flushed && deliveryAmbiguous(failure.kind))
+        return { outcome: "creation-unknown" as const };
+      return { outcome: "rejected" as const, code: "unavailable" as const };
+    }
   }
   async probe(signal?: AbortSignal): Promise<RuntimeProbeResult> {
     this.assertRunning();

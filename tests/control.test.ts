@@ -18,6 +18,201 @@ afterEach(() => {
 });
 
 describe("control protocol", () => {
+  test("creates a managed receipt only after local preflight and audits ambiguous creation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-managed-create-"));
+    roots.push(root);
+    const paths: Paths = {
+      data: join(root, "acs.db"),
+      runtime: join(root, "control.sock"),
+      token: join(root, "control.token"),
+      bridgeToken: join(root, "bridge.token"),
+      secret: join(root, "secret.key"),
+    };
+    const store = new Store(paths),
+      installation = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!installation) throw new Error("missing installation");
+    store.createAgent("managed");
+    const adapter = new FakeRuntimeAdapter();
+    adapter.enableManagedCreation();
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-managed" },
+    };
+    const handler = controlHandler(
+      store,
+      new Date().toISOString(),
+      () => {},
+      new Map([[installation.id, adapter]]),
+    );
+    const call = (params: unknown, token = readFileSync(paths.token, "utf8")) =>
+      handler(
+        new Request("http://localhost", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "ACS-Control-Version": "1",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "runtimes.sessions.createManaged",
+            params,
+          }),
+        }),
+      );
+    expect(
+      await (await call({ agent: "missing", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({
+      error: { data: { code: "AGENT_NOT_FOUND" } },
+    });
+    expect(adapter.managedCreateCalls).toBe(0);
+    expect(
+      await (
+        await call({
+          agent: "managed",
+          cwd: join(root, "missing"),
+          installationId: installation.id,
+        })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED" } } });
+    store.createAgent("disabled");
+    store.updateAgent("disabled", { enabled: false });
+    expect(
+      await (await call({ agent: "disabled", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "AGENT_DISABLED" } } });
+    expect(
+      await (await call({ agent: "managed", cwd: root, installationId: "ins_missing" })).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE" } } });
+    adapter.disableManagedCreation();
+    expect(
+      await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "UNSUPPORTED_CAPABILITY" } } });
+    adapter.enableManagedCreation();
+    expect(
+      await (
+        await call(
+          { agent: "managed", cwd: root, installationId: installation.id },
+          readFileSync(paths.bridgeToken, "utf8"),
+        )
+      ).json(),
+    ).toMatchObject({
+      error: { data: { code: "NOT_AUTHORIZED" } },
+    });
+    expect(
+      await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({
+      result: { binding: { controlClass: "managed", session: { opaqueId: "thread-managed" } } },
+    });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM audit_events WHERE action='runtime.managed-create'",
+        )
+        .get()?.n,
+    ).toBe(1);
+    expect(adapter.managedCreateCalls).toBe(1);
+    expect(
+      await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "BINDING_CONFLICT" } } });
+    store.createAgent("incompatible");
+    adapter.managedCreateResult = { outcome: "rejected", code: "incompatible" };
+    expect(
+      await (
+        await call({ agent: "incompatible", cwd: root, installationId: installation.id })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_INCOMPATIBLE" } } });
+    store.createAgent("foreign");
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: "ins_foreign", opaqueId: "thread-foreign" },
+    };
+    expect(
+      await (await call({ agent: "foreign", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='foreign')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    const foreignAudit = store.db
+      .query<{ details_json: string }, []>(
+        "SELECT details_json FROM audit_events WHERE action='runtime.managed-create.ambiguous' ORDER BY created_at_ms DESC LIMIT 1",
+      )
+      .get();
+    if (!foreignAudit) throw new Error("missing foreign-route audit");
+    expect(JSON.parse(foreignAudit.details_json)).toEqual({
+      selectedInstallationId: installation.id,
+      returnedInstallationId: "ins_foreign",
+      threadId: "thread-foreign",
+    });
+    store.createAgent("audit-failure");
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-audit-failure" },
+    };
+    spyOn(store, "audit").mockImplementation(() => {
+      throw new Error("audit unavailable");
+    });
+    expect(
+      await (
+        await call({ agent: "audit-failure", cwd: root, installationId: installation.id })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='audit-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    store.createAgent("ambiguous");
+    adapter.managedCreateResult = { outcome: "creation-unknown" };
+    expect(
+      await (await call({ agent: "ambiguous", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({
+      error: { data: { code: "RUNTIME_AMBIGUOUS" } },
+    });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='ambiguous')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM audit_events WHERE action='runtime.managed-create.ambiguous'",
+        )
+        .get()?.n,
+    ).toBe(1);
+    store.createAgent("bind-failure");
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-unbound" },
+    };
+    spyOn(store, "bind").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    expect(
+      await (
+        await call({ agent: "bind-failure", cwd: root, installationId: installation.id })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='bind-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    store.close();
+  });
   test("bounds a control call when a Unix listener never responds", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-timeout-")),
       socket = join(root, "control.sock"),

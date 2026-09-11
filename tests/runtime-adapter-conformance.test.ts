@@ -66,12 +66,66 @@ test("Codex runtime adapter fails closed when skill-root registration fails", as
   fixture.close();
 });
 
-test("Codex adapter does not advertise managed-session creation before MW-2", async () => {
+test("Codex adapter advertises managed-session creation", async () => {
   const fixture = await codexFixture();
   await fixture.adapter.start(fixture.context);
-  expect(fixture.adapter.descriptor.capabilities.createManagedSession).toBe(false);
+  expect(fixture.adapter.descriptor.capabilities.createManagedSession).toBe(true);
   await fixture.adapter.stop({ reason: "shutdown" });
   fixture.close();
+});
+
+test("Codex managed creation is persistent, fenced to its installation, and never starts a turn", async () => {
+  const fixture = await codexFixture();
+  await fixture.adapter.start(fixture.context);
+  const create = fixture.adapter.createManagedSession;
+  if (!create) throw new Error("managed creation unavailable");
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "relative" }),
+  ).resolves.toEqual({ outcome: "rejected", code: "invalid" });
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_other", cwd: "/tmp" }),
+  ).resolves.toEqual({ outcome: "rejected", code: "unavailable" });
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
+  ).resolves.toEqual({
+    outcome: "created",
+    session: { installationId: "ins_conformance", opaqueId: "thread-created" },
+  });
+  expect(fixture.requests.find((request) => request.method === "thread/start")).toEqual({
+    method: "thread/start",
+    params: { cwd: "/tmp/worker", ephemeral: false },
+  });
+  expect(fixture.methods).toContain("thread/start");
+  fixture.failNext("thread/start", "disconnect");
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
+  ).resolves.toEqual({ outcome: "creation-unknown" });
+  await fixture.adapter.start(fixture.context);
+  fixture.failNext("thread/start", "overload");
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
+  ).resolves.toEqual({ outcome: "rejected", code: "unavailable" });
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex managed creation rejects incompatible and disconnected runtimes", async () => {
+  const incompatible = await codexFixture("codex-cli 0.0.0");
+  await incompatible.adapter.start(incompatible.context);
+  const create = incompatible.adapter.createManagedSession;
+  if (!create) throw new Error("managed creation unavailable");
+  await expect(
+    create.call(incompatible.adapter, { installationId: "ins_conformance", cwd: "/tmp" }),
+  ).resolves.toEqual({ outcome: "rejected", code: "incompatible" });
+  await incompatible.adapter.stop({ reason: "shutdown" });
+  incompatible.close();
+  const disconnected = await codexFixture();
+  await disconnected.adapter.start(disconnected.context);
+  disconnected.disconnect();
+  await expect(
+    disconnected.adapter.createManagedSession?.({ installationId: "ins_conformance", cwd: "/tmp" }),
+  ).resolves.toEqual({ outcome: "creation-unknown" });
+  disconnected.close();
 });
 
 type Fixture = {
@@ -878,6 +932,7 @@ function response(
       ? { data: [{ id: "turn-active", status: "inProgress" }] }
       : { data: [] };
   if (method === "turn/start") return { turn: { id: "turn-1" } };
+  if (method === "thread/start") return { thread: { id: "thread-created" } };
   return {};
 }
 

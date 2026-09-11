@@ -3,7 +3,7 @@
 | Issue                                              | PR                                     | Task IDs                | Dependencies | Evidence  |
 | -------------------------------------------------- | -------------------------------------- | ----------------------- | ------------ | --------- |
 | [#64](https://github.com/benediktms/acs/issues/64) | `managed-workers/ownership`            | 1.1, 1.2, 1.3, 2.1      | —            | validated |
-| [#65](https://github.com/benediktms/acs/issues/65) | `managed-workers/create-control`       | 2.2, 2.3, 3.1, 3.2, 3.3 | #64          | pending   |
+| [#65](https://github.com/benediktms/acs/issues/65) | `managed-workers/create-control`       | 2.2, 2.3, 3.1, 3.2, 3.3 | #64          | validated |
 | [#66](https://github.com/benediktms/acs/issues/66) | `managed-workers/background-delivery`  | 2.4, 2.5, 4.1, 4.2      | #64, #65     | pending   |
 | [#67](https://github.com/benediktms/acs/issues/67) | `managed-workers/operator-cli`         | 5.1, 5.2, 5.3, 5.4, 7.1 | #65, #66     | pending   |
 | [#68](https://github.com/benediktms/acs/issues/68) | `managed-workers/native-certification` | 6.1, 6.2, 7.2, 8.1, 8.2 | #64–#67      | pending   |
@@ -17,16 +17,16 @@
 ## 2. Runtime Contract and Codex Adapter
 
 - [x] 2.1 Add the minimal neutral managed-session creation capability, request/result union, optional adapter method, and delivery-target control class in `contracts/runtime-adapter.ts`; update the existing fake adapter only as required and verify `tests/runtime-adapter-conformance.test.ts` covers capability reporting without adding lifecycle stop/delete/transfer APIs.
-- [ ] 2.2 Update `CodexAppServerClient.startThread` to return a validated thread ID and accept the existing request-flush signal, keeping the signature private unless the app-server boundary contract must expose it; verify `tests/app-server-client.test.ts` distinguishes definite pre-write failure from flushed/no-response ambiguity.
-- [ ] 2.3 Implement `CodexRuntimeAdapter.createManagedSession` with persistent `thread/start`, validated `cwd`, and no approval/sandbox fields; verify adapter conformance tests cover confirmed creation, rejection/deferral, `creation-unknown`, route/version checks, and absence of an initial turn.
+- [x] 2.2 Update `CodexAppServerClient.startThread` to return a validated thread ID and accept the existing request-flush signal, keeping the signature private unless the app-server boundary contract must expose it; verify `tests/app-server-client.test.ts` distinguishes definite pre-write failure from flushed/no-response ambiguity.
+- [x] 2.3 Implement `CodexRuntimeAdapter.createManagedSession` with persistent `thread/start`, validated `cwd`, and no approval/sandbox fields; verify adapter conformance tests cover confirmed creation, rejection/deferral, `creation-unknown`, route/version checks, and absence of an initial turn.
 - [ ] 2.4 Update Codex delivery so only a current fenced managed target may resume one unloaded thread on the adapter's own recorded installation, followed by fresh inspection and existing delivery gates; verify focused adapter/scheduler tests cover loaded absent delivery, attached deferral, one managed resume, stale fence, foreign route, missing thread, unsafe direct input, and no proactive wake-up.
 - [ ] 2.5 Preserve server-request observation as read-only and add no prompt-response, unsubscribe, or attach-driven interrupt wrapper; verify tests expose managed approval/user-input blocks and observe no response or `turn/interrupt` mutation from create, attach, or detach paths.
 
 ## 3. Local Control Creation
 
-- [ ] 3.1 Add `runtimes.sessions.createManaged` and `controlClass` to the local control contract and protocol mappings; verify type checking and `tests/control.test.ts` cover the request/response DTO and stable error mapping including `RUNTIME_AMBIGUOUS`.
-- [ ] 3.2 Implement local-user authorization and preflight validation for agent existence/enabled/unbound state, configured account selection, adapter capability/version, and absolute existing `cwd` before runtime I/O; verify control tests prove every invalid or non-local request performs no thread creation or binding mutation.
-- [ ] 3.3 On confirmed creation, commit the managed binding receipt, observe it, and emit durable success audit evidence; on lost response or post-create bind failure, emit the strongest known ambiguity evidence and never retry/delete/adopt; verify `tests/control.test.ts` covers success, pre-write failure, flushed response loss, bind failure, and zero false-success receipts.
+- [x] 3.1 Add `runtimes.sessions.createManaged` and `controlClass` to the local control contract and protocol mappings; verify type checking and `tests/control.test.ts` cover the request/response DTO and stable error mapping including `RUNTIME_AMBIGUOUS`.
+- [x] 3.2 Implement local-user authorization and preflight validation for agent existence/enabled/unbound state, configured account selection, adapter capability/version, and absolute existing `cwd` before runtime I/O; verify control tests prove every invalid or non-local request performs no thread creation or binding mutation.
+- [x] 3.3 On confirmed creation, commit the managed binding receipt, observe it, and emit durable success audit evidence; on lost response or post-create bind failure, emit the strongest known ambiguity evidence and never retry/delete/adopt; verify `tests/control.test.ts` covers success, pre-write failure, flushed response loss, bind failure, and zero false-success receipts.
 
 ## 4. Scheduling and Background Delivery
 

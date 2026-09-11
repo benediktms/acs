@@ -130,8 +130,15 @@ export class CodexAppServerClient {
       items: turn.items.map(record),
     };
   }
-  async startThread(params: CodexThreadStartRequestDto) {
-    return record(await this.request("thread/start", params));
+  async startThread(
+    params: CodexThreadStartRequestDto,
+    markRequestFlushed?: () => void,
+    signal?: AbortSignal,
+  ) {
+    const response = record(await this.request("thread/start", params, markRequestFlushed, signal));
+    const id = stringField(record(response.thread ?? response), "id");
+    if (!id) throw new Error("invalid app-server thread id");
+    return { id };
   }
   async resumeThread(threadId: string, signal?: AbortSignal): Promise<void> {
     await this.request("thread/resume", { threadId, excludeTurns: true }, undefined, signal);

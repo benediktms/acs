@@ -437,6 +437,15 @@ export interface ControlMethodMap {
     readonly result: { readonly session: RuntimeSessionSnapshot };
   };
 
+  "runtimes.sessions.createManaged": {
+    readonly params: {
+      readonly agent: string;
+      readonly installationId?: string;
+      readonly cwd: string;
+    };
+    readonly result: { readonly binding: RuntimeBindingDto };
+  };
+
   "bridge.attestCaller": {
     readonly params: {
       readonly evidence: {

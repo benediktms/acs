@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type {
@@ -100,6 +100,7 @@ const partSchema = z.discriminatedUnion("kind", [
     grantPeerPreemption: z.boolean().optional(),
     allowPeerPreemption: z.boolean().optional(),
     installationId: z.string().optional(),
+    cwd: z.string().optional(),
     question: z.string().optional(),
     reason: z.string().optional(),
     revokeExisting: z.boolean().optional(),
@@ -678,6 +679,82 @@ export function controlHandler(
           });
           store.observeSession(snapshot);
           return ok(rpc.id, { session: snapshot });
+        }
+        case "runtimes.sessions.createManaged": {
+          admin(principal.kind);
+          const cwd = required(p.cwd, "cwd");
+          if (!isDirectory(cwd))
+            throw new Error("VALIDATION_FAILED: cwd must be an existing absolute directory");
+          const agent = store.agent(required(p.agent, "agent"));
+          if (!agent) throw new Error("AGENT_NOT_FOUND");
+          if (!agent.enabled) throw new Error("AGENT_DISABLED");
+          if (
+            store
+              .query<BindingRow, [`agt_${string}`]>(
+                "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
+              )
+              .get(agent.id)
+          )
+            throw new Error("BINDING_CONFLICT: agent already has an active binding");
+          const installation = runtimeInstallation(store, adapters, p.installationId);
+          const adapter = adapterFor(installation.id);
+          if (
+            !adapter?.createManagedSession ||
+            !adapter.descriptor.capabilities.createManagedSession
+          )
+            throw new Error("UNSUPPORTED_CAPABILITY");
+          const created = await adapter.createManagedSession({
+            installationId: installation.id,
+            cwd,
+          });
+          const ambiguous = (details: Record<string, unknown>, message: string): never => {
+            try {
+              audit("runtime.managed-create.ambiguous", "runtime", installation.id, details);
+            } catch {}
+            throw new Error(`RUNTIME_AMBIGUOUS: ${message}`);
+          };
+          if (created.outcome === "creation-unknown") {
+            return ambiguous(
+              created.threadId ? { threadId: created.threadId } : {},
+              "managed creation may have succeeded; do not retry blindly",
+            );
+          }
+          if (created.outcome !== "created")
+            throw new Error(
+              created.code === "incompatible" ? "RUNTIME_INCOMPATIBLE" : "RUNTIME_UNAVAILABLE",
+            );
+          if (created.session.installationId !== installation.id)
+            return ambiguous(
+              {
+                selectedInstallationId: installation.id,
+                returnedInstallationId: created.session.installationId,
+                threadId: created.session.opaqueId,
+              },
+              "created session belongs to another installation",
+            );
+          let binding;
+          try {
+            binding = store.write(() => {
+              const receipt = store.bind(agent.id, created.session.opaqueId, {
+                installationId: installation.id,
+                controlClass: "managed",
+              });
+              audit("runtime.managed-create", "binding", receipt.id, {
+                installationId: installation.id,
+                threadId: created.session.opaqueId,
+              });
+              return receipt;
+            });
+          } catch {
+            return ambiguous(
+              { threadId: created.session.opaqueId },
+              "thread was created but its ownership receipt could not be committed; do not retry blindly",
+            );
+          }
+          try {
+            store.observeSession(await adapter.inspectSession(created.session));
+          } catch {}
+          return ok(rpc.id, { binding: bindingDto(binding, store) });
         }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);
@@ -1482,6 +1559,13 @@ function controlErrorCode(raw: string): ControlErrorData["code"] {
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new Error(`VALIDATION_FAILED: missing ${name}`);
   return value;
+}
+function isDirectory(path: string) {
+  try {
+    return isAbsolute(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
