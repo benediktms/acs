@@ -148,12 +148,20 @@ type Fixture = {
   requests: Array<{ method: string; params: unknown }>;
   failNext(
     method: string,
-    failure: "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid",
+    failure:
+      | "overload"
+      | "disconnect"
+      | "hang"
+      | "malformed"
+      | "empty-id"
+      | "unloaded"
+      | "no-rollout"
+      | "invalid",
   ): void;
   failAfter(
     method: string,
     call: number,
-    failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
+    failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded" | "no-rollout",
   ): void;
   holdNext(method: string): () => void;
   disconnect(): void;
@@ -573,6 +581,16 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         reason: "session-not-found",
       });
       expect(mutations(fixture.methods)).toEqual([]);
+      fixture.methods.length = 0;
+      fixture.setStatus("notLoaded");
+      fixture.failNext("thread/resume", "no-rollout");
+      expect(await fixture.adapter.deliver(managed)).toMatchObject({
+        outcome: "rejected",
+        reason: "session-not-found",
+        retryable: false,
+      });
+      expect(fixture.methods).toContain("thread/resume");
+      expect(mutations(fixture.methods)).toEqual([]);
       await fixture.adapter.stop({ reason: "shutdown" });
       fixture.close();
     });
@@ -856,11 +874,14 @@ async function codexFixture(
     buffers = new WeakMap<object, Buffer>(),
     failures = new Map<
       string,
-      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid"
+      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "no-rollout" | "invalid"
     >(),
     failuresAfter = new Map<
       string,
-      { call: number; failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded" }
+      {
+        call: number;
+        failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded" | "no-rollout";
+      }
     >(),
     calls = new Map<string, number>(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
@@ -947,6 +968,15 @@ async function codexFixture(
                 JSON.stringify({
                   id: request.id,
                   error: { code: -32600, message: "thread not loaded: thread-1" },
+                }),
+              ),
+            );
+          else if (typeof request.id === "number" && failure === "no-rollout")
+            socket.write(
+              serverFrame(
+                JSON.stringify({
+                  id: request.id,
+                  error: { code: -32600, message: "no rollout found for thread id thread-1" },
                 }),
               ),
             );
