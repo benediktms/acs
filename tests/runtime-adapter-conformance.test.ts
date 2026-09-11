@@ -150,6 +150,11 @@ type Fixture = {
     method: string,
     failure: "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid",
   ): void;
+  failAfter(
+    method: string,
+    call: number,
+    failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
+  ): void;
   holdNext(method: string): () => void;
   disconnect(): void;
   request(method: string, params: unknown): void;
@@ -161,6 +166,7 @@ type Fixture = {
   setPresence(presence: "present" | "absent" | "unknown"): void;
   setSource(source: unknown): void;
   setStatus(status: string): void;
+  setResumeStatus(status: string): void;
   notify(method: string, params: unknown): void;
   close(): void;
 };
@@ -426,6 +432,115 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       fixture.close();
     });
 
+    test("resumes only a current managed unloaded thread, then reapplies delivery gates", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      fixture.setStatus("notLoaded");
+      const request = delivery();
+      const managed = {
+        ...request,
+        target: { ...request.target, controlClass: "managed" as const },
+      };
+      fixture.setFence(false);
+      expect(await fixture.adapter.deliver(managed)).toMatchObject({
+        outcome: "rejected",
+        reason: "stale-binding",
+      });
+      expect(fixture.methods).not.toContain("thread/resume");
+      fixture.methods.length = 0;
+      fixture.setFence(true);
+      expect(await fixture.adapter.deliver(managed)).toMatchObject({ outcome: "accepted" });
+      expect(fixture.methods.filter((method) => method === "thread/resume")).toHaveLength(1);
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
+    test("delivers to a loaded managed thread without an attached subscriber", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      fixture.setPresence("absent");
+      const request = delivery();
+      expect(
+        await fixture.adapter.deliver({
+          ...request,
+          target: { ...request.target, controlClass: "managed" },
+        }),
+      ).toMatchObject({ outcome: "accepted" });
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
+    test("retries recovered delivery observation with a fenced resume and no second input", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      const abort = new AbortController(),
+        iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toMatchObject({ state: "online" });
+      fixture.setStatus("notLoaded");
+      const request = delivery(),
+        managed = { ...request, target: { ...request.target, controlClass: "managed" as const } };
+      fixture.failAfter("thread/read", 3, "overload");
+      const delivered = fixture.adapter.deliver(managed);
+      expect(await delivered).toMatchObject({ outcome: "accepted" });
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      await waitForMethodCount(fixture.methods, "thread/resume", 2);
+      fixture.notify("turn/completed", {
+        threadId: "thread-1",
+        turn: { id: "turn-1", status: "completed" },
+      });
+      expect((await iterator.next()).value).toMatchObject({
+        type: "execution.completed",
+        execution: { opaqueId: "turn-1" },
+      });
+      abort.abort();
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
+    test("fails closed when managed recovery remains unloaded, blocked, unsafe, or missing", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      fixture.setStatus("notLoaded");
+      const request = delivery(),
+        managed = { ...request, target: { ...request.target, controlClass: "managed" as const } };
+      for (const [afterResume, reason] of [
+        ["notLoaded", "unsupported-active-state"],
+        ["waitingOnApproval", "local-input"],
+        ["waitingOnUserInput", "local-input"],
+        ["future-status", "unsupported-active-state"],
+      ]) {
+        fixture.methods.length = 0;
+        fixture.setStatus("notLoaded");
+        fixture.setResumeStatus(afterResume);
+        expect(await fixture.adapter.deliver(managed)).toMatchObject({
+          outcome: "deferred",
+          reason,
+        });
+        expect(mutations(fixture.methods)).toEqual([]);
+      }
+      fixture.methods.length = 0;
+      fixture.setStatus("notLoaded");
+      fixture.setResumeStatus("idle");
+      fixture.setDirectInput(false);
+      expect(await fixture.adapter.deliver(managed)).toMatchObject({
+        outcome: "deferred",
+        reason: "unsupported-active-state",
+      });
+      expect(mutations(fixture.methods)).toEqual([]);
+      fixture.setDirectInput(true);
+      fixture.setStatus("notLoaded");
+      fixture.failNext("thread/resume", "unloaded");
+      expect(await fixture.adapter.deliver(managed)).toMatchObject({
+        outcome: "rejected",
+        reason: "session-not-found",
+      });
+      expect(mutations(fixture.methods)).toEqual([]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
     test("projects interactive subscriber presence changes", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
@@ -532,7 +647,11 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       expect(mutations(methods)).toEqual([]);
       await adapter.start(fixture.context);
       expect((await iterator.next()).value).toMatchObject({ state: "online" });
-      expect(await adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+      const managed = {
+        ...delivery(),
+        target: { ...delivery().target, controlClass: "managed" as const },
+      };
+      expect(await adapter.deliver(managed)).toMatchObject({ outcome: "accepted" });
       expect(
         await adapter.cancel({
           execution: {
@@ -703,6 +822,11 @@ async function codexFixture(
       string,
       "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid"
     >(),
+    failuresAfter = new Map<
+      string,
+      { call: number; failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded" }
+    >(),
+    calls = new Map<string, number>(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
   let fence = true,
     canAcceptDirectInput = true,
@@ -711,7 +835,8 @@ async function codexFixture(
     loadedOnly = false,
     sessionPages = false,
     source: unknown = "test",
-    status = "idle";
+    status = "idle",
+    resumeStatus = "idle";
   let sendNotification: ((method: string, params: unknown) => void) | undefined,
     sendRequest: ((method: string, params: unknown) => void) | undefined,
     disconnect: (() => void) | undefined;
@@ -749,8 +874,14 @@ async function codexFixture(
             method = string(request.method);
           methods.push(method);
           requests.push({ method, params: request.params });
-          const failure = failures.get(method);
+          if (method === "thread/resume") status = resumeStatus;
+          const call = (calls.get(method) ?? 0) + 1;
+          calls.set(method, call);
+          const delayed = failuresAfter.get(method),
+            failure =
+              failures.get(method) ?? (delayed?.call === call ? delayed.failure : undefined);
           failures.delete(method);
+          if (delayed?.call === call) failuresAfter.delete(method);
           if (failure === "hang") continue;
           if (failure === "disconnect") {
             socket.end();
@@ -837,6 +968,9 @@ async function codexFixture(
     failNext(method, failure) {
       failures.set(method, failure);
     },
+    failAfter(method, call, failure) {
+      failuresAfter.set(method, { call, failure });
+    },
     holdNext(method) {
       const pending = Promise.withResolvers<void>();
       holds.set(method, { promise: pending.promise, release: pending.resolve });
@@ -873,6 +1007,9 @@ async function codexFixture(
     },
     setStatus(value) {
       status = value;
+    },
+    setResumeStatus(value) {
+      resumeStatus = value;
     },
     notify(method, params) {
       if (!sendNotification) throw new Error("emulator is not connected");

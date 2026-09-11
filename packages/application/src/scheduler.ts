@@ -1390,7 +1390,7 @@ export class DeliveryScheduler {
       .get(snapshot.session.installationId, snapshot.session.opaqueId);
     if (
       !binding ||
-      !["ready", "working"].includes(
+      !["ready", "working", "unknown"].includes(
         deriveAgentState({ ...snapshot, controlClass: binding.control_class }),
       )
     )
