@@ -32,5 +32,12 @@ remain native-Codex operator work: ACS observes them and never responds or bypas
 A flushed `thread/start` with no response is reported as `RUNTIME_AMBIGUOUS`; do not retry,
 adopt, or delete the possible thread blindly. Managed receipts are retained when an installation is
 unreachable. Interactive presence reported as `unknown` retains the existing attached-session
-behavior. Lost-create reconciliation, approval restoration, app-server restart, and multiple native
-clients remain unsupported until separately operator-certified.
+behavior.
+
+The pinned native evidence is deliberately narrow. Restarting the app-server before any model turn
+produces terminal `session-not-found` while retaining the managed receipt; ACS does not retry,
+recreate, adopt, or delete it. After one completed delivery seeds the rollout, a graceful restart on
+the same home and socket lets one managed attempt resume that exact session and complete one second
+delivery without duplication. An attached control does not resume. Do not generalize this evidence
+to other Codex versions or restart topologies. Lost-create reconciliation, approval restoration,
+and multiple-client/TUI behavior remain unsupported pending task 7.2.
