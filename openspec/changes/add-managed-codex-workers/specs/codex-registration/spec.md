@@ -31,12 +31,12 @@ Every runtime binding SHALL durably record exactly one control class, `attached`
 
 ### Requirement: Managed creation fails closed under ambiguity
 
-ACS SHALL create a managed binding only after a persistent runtime thread returns a valid opaque identifier and the ownership receipt commits successfully. Creation SHALL NOT start a model turn, inject a task or prompt, or override runtime approval or sandbox policy. A definite failure before the creation request is written SHALL create no binding. A written request without a definitive response, or a confirmed thread whose binding cannot be committed, SHALL be reported and durably audited as ambiguous with the strongest known installation and thread evidence; ACS SHALL NOT automatically retry, delete, adopt, or claim the possible thread.
+ACS SHALL create a managed binding only after a persistent runtime thread returns a valid opaque identifier. In one control transaction, creation SHALL atomically commit the ownership receipt, exactly one bounded readiness task with the exact prompt `Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.`, its delivery receipt in `submitted` state, and success audit evidence. The task SHALL call `acs_identity` first, then call `acs_agents_list` once, with no peer contact, snapshot, membership, or grant operation; it SHALL use ordinary completion, block, and failure semantics. Creation SHALL not wait for task execution or claim readiness, and SHALL preserve runtime approval and sandbox policy. A definite failure before the creation request is written SHALL create no binding. A written request without a definitive response, or a confirmed thread whose local binding transaction cannot be committed, SHALL be reported and durably audited as ambiguous with the strongest known installation and thread evidence; ACS SHALL NOT automatically retry, delete, adopt, or claim the possible thread.
 
 #### Scenario: Creation is confirmed and committed
 
 - **WHEN** the runtime returns a valid thread identifier and ACS commits the matching managed binding
-- **THEN** ACS reports creation success without starting a turn or attaching an operator
+- **THEN** ACS reports creation success with exactly one submitted readiness task/delivery receipt, without waiting for readiness or attaching an operator
 
 #### Scenario: Creation fails before write
 
@@ -51,7 +51,7 @@ ACS SHALL create a managed binding only after a persistent runtime thread return
 #### Scenario: Binding commit fails after thread creation
 
 - **WHEN** a persistent thread is confirmed but ACS cannot commit its managed binding
-- **THEN** ACS reports `RUNTIME_AMBIGUOUS`, records the known thread and installation in audit, and does not delete or adopt the thread automatically
+- **THEN** ACS rolls back all local rows, reports `RUNTIME_AMBIGUOUS`, records the known thread and installation in audit, and does not delete, adopt, or retry the thread automatically
 
 ## MODIFIED Requirements
 

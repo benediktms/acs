@@ -101,11 +101,69 @@ describe("control protocol", () => {
     ).toMatchObject({
       error: { data: { code: "NOT_AUTHORIZED" } },
     });
-    expect(
-      await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
-    ).toMatchObject({
-      result: { binding: { controlClass: "managed", session: { opaqueId: "thread-managed" } } },
+    const created = await (
+      await call({ agent: "managed", cwd: root, installationId: installation.id })
+    ).json();
+    expect(created).toMatchObject({
+      result: {
+        binding: { controlClass: "managed", session: { opaqueId: "thread-managed" } },
+        initialization: {
+          taskId: expect.any(String),
+          deliveryId: expect.any(String),
+          state: "submitted",
+        },
+      },
     });
+    const binding = store.db
+      .query<{ id: string; epoch: number }, []>(
+        "SELECT id,epoch FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='managed')",
+      )
+      .get();
+    if (!binding) throw new Error("missing managed binding");
+    const task = store.db
+      .query<{ id: string }, []>(
+        "SELECT id FROM a2a_tasks WHERE target_agent_id=(SELECT id FROM agents WHERE slug='managed')",
+      )
+      .get();
+    if (!task) throw new Error("missing readiness task");
+    const delivery = store.db
+      .query<{ id: string }, [string]>("SELECT id FROM delivery_intents WHERE task_id=?")
+      .get(task.id);
+    if (!delivery) throw new Error("missing readiness delivery");
+    expect(
+      store.db
+        .query<
+          { external_message_id: string; metadata_json: string; parts_json: string },
+          [string]
+        >("SELECT external_message_id,metadata_json,parts_json FROM a2a_messages WHERE task_id=?")
+        .get(task.id),
+    ).toEqual({
+      external_message_id: `managed-readiness:${binding.id}:${binding.epoch}`,
+      metadata_json: JSON.stringify({
+        "urn:agent-communications:managed-worker-readiness:v1": {
+          bindingId: binding.id,
+          bindingEpoch: binding.epoch,
+        },
+      }),
+      parts_json: JSON.stringify([
+        {
+          content: {
+            $case: "text",
+            value:
+              "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.",
+          },
+          filename: "",
+          mediaType: "text/plain",
+        },
+      ]),
+    });
+    expect(
+      store.db
+        .query<{ task_id: string; state: string }, [string]>(
+          "SELECT task_id,state FROM delivery_intents WHERE id=?",
+        )
+        .get(delivery.id),
+    ).toEqual({ task_id: task.id, state: "pending" });
     expect(
       store.db
         .query<{ n: number }, []>(
@@ -113,10 +171,48 @@ describe("control protocol", () => {
         )
         .get()?.n,
     ).toBe(1);
+    const successAudit = store.db
+      .query<{ details_json: string }, []>(
+        "SELECT details_json FROM audit_events WHERE action='runtime.managed-create' ORDER BY created_at_ms DESC LIMIT 1",
+      )
+      .get();
+    if (!successAudit) throw new Error("missing managed-create audit");
+    expect(JSON.parse(successAudit.details_json)).toMatchObject({
+      taskId: task.id,
+      deliveryId: delivery.id,
+    });
     expect(adapter.managedCreateCalls).toBe(1);
     expect(
       await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
     ).toMatchObject({ error: { data: { code: "BINDING_CONFLICT" } } });
+    store.createAgent("accept-failure");
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-accept-failure" },
+    };
+    const accept = spyOn(store, "accept").mockImplementation(() => {
+      throw new Error("accept unavailable");
+    });
+    expect(
+      await (
+        await call({ agent: "accept-failure", cwd: root, installationId: installation.id })
+      ).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+    accept.mockRestore();
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='accept-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM a2a_tasks WHERE target_agent_id=(SELECT id FROM agents WHERE slug='accept-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
     store.createAgent("incompatible");
     adapter.managedCreateResult = { outcome: "rejected", code: "incompatible" };
     expect(
@@ -141,7 +237,7 @@ describe("control protocol", () => {
     ).toBe(0);
     const foreignAudit = store.db
       .query<{ details_json: string }, []>(
-        "SELECT details_json FROM audit_events WHERE action='runtime.managed-create.ambiguous' ORDER BY created_at_ms DESC LIMIT 1",
+        "SELECT details_json FROM audit_events WHERE action='runtime.managed-create.ambiguous' AND details_json LIKE '%thread-foreign%' LIMIT 1",
       )
       .get();
     if (!foreignAudit) throw new Error("missing foreign-route audit");
@@ -170,6 +266,13 @@ describe("control protocol", () => {
         )
         .get()?.n,
     ).toBe(0);
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM a2a_tasks WHERE target_agent_id=(SELECT id FROM agents WHERE slug='audit-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
     store.createAgent("ambiguous");
     adapter.managedCreateResult = { outcome: "creation-unknown" };
     expect(
@@ -190,7 +293,7 @@ describe("control protocol", () => {
           "SELECT count(*) n FROM audit_events WHERE action='runtime.managed-create.ambiguous'",
         )
         .get()?.n,
-    ).toBe(1);
+    ).toBe(2);
     store.createAgent("bind-failure");
     adapter.managedCreateResult = {
       outcome: "created",

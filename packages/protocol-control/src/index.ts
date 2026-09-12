@@ -733,18 +733,54 @@ export function controlHandler(
               "created session belongs to another installation",
             );
           let binding;
+          let initialization: { taskId: string; deliveryId: string };
           try {
-            binding = store.write(() => {
+            ({ binding, initialization } = store.write(() => {
               const receipt = store.bind(agent.id, created.session.opaqueId, {
                 installationId: installation.id,
                 controlClass: "managed",
               });
+              const acceptance = store.accept(
+                agent.id,
+                principal.id,
+                {
+                  messageId: `managed-readiness:${receipt.id}:${receipt.epoch}`,
+                  contextId: "",
+                  taskId: "",
+                  role: 1,
+                  parts: [
+                    {
+                      content: {
+                        $case: "text",
+                        value:
+                          "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.",
+                      },
+                      filename: "",
+                      mediaType: "text/plain",
+                    },
+                  ],
+                  metadata: {
+                    "urn:agent-communications:managed-worker-readiness:v1": {
+                      bindingId: receipt.id,
+                      bindingEpoch: receipt.epoch,
+                    },
+                  },
+                  extensions: [],
+                  referenceTaskIds: [],
+                },
+                { mode: "direct", priority: "normal", replyExpected: true },
+              );
               audit("runtime.managed-create", "binding", receipt.id, {
                 installationId: installation.id,
                 threadId: created.session.opaqueId,
+                taskId: acceptance.task.id,
+                deliveryId: acceptance.deliveryId,
               });
-              return receipt;
-            });
+              return {
+                binding: receipt,
+                initialization: { taskId: acceptance.task.id, deliveryId: acceptance.deliveryId },
+              };
+            }));
           } catch {
             return ambiguous(
               { threadId: created.session.opaqueId },
@@ -754,7 +790,10 @@ export function controlHandler(
           try {
             store.observeSession(await adapter.inspectSession(created.session));
           } catch {}
-          return ok(rpc.id, { binding: bindingDto(binding, store) });
+          return ok(rpc.id, {
+            binding: bindingDto(binding, store),
+            initialization: { ...initialization, state: "submitted" },
+          });
         }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);

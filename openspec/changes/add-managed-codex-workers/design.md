@@ -4,7 +4,7 @@ See `proposal.md` for motivation and the five delta specs for normative behavior
 
 The existing Codex adapter already speaks to one installation-specific app-server, exposes `thread/start` and `thread/resume` through its client, identifies its subscription as an observer, fences runtime mutations by binding ID and epoch, and observes prompt waits without answering them. `acs codex run --` already launches the pinned native client against an exact managed socket with inherited terminal I/O. Codex 0.154.0 distinguishes `thread/unsubscribe` from `turn/interrupt`; operator evidence shows shutdown-first detach and terminal transport close can leave work running, while Ctrl+C interrupts active work.
 
-The remaining evidence boundaries are lost `thread/start` responses, approval-modal restoration, multiple interactive clients, idle unload/resume timing, and app-server restart. The design fails closed or limits claims where those behaviors are not yet proven.
+The remaining evidence boundaries are lost `thread/start` responses, approval-modal restoration, multiple interactive clients, and idle unload/resume timing. The readiness bootstrap creates the first rollout; in the tested topology, restart after one completed turn succeeds. The design fails closed or limits claims where those behaviors are not yet proven.
 
 ## Goals / Non-Goals
 
@@ -20,7 +20,7 @@ The remaining evidence boundaries are lost `thread/start` responses, approval-mo
 
 - No lifecycle-operation table, worker registry, detached-state record, ownership transfer, replacement, stop/delete/cleanup, or orphan reconciliation.
 - No PTY or app-server proxy, custom terminal UI/client, keystroke automation, or upstream/generated-protocol change.
-- No agent creation, prompt packet, initial model turn, workspace/worktree provider, swarm membership, profiles, quotas, usage, waits, or general workflow engine.
+- No agent creation, workspace/worktree provider, swarm membership, profiles, quotas, usage, or general workflow engine.
 - No broader priority, preemption, cancellation, A2A, or unknown-presence redesign.
 - No prompt-response API or policy/sandbox override.
 
@@ -38,7 +38,7 @@ Alternatives considered: a worker registry duplicates binding identity and fenci
 
 Extend the runtime descriptor with a managed-session creation capability and the adapter with one optional `createManagedSession` operation. Its request carries installation-scoped creation data, including validated absolute `cwd`; its result distinguishes confirmed creation, definite rejection/deferral, and `creation-unknown`. Direct-delivery targets separately gain `controlClass` so application code need not branch on Codex.
 
-The Codex implementation calls persistent `thread/start` with `cwd` and `ephemeral: false`, omitting approval and sandbox fields so account configuration remains authoritative. The app-server client decodes and returns a valid thread ID and uses the same write-flush marker pattern already used for ambiguous delivery/interruption. A pre-write failure is definite; timeout or disconnect after the request is flushed is ambiguous.
+The Codex implementation calls persistent `thread/start` with `cwd` and `ephemeral: false`, omitting approval and sandbox fields so account configuration remains authoritative. `thread/start` remains neutral and starts no hidden turn; the subsequent ordinary readiness task is the only bootstrap turn. The app-server client decodes and returns a valid thread ID and uses the same write-flush marker pattern already used for ambiguous delivery/interruption. A pre-write failure is definite; timeout or disconnect after the request is flushed is ambiguous.
 
 Alternatives considered: a Codex-specific control method leaks harness semantics into application code; a generalized lifecycle API adds unused stop/delete/transfer operations; editing generated protocol is unnecessary because the pinned request/response DTOs already exist.
 
@@ -46,7 +46,11 @@ Alternatives considered: a Codex-specific control method leaks harness semantics
 
 Add `runtimes.sessions.createManaged` to the authenticated local control protocol. It accepts the logical agent, optional configured account label, and absolute working directory. The handler requires `local-user`, then validates the agent exists, is enabled, has no active binding, the directory is absolute and exists, and exactly one enabled compatible installation/adapter is selected before calling the runtime.
 
-After confirmed thread creation, the handler binds the returned opaque ID with `controlClass: managed`, observes the thread, emits the existing durable audit event shape with receipt evidence, and returns the managed binding. Creation starts neither a task nor a turn and does not attach a client.
+After confirmed thread creation, the handler enters one outer SQLite transaction that binds the returned opaque ID with `controlClass: managed`, accepts exactly one ordinary normal-priority readiness task using the authenticated local-user principal and exact binding/epoch marker, and uses this single text part:
+
+`Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.`
+
+It emits the existing durable audit event with binding, task, and delivery evidence, and commits all local rows atomically. It returns the binding plus `{ taskId, deliveryId, state: "submitted" }` immediately after commit; this is durable submission, not runtime receipt, tool completion, or worker readiness. Creation does not attach a client. If any local step fails after external creation, every local row rolls back and the handler returns `RUNTIME_AMBIGUOUS` with thread evidence; later readiness failure does not remove the binding.
 
 The runtime mutation and SQLite commit cannot be atomic. A flushed request without a response, or a confirmed thread followed by bind failure, returns `RUNTIME_AMBIGUOUS`, creates no ownership receipt, audits the strongest known installation/thread evidence, and instructs the operator not to retry blindly. It never deletes, retries, or adopts the possible orphan.
 
@@ -76,7 +80,9 @@ Alternatives considered: guards at individual scheduler/control/storage call sit
 
 Add the binding class to the neutral delivery target. The scheduler permits a pending managed delivery to reach its owning adapter when the thread is absent or unloaded instead of filtering it as ordinary attached-offline state. The adapter first verifies installation identity. If inspection reports not loaded and the target is managed, it checks the current binding ID/epoch fence, calls `thread/resume` once on that same installation, re-inspects, and only then applies the existing version, blocking, direct-input, and final mutation fences before `turn/start`.
 
-Attached targets never gain resume behavior. Stale/revoked fences, foreign adapters, definitive missing-thread responses, incompatible runtimes, approval/user input, unsafe direct-input state, or system errors produce no delivery mutation beyond the one explicitly allowed managed resume. Daemon or app-server reconnect refreshes observations but does not wake every worker proactively.
+Attached targets never gain resume behavior. Stale/revoked fences, foreign adapters, incompatible runtimes, approval/user input, unsafe direct-input state, or system errors produce no delivery mutation beyond the one explicitly allowed managed resume. A pinned `no rollout found for thread id` response is definitive same-installation `SessionNotFound`, yielding terminal `rejected` with `session-not-found` and `retryable: false`; the receipt is retained and ACS does not retry, recreate, adopt, or delete. Daemon or app-server reconnect refreshes observations but does not wake every worker proactively.
+
+The only scheduler exception is structural and exact: a current active managed binding epoch may deliver an `a2a-message` with requester `local-user`, provenance `{ principalKind: "local-user", workAuthority: "local-bootstrap", purpose: "managed-worker-readiness" }`, and the matching deterministic readiness marker and message ID. Every other local-user task, marker mismatch, control class mismatch, or stale epoch follows the existing `unsupported-requester-principal` terminal path without adapter delivery. Public A2A authentication and rejection remain unchanged.
 
 Alternatives considered: proactive resume increases load and mutates idle workers without demand; cross-installation recovery breaks ownership identity; weakening existing offline gates for every binding would silently change user-created sessions.
 
@@ -92,7 +98,7 @@ Alternatives considered: an ACS prompt API would transfer local authority; synth
 
 Contract, domain, storage, control, scheduler, adapter-conformance, app-server-client, and packaging tests cover the new class, migration, validation, ambiguity classification, exact routing, resume selection, prompt non-response, child arguments, and no-op exit. Existing fake adapters and app-server fixtures are extended; no second harness is introduced.
 
-An opt-in isolated Codex 0.154.0 suite uses a temporary real `CODEX_HOME`, temporary Unix socket, and local mock model without credentials or live LaunchAgents. It proves persistent creation without policy overrides, completion after creator disconnect, same-installation unload/resume, reconnect, fencing, and single authenticated completion.
+An opt-in isolated Codex 0.154.0 suite uses a temporary real `CODEX_HOME`, temporary Unix socket, and local mock model without credentials or live LaunchAgents. Native proof is: create, verify one durably submitted readiness task and delivery, complete the first managed delivery including `acs_identity` and one `acs_agents_list` call, restart the app-server, verify the attached-class no-resume control, then perform the exact managed resume and verify a second completion without duplication and with the same identity. It also proves persistent creation without policy overrides, completion after creator disconnect, fencing, reconnect, and single authenticated completion.
 
 Operator certification alone records Ctrl+D, `/exit`, `/quit`, Ctrl+C, terminal-close, approval restoration, and multiple-client behavior, including version, topology, installation, observed RPCs, terminal status, and completion count. Documentation claims only the tested boundary.
 
@@ -103,7 +109,7 @@ Operator certification alone records Ctrl+D, `/exit`, `/quit`, Ctrl+C, terminal-
 - [Configuration or socket identity drifts after creation] → Match the binding's installation, canonical home, and exact derived socket before resume or attach; fail closed without fallback.
 - [Managed receipts can outlive dead runtimes because automatic reaping is disabled] → Prefer retaining ownership evidence; add explicit stop/retire and resource policy only in a later proven slice.
 - [Released Codex may report interactive presence as unknown] → Preserve attached behavior and make only explicit managed ownership presence-independent.
-- [App-server restart or multiple clients behave differently from one disconnect] → Keep claims topology-specific and record them as evidence boundaries until native/operator tests pass.
+- [Prompt restoration or multiple clients may behave differently across topologies] → Keep those claims topology-specific and record them as evidence boundaries until native/operator tests pass.
 - [External thread creation and local binding commit are not atomic] → Keep the post-create window explicit and audited; do not pretend SQLite can roll back the native mutation.
 
 ## Migration Plan
@@ -117,4 +123,4 @@ Rollback removes the new binary behavior but cannot safely drop the SQLite colum
 
 ## Open Questions
 
-No question changes the selected implementation route. Lost-create reconciliation, approval restoration, multiple-client prompt routing, idle unload timing, and app-server restart remain explicit evidence boundaries whose observed results constrain support claims; they do not expand this slice.
+No question changes the selected implementation route. Lost-create reconciliation, approval restoration, multiple-client prompt routing, and idle unload timing remain explicit evidence boundaries whose observed results constrain support claims; they do not expand this slice.

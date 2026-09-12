@@ -39,6 +39,20 @@ Runtime delivery SHALL carry the current binding control class. If a fenced mana
 - **WHEN** an owning app-server reconnects while managed workers have pending deliveries
 - **THEN** ACS refreshes observations and permits delivery-scoped recovery without proactively waking every managed worker
 
+### Requirement: Readiness delivery is narrowly authorized
+
+The readiness task SHALL be deliverable only when its task and delivery receipt are scoped to the exact current managed binding and epoch, and carry `principalKind: local-user`, `workAuthority: local-bootstrap`, and `purpose: managed-worker-readiness`. Unmarked or mismatched local-user work SHALL remain terminal `unsupported`; public A2A work remains rejected. All existing runtime fences and prompt-ownership gates continue to apply.
+
+#### Scenario: Readiness receipt matches its binding
+
+- **WHEN** a submitted readiness task has the exact managed binding and current epoch plus the required provenance fields
+- **THEN** ACS may deliver it subject to the existing runtime observation, installation, and prompt-ownership gates
+
+#### Scenario: Readiness provenance or fence mismatches
+
+- **WHEN** readiness work is unmarked, has mismatched binding or epoch, or uses another principal, authority, or purpose
+- **THEN** ACS marks it terminal `unsupported` and performs no runtime mutation
+
 ### Requirement: Managed prompts remain locally owned
 
 ACS SHALL observe and expose managed-worker approval, authentication, and user-input waits, but SHALL NOT answer, deny, bypass, or synthesize local user input for them. Delivery SHALL remain deferred while the block is present and may continue only after a fresh runtime observation proves that the local block has cleared. Attach or detach SHALL NOT authorize `turn/interrupt` or any prompt response from ACS.

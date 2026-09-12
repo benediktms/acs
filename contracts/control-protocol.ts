@@ -443,7 +443,14 @@ export interface ControlMethodMap {
       readonly installationId?: string;
       readonly cwd: string;
     };
-    readonly result: { readonly binding: RuntimeBindingDto };
+    readonly result: {
+      readonly binding: RuntimeBindingDto;
+      readonly initialization: {
+        readonly taskId: string;
+        readonly deliveryId: string;
+        readonly state: "submitted";
+      };
+    };
   };
 
   "bridge.attestCaller": {

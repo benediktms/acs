@@ -239,6 +239,13 @@ export interface A2AStoragePort {
 
 export interface ControlStoragePort extends SqlPort {
   write<T>(operation: () => T): T;
+  accept(
+    agentId: string,
+    principalId: string,
+    message: StoredMessage,
+    options: DeliveryOptions,
+    requestHash?: string,
+  ): { task: StoredTask; deliveryId: string; duplicate: boolean; stateVersion?: number };
   authenticate(token: string): AuthenticatedPrincipalRow | null;
   audit(
     actorPrincipalId: string | null,
