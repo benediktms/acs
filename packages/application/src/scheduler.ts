@@ -549,6 +549,9 @@ export class DeliveryScheduler {
       ),
       provenance = deliveryProvenance(
         isTaskEventNotification ? parties.actor_principal_kind : parties.requester_principal_kind,
+        intent.kind,
+        payload,
+        binding,
       );
     if (!provenance) return this.failTerminal(intent.id, "unsupported-requester-principal");
     const attempt = id("atm"),
@@ -593,15 +596,16 @@ export class DeliveryScheduler {
     const senderName = isTaskEventNotification
       ? (parties.actor_slug ?? parties.actor_display_name ?? "external")
       : (parties.requester_slug ?? parties.display_name);
+    const localBootstrap = provenance.principalKind === "local-user";
     const envelope: RuntimeDeliveryEnvelopeV1 = {
-      agentNotice: `${isTaskEventNotification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(isTaskEventNotification, "state" in payload ? payload.state : undefined)}`,
+      agentNotice: `${isTaskEventNotification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${localBootstrap ? "managed worker readiness bootstrap" : provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(isTaskEventNotification, "state" in payload ? payload.state : undefined)}`,
       schema: "urn:agent-communications:runtime-envelope:v1",
       deliveryId: intent.id,
       kind: isTaskEventNotification ? "a2a-task-event" : "a2a-message",
       from: isTaskEventNotification
         ? { agentId: parties.actor_agent_id ?? "external", name: senderName }
         : {
-            agentId: parties.requester_agent_id ?? "external",
+            agentId: localBootstrap ? "local-user" : (parties.requester_agent_id ?? "external"),
             name: senderName,
           },
       to: { agentId: target.id, name: target.slug },
@@ -1425,10 +1429,39 @@ export function activityMaintenancePrompt(isTaskEventNotification: boolean, stat
 
 function deliveryProvenance(
   principalKind: string | null,
+  kind: DeliveryIntentRow["kind"],
+  payload: DeliveryPayload,
+  binding: BindingRow,
 ): RuntimeDeliveryEnvelopeV1["provenance"] | undefined {
   if (principalKind === "bound-agent") return { principalKind, workAuthority: "delegated" };
   if (principalKind === "external-a2a-client" || principalKind === "service")
     return { principalKind, workAuthority: "untrusted" };
+  if (
+    principalKind === "local-user" &&
+    kind === "a2a-message" &&
+    "message" in payload &&
+    binding.control_class === "managed" &&
+    isManagedReadinessMessage(payload.message, binding)
+  )
+    return {
+      principalKind: "local-user",
+      workAuthority: "local-bootstrap",
+      purpose: "managed-worker-readiness",
+    };
+}
+
+function isManagedReadinessMessage(message: StoredMessage, binding: BindingRow) {
+  const marker = message.metadata?.["urn:agent-communications:managed-worker-readiness:v1"];
+  return (
+    message.messageId === `managed-readiness:${binding.id}:${binding.epoch}` &&
+    typeof marker === "object" &&
+    marker !== null &&
+    Object.keys(marker).length === 2 &&
+    "bindingId" in marker &&
+    marker.bindingId === binding.id &&
+    "bindingEpoch" in marker &&
+    marker.bindingEpoch === binding.epoch
+  );
 }
 
 function interruptOnCancel(json: string) {

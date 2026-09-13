@@ -33,7 +33,7 @@
 
 - [x] 4.1 Pass stored control class through scheduler target assembly, eligibility, observation wake-up, and fence checks so managed absent/not-loaded work can reach its owning adapter while attached absence remains deferred; verify `tests/scheduler.test.ts` covers both classes, blocked prompts, stale/revoked ownership, and completion deduplication.
 - [x] 4.2 Ensure runtime/app-server disconnect marks current observations without allowing offline reaping to erase managed receipts, and reconnect refreshes before delivery without waking all workers; verify focused storage and scheduler reconnect tests preserve one binding epoch and one accepted delivery/completion.
-- [ ] 4.3 Permit only the exact binding/epoch-scoped managed-readiness local-bootstrap provenance through scheduler authorization; preserve terminal rejection for every unmarked or mismatched local-user task, public A2A local-user rejection, and the informational `local-user` envelope identity.
+- [x] 4.3 Permit only the exact binding/epoch-scoped managed-readiness local-bootstrap provenance through scheduler authorization; preserve terminal rejection for every unmarked or mismatched local-user task, public A2A local-user rejection, and the informational `local-user` envelope identity.
 
 ## 5. Operator CLI
 
