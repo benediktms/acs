@@ -111,15 +111,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       expect(initialized.userAgent).toContain(
         process.env.ACS_EXPECTED_CODEX_VERSION ?? TESTED_CODEX_VERSION,
       );
-      const created = record(
-          await owner.startThread({
-            cwd: root,
-            ephemeral: false,
-            approvalPolicy: "never",
-            sandbox: "read-only",
-          }),
-        ),
-        threadId = string(record(created.thread).id),
+      const { id: threadId } = await owner.startThread({ cwd: root, ephemeral: false }),
         first = delivery(threadId, "int_first"),
         second = delivery(threadId, "int_second"),
         third = delivery(threadId, "int_third");
@@ -290,15 +282,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
     try {
       await until(() => existsSync(socket), "Codex app-server socket");
       await owner.start();
-      const created = record(
-          await owner.startThread({
-            cwd: root,
-            ephemeral: false,
-            approvalPolicy: "never",
-            sandbox: "read-only",
-          }),
-        ),
-        threadId = string(record(created.thread).id),
+      const { id: threadId } = await owner.startThread({ cwd: root, ephemeral: false }),
         message = delivery(threadId, "int_response_loss");
       await adapter.start(context);
       const submitted = adapter.deliver(message);
@@ -389,15 +373,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
     try {
       await until(() => existsSync(socket), "Codex app-server socket");
       await owner.start();
-      const created = record(
-          await owner.startThread({
-            cwd: root,
-            ephemeral: false,
-            approvalPolicy: "never",
-            sandbox: "read-only",
-          }),
-        ),
-        threadId = string(record(created.thread).id),
+      const { id: threadId } = await owner.startThread({ cwd: root, ephemeral: false }),
         target = {
           session: { installationId: "ins_native" as const, opaqueId: threadId },
           bindingId: "bnd_native" as const,
@@ -507,15 +483,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
     try {
       await until(() => existsSync(socket), "Codex app-server socket");
       await owner.start();
-      const created = record(
-          await owner.startThread({
-            cwd: root,
-            ephemeral: false,
-            approvalPolicy: "never",
-            sandbox: "read-only",
-          }),
-        ),
-        threadId = string(record(created.thread).id),
+      const { id: threadId } = await owner.startThread({ cwd: root, ephemeral: false }),
         target = {
           session: { installationId: "ins_native" as const, opaqueId: threadId },
           bindingId: "bnd_native" as const,
