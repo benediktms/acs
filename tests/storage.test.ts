@@ -527,6 +527,7 @@ describe("schema migrations", () => {
     store.close();
 
     const legacy = new Database(config.data, { strict: true });
+    legacy.exec("DROP TRIGGER IF EXISTS runtime_bindings_control_class_immutable");
     legacy.exec("ALTER TABLE runtime_bindings DROP COLUMN control_class");
     legacy.query("DELETE FROM schema_migrations WHERE version=7").run();
     legacy.close();
