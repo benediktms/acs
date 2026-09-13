@@ -525,6 +525,13 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
       expect(result.exitCode).toBe(0);
       expect(existsSync(stateHome)).toBe(false);
     }
+  const createHelp = Bun.spawnSync([binary, "codex", "workers", "create", "--help"], {
+    env: environment,
+  });
+  expect(createHelp.stdout.toString()).toContain("atomically submit readiness initialization");
+  expect(createHelp.stdout.toString()).toContain(
+    "binding/task/delivery submitted receipts (not ready)",
+  );
   expect(
     Bun.spawnSync([binary, "help", "codex", "app-server"], { env: environment }).exitCode,
   ).toBe(0);
@@ -703,6 +710,11 @@ test("compiled managed-worker commands fence control receipts before native laun
       installationId: installation,
       controlClass: "managed",
       session: { installationId: installation, opaqueId: "thread-managed" },
+    },
+    initialization = {
+      taskId: "tsk_readiness",
+      deliveryId: "dlv_readiness",
+      state: "submitted",
     };
   let bindings: unknown[] = [binding],
     runtimes: unknown[] = [runtime],
@@ -723,7 +735,7 @@ test("compiled managed-worker commands fence control receipts before native laun
             : method === "bindings.list"
               ? { items: bindings }
               : method === "runtimes.sessions.createManaged"
-                ? { binding }
+                ? { binding, initialization }
                 : {};
       if (method === "runtimes.sessions.createManaged" && createResult === "ambiguous")
         return Response.json({
@@ -766,7 +778,12 @@ test("compiled managed-worker commands fence control receipts before native laun
       root,
     );
     expect(created.exitCode).toBe(0);
-    expect(JSON.parse(created.stdout)).toEqual({ binding });
+    expect(JSON.parse(created.stdout)).toEqual({ binding, initialization });
+    expect(calls.map((call) => call.method)).toEqual([
+      "system.initialize",
+      "runtimes.list",
+      "runtimes.sessions.createManaged",
+    ]);
     expect(calls.find((call) => call.method === "runtimes.sessions.createManaged")?.params).toEqual(
       {
         agent: "agent",

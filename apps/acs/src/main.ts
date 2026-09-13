@@ -485,7 +485,9 @@ async function main() {
   const workers = codex.command("workers").description("manage ACS-created Codex workers");
   workers
     .command("create <agent>")
-    .description("create a persistent managed Codex worker")
+    .description(
+      "create a managed worker, atomically submit readiness initialization, and return binding/task/delivery submitted receipts (not ready)",
+    )
     .option("--account <label>", "Codex account label")
     .option("--cwd <absolute-dir>", "working directory", process.cwd())
     .action(async (agent: string, options: { account?: string; cwd: string }) => {
