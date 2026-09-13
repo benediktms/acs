@@ -21,7 +21,6 @@ import {
 } from "../../../packages/application/src/scheduler";
 import {
   canonicalCodexHome,
-  codexSocket,
   configPath,
   loadConfig,
   migrateCodexAccounts,
@@ -1194,10 +1193,7 @@ async function managedBindingAccount(
       );
       if (!account)
         throw new Error("RUNTIME_UNAVAILABLE: managed binding installation is unavailable");
-      if (
-        account.home !== canonicalCodexHome(account.home) ||
-        account.socket !== codexSocket(account.home, dirname(dirname(config.runtime)))
-      )
+      if (account.home !== canonicalCodexHome(account.home))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
       return account;
     }
