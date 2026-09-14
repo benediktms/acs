@@ -45,10 +45,13 @@
       "required": ["principalKind", "workAuthority"],
       "properties": {
         "principalKind": {
-          "enum": ["bound-agent", "external-a2a-client", "service"]
+          "enum": ["bound-agent", "external-a2a-client", "service", "local-user"]
         },
         "workAuthority": {
-          "enum": ["delegated", "untrusted"]
+          "enum": ["delegated", "untrusted", "local-bootstrap"]
+        },
+        "purpose": {
+          "const": "managed-worker-readiness"
         }
       }
     },
@@ -97,6 +100,9 @@
       "then": {
         "properties": {
           "provenance": {
+            "not": {
+              "required": ["purpose"]
+            },
             "properties": {
               "workAuthority": {
                 "const": "delegated"
@@ -106,11 +112,39 @@
         }
       },
       "else": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "workAuthority": {
-                "const": "untrusted"
+        "if": {
+          "properties": {
+            "provenance": {
+              "properties": {
+                "principalKind": {
+                  "const": "local-user"
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "provenance": {
+              "required": ["purpose"],
+              "properties": {
+                "workAuthority": {
+                  "const": "local-bootstrap"
+                }
+              }
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "provenance": {
+              "not": {
+                "required": ["purpose"]
+              },
+              "properties": {
+                "workAuthority": {
+                  "const": "untrusted"
+                }
               }
             }
           }

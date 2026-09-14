@@ -382,7 +382,17 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           ).thread,
         );
       } catch (error: unknown) {
-        if (sessionUnavailable(appServerFailure(error).kind))
+        const failure = appServerFailure(error);
+        if (failure.kind === CodexAppServerFailureKind.SessionNotFound)
+          return {
+            session,
+            runtimeState: "not-loaded",
+            blockingReason: "none",
+            interactivePresence: "unknown",
+            observedAt: new Date().toISOString(),
+            attributes: {},
+          };
+        if (sessionUnavailable(failure.kind))
           return {
             session,
             runtimeState: "offline",
@@ -432,12 +442,33 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return { outcome: "deferred", reason: "route-unavailable" };
     if (!supportsCodexVersion(this.runtimeVersion))
       return { outcome: "rejected", reason: "runtime-protocol-error", retryable: false };
-    const snapshot = await this.inspectSession(request.target.session, signal);
+    let snapshot = await this.inspectSession(request.target.session, signal),
+      resumed = false;
+    if (snapshot.runtimeState === "not-loaded" && request.target.controlClass === "managed") {
+      const fence = await this.requireContext().assertBindingFence(
+        request.target.bindingId,
+        request.target.bindingEpoch,
+        signal,
+      );
+      if (!fence.valid) return { outcome: "rejected", reason: "stale-binding", retryable: false };
+      try {
+        await this.requireClient().resumeThread(request.target.session.opaqueId, signal);
+        resumed = true;
+        snapshot = await this.inspectSession(request.target.session, signal);
+      } catch (error) {
+        const failure = appServerFailure(error);
+        if (failure.kind === CodexAppServerFailureKind.SessionNotFound)
+          return { outcome: "rejected", reason: "session-not-found", retryable: false };
+        return { outcome: "deferred", reason: "offline" };
+      }
+    }
+    if (resumed && snapshot.runtimeState === "not-loaded")
+      return { outcome: "deferred", reason: "unsupported-active-state" };
     const agentState = deriveAgentState({ ...snapshot, controlClass: request.target.controlClass });
     if (agentState === "offline") return { outcome: "deferred", reason: "offline" };
     if (agentState === "input-required" || agentState === "auth-required")
       return { outcome: "deferred", reason: "local-input" };
-    if (agentState === "error" || snapshot.runtimeState === "unknown")
+    if (agentState === "error" || snapshot.blockingReason === "unknown")
       return { outcome: "deferred", reason: "unsupported-active-state" };
     if (snapshot.attributes.canAcceptDirectInput !== true)
       return { outcome: "deferred", reason: "unsupported-active-state" };
@@ -468,7 +499,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       );
       // Subscription/observation is independent of the already-accepted input.
       // A fresh thread acquires a rollout only after its first turn is admitted.
-      await this.observeAcceptedExecution(request, response.turn.id, signal);
+      await this.observeAcceptedExecution(request, response.turn.id, signal, resumed);
       return {
         outcome: "accepted",
         acceptedAt: new Date().toISOString(),
@@ -676,6 +707,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     request: DeliveryReference,
     turnId: string,
     signal?: AbortSignal,
+    sessionAlreadyResumed = false,
   ) {
     try {
       const fence = await this.requireContext().assertBindingFence(
@@ -686,7 +718,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (!fence.valid) return;
       // Only the endpoint just proven to own this accepted live turn is used.
       // Never retry input because listener attachment or projection fails.
-      await this.requireClient().resumeThread(request.target.session.opaqueId, signal);
+      if (!sessionAlreadyResumed)
+        await this.requireClient().resumeThread(request.target.session.opaqueId, signal);
       const turn = await this.requireClient().readExecution(
         request.target.session.opaqueId,
         turnId,

@@ -405,7 +405,7 @@ function remoteFailureKind(message: string) {
     return CodexAppServerFailureKind.NotRunning;
   if (/expected active turn id|no active turn to interrupt/i.test(message))
     return CodexAppServerFailureKind.StaleExecution;
-  if (/not found|invalid thread|thread not loaded/i.test(message))
+  if (/not found|invalid thread|thread not loaded|no rollout found for thread id/i.test(message))
     return CodexAppServerFailureKind.SessionNotFound;
   if (/method not found|unsupported method/i.test(message))
     return CodexAppServerFailureKind.UnsupportedMethod;

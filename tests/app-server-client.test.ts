@@ -31,6 +31,7 @@ describe("Codex app-server transport", () => {
       respond = true,
       batchTurn = false,
       threadNotLoaded = false,
+      noRollout = false,
       staleInterrupt = false,
       emptyActiveTurnId = false;
     let threadStartResult: unknown = { thread: { id: "thread-created" } };
@@ -83,6 +84,15 @@ describe("Codex app-server transport", () => {
               serverFrame({
                 id: request.id,
                 error: { code: -32600, message: "thread not loaded: thread-1" },
+              }),
+            );
+            return;
+          }
+          if (noRollout && request.method === "thread/resume") {
+            socket.write(
+              serverFrame({
+                id: request.id,
+                error: { code: -32600, message: "no rollout found for thread id thread-1" },
               }),
             );
             return;
@@ -205,6 +215,15 @@ describe("Codex app-server transport", () => {
       expect(error.failure.kind).toBe(CodexAppServerFailureKind.SessionNotFound);
     }
     threadNotLoaded = false;
+    noRollout = true;
+    try {
+      await client.resumeThread("thread-1");
+      throw new Error("expected missing rollout rejection");
+    } catch (error) {
+      if (!(error instanceof CodexAppServerError)) throw error;
+      expect(error.failure.kind).toBe(CodexAppServerFailureKind.SessionNotFound);
+    }
+    noRollout = false;
     expect(
       await client.newestActiveTurn({
         threadId: "thread-1",

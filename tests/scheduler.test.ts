@@ -544,7 +544,7 @@ describe("delivery scheduler", () => {
   test("starts degraded and reconnects when the runtime appears", async () => {
     const store = fixture();
     const agent = store.createAgent("reconnected-session");
-    store.bind(agent.id, "reconnected-thread");
+    const binding = store.bindManaged(agent.id, "reconnected-thread");
     let starts = 0;
     const inspected: string[] = [],
       adapter = new FakeRuntimeAdapter();
@@ -576,6 +576,10 @@ describe("delivery scheduler", () => {
       store.db.query<{ state: string }, []>("SELECT state FROM runtime_installations").get()?.state,
     ).toBe("online");
     expect(inspected).toEqual(["reconnected-thread"]);
+    expect(store.binding(binding.id)).toMatchObject({
+      epoch: binding.epoch,
+      control_class: "managed",
+    });
     expect(
       store.db
         .query<{ runtimeState: string | null }, []>(
@@ -2374,6 +2378,78 @@ describe("delivery scheduler", () => {
       await scheduler.stop();
       store.close();
     }
+  });
+  test("routes a managed unloaded target while leaving an attached target deferred", async () => {
+    const store = fixture(),
+      principal = authenticated(store),
+      managed = store.createAgent("managed-unloaded"),
+      attached = store.createAgent("attached-unloaded"),
+      managedBinding = store.bindManaged(managed.id, "managed-unloaded"),
+      attachedBinding = store.bind(attached.id, "attached-unloaded"),
+      managedDelivery = store.accept(
+        managed.id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "managed-unloaded",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        {},
+      ),
+      attachedDelivery = store.accept(
+        attached.id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "attached-unloaded",
+          role: "ROLE_USER",
+          parts: [{ text: "work" }],
+        }),
+        {},
+      ),
+      adapter = new FakeRuntimeAdapter();
+    for (const binding of [managedBinding, attachedBinding]) {
+      const row = store.binding(binding.id);
+      if (!row) throw new Error("missing binding");
+      store.observeSession({
+        session: { installationId: row.installation_id, opaqueId: row.session_opaque_id },
+        runtimeState: "not-loaded",
+        blockingReason: "none",
+        interactivePresence: "unknown",
+        observedAt: new Date().toISOString(),
+        attributes: {},
+      });
+    }
+    const delivered = Promise.withResolvers<RuntimeDeliveryRequest>();
+    adapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "not-loaded",
+      blockingReason: "none",
+      interactivePresence: "unknown",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    adapter.deliver = async (request) => {
+      delivered.resolve(request);
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "managed-turn", relationship: "unknown" },
+        evidence: { scheme: "fake", value: request.deliveryId },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "managed-unloaded");
+    await scheduler.start();
+    expect((await delivered.promise).target).toMatchObject({
+      bindingId: managedBinding.id,
+      controlClass: "managed",
+    });
+    await until(() => deliveryState(store, managedDelivery.deliveryId)?.state === "accepted");
+    expect(deliveryState(store, attachedDelivery.deliveryId)).toEqual({
+      state: "deferred",
+      state_reason: "offline",
+    });
+    await scheduler.stop();
+    store.close();
   });
   test("reaps overdue offline agents at startup and allows disabled retention", async () => {
     const setup = (slug: string) => {
