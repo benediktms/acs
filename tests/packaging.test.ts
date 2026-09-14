@@ -704,7 +704,7 @@ test("compiled managed-worker commands fence control receipts before native laun
       harnessId: "codex",
       label: "local",
       endpoint: { home: codexHome, socket },
-      state: "ready",
+      probe: { state: "ready" },
     },
     binding = {
       id: "bnd_managed",
@@ -864,7 +864,7 @@ test("compiled managed-worker commands fence control receipts before native laun
       socket: { open() {}, data() {}, close() {}, error() {} },
     });
     servers.push(listener);
-    runtimes = [{ ...runtime, state: "incompatible" }];
+    runtimes = [{ ...runtime, probe: { state: "incompatible" } }];
     expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
     runtimes = [runtime];
     rebindAfterList = true;

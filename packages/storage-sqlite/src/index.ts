@@ -1189,7 +1189,17 @@ export class Store {
         },
         [RuntimeInstallationId, string]
       >(
-        "SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,p.scopes_json,a.slug,a.display_name FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id JOIN agents a ON a.id=b.agent_id WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active' AND p.disabled_at_ms IS NULL",
+        `SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,p.scopes_json,a.slug,a.display_name
+         FROM runtime_bindings b
+         JOIN runtime_installations i ON i.id=b.installation_id
+         JOIN principals p ON p.binding_id=b.id
+         JOIN agents a ON a.id=b.agent_id
+         WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active'
+           AND p.disabled_at_ms IS NULL
+           AND (b.control_class<>'managed' OR (
+             json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".home')=json_extract(i.endpoint_json, '$.home')
+             AND json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".socket')=json_extract(i.endpoint_json, '$.socket')
+           ))`,
       )
       .get(session.installationId, session.opaqueId);
     return row

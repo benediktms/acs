@@ -1230,7 +1230,7 @@ async function managedBindingAccount(
     if (runtime) {
       if (!isConfiguredCodexRuntime(runtime, account.label, account.home, account.socket))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
-      if (runtime.state !== "ready")
+      if (runtime.probe === undefined || recordValue(runtime.probe).state !== "ready")
         throw new Error("RUNTIME_UNAVAILABLE: managed binding runtime is not ready");
       if (account.home !== canonicalCodexHome(account.home))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");

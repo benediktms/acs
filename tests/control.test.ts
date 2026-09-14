@@ -1267,9 +1267,16 @@ describe("control protocol", () => {
       observedAt: new Date().toISOString(),
       attributes: {},
     });
+    store.db
+      .query("UPDATE runtime_installations SET endpoint_json=? WHERE id=?")
+      .run(JSON.stringify({ home: root, socket: "/tmp/codex.sock" }), installation.id);
     const managedAttestation = store.bindManaged(
       store.createAgent("managed-attestation").id,
       "managed-attestation-thread",
+      {
+        installationId: installation.id,
+        runtimeEndpoint: { home: root, socket: "/tmp/codex.sock" },
+      },
     );
     expect(
       await (
