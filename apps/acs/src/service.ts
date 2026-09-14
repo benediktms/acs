@@ -122,7 +122,7 @@ export function codexAppServerLaunchAgent(options: {
       "--listen",
       `unix://${options.socket}`,
     ],
-    EnvironmentVariables: { CODEX_HOME: options.home },
+    EnvironmentVariables: { CODEX_HOME: options.home, ACS_MANAGED_SESSION_START: "1" },
     StandardOutPath: options.log,
     StandardErrorPath: options.log,
     KeepAlive: true,

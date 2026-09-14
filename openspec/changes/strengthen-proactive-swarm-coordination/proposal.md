@@ -4,7 +4,7 @@ The materialized ACS collaboration skill currently discourages noisy polling but
 
 ## What Changes
 
-- Extend the managed SessionStart hook so startup, resume, and clear first resolve identity/registration and then inspect active agents once, giving the session current peer activity before normal work.
+- Extend the managed SessionStart hook so startup, resume, and clear first resolve identity/registration and then take one complete paginated active-agent snapshot, giving the session current peer activity before normal work.
 - Instruct agents to inspect currently active ACS agents when coordination could materially advance the shared objective, without continuous inbox or agent-list polling.
 - Require agents already communicating with a peer to proactively send concise findings that are likely useful to that peer.
 - Require user approval before creating a new managed worker for newly identified parallel work; use `acs codex workers create <agent>`, treat its receipts only as asynchronous submission evidence, then send scoped work for ACS to queue without polling for readiness.

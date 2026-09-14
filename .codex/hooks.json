@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat \"$(git rev-parse --show-toplevel)/skills/acs-swarm/STARTUP.md\"",
+            "command": "if [ \"${ACS_MANAGED_SESSION_START:-}\" != 1 ]; then cat \"$(git rev-parse --show-toplevel)/skills/acs-swarm/STARTUP.md\"; fi",
             "timeout": 5,
             "statusMessage": "Loading ACS registration guidance"
           }

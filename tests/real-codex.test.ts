@@ -57,7 +57,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
         hook?.indexOf("call acs_register immediately") ?? -1,
       );
       expect(hook?.indexOf("call acs_register immediately")).toBeLessThan(
-        hook?.indexOf("call acs_agents_list once") ?? -1,
+        hook?.indexOf("call acs_agents_list and follow each nextCursor until absent") ?? -1,
       );
       await until(() => existsSync(socket), "Codex app-server socket");
       await adapter.start({

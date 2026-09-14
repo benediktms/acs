@@ -421,7 +421,10 @@ test("Codex account service is account-scoped", () => {
     "--listen",
     "unix:///tmp/acs-501/codex-abc.sock",
   ]);
-  expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  expect(agent.EnvironmentVariables).toMatchObject({
+    CODEX_HOME: expect.stringContaining("personal"),
+    ACS_MANAGED_SESSION_START: "1",
+  });
   const injected = agent.ProgramArguments.slice(1, -3);
   expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
   expect(Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"))).toMatchObject({
@@ -452,7 +455,7 @@ test("Codex account service is account-scoped", () => {
     hookCommand?.indexOf("call acs_register immediately") ?? -1,
   );
   expect(hookCommand?.indexOf("call acs_register immediately")).toBeLessThan(
-    hookCommand?.indexOf("call acs_agents_list once") ?? -1,
+    hookCommand?.indexOf("call acs_agents_list and follow each nextCursor until absent") ?? -1,
   );
   expect(hookCommand).toContain("before handling the user request");
   expect(hookCommand).toContain(swarmStartup.trim());
@@ -543,6 +546,7 @@ test("Codex integration materializes its proactive collaboration skill", () => {
       "only confirm asynchronous submission, not worker readiness",
     );
     expect(playbookContents).toContain("Report a dependency or blocker");
+    expect(playbookContents).toContain('`notifyOn: ["working", "input-required", "terminal"]`');
     expect(playbookContents).toContain("Notify relevant peers after a merge");
     expect(playbookContents).toContain("merged commit and base update");
     expect(playbookContents).toContain(

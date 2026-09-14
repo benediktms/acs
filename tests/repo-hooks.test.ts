@@ -12,7 +12,8 @@ test("loads canonical startup guidance for started, resumed, and cleared session
       hooks: [
         expect.objectContaining({
           type: "command",
-          command: 'cat "$(git rev-parse --show-toplevel)/skills/acs-swarm/STARTUP.md"',
+          command:
+            'if [ "${ACS_MANAGED_SESSION_START:-}" != 1 ]; then cat "$(git rev-parse --show-toplevel)/skills/acs-swarm/STARTUP.md"; fi',
         }),
       ],
     },
@@ -24,4 +25,10 @@ test("loads canonical startup guidance for started, resumed, and cleared session
       cwd: join(process.cwd(), "apps", "acs"),
     }).stdout.toString(),
   ).toBe(startup);
+  expect(
+    Bun.spawnSync(["sh", "-c", command], {
+      cwd: join(process.cwd(), "apps", "acs"),
+      env: { ...process.env, ACS_MANAGED_SESSION_START: "1" },
+    }).stdout.toString(),
+  ).toBe("");
 });
