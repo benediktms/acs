@@ -725,9 +725,16 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         turnId,
         signal,
       );
-      if (!turn) return;
       const execution = this.executions.get(executionKey(request.target.session.opaqueId, turnId));
       if (!execution) return;
+      if (!turn) {
+        if (!this.stopped)
+          setTimeout(
+            () => void this.observeAcceptedExecution(request, turnId, undefined, true),
+            1_000,
+          ).unref();
+        return;
+      }
       for (const item of turn.items) {
         if (item.type === "agentMessage" && typeof item.text === "string")
           execution.finalParts = [{ kind: "text", text: item.text, mediaType: "text/markdown" }];
@@ -738,7 +745,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           turn,
         });
       else if (!this.stopped)
-        setTimeout(() => void this.observeAcceptedExecution(request, turnId), 1_000).unref();
+        setTimeout(
+          () => void this.observeAcceptedExecution(request, turnId, undefined, true),
+          1_000,
+        ).unref();
     } catch {
       this.requireContext().logger.warn("runtime.observation-deferred", {
         deliveryId: request.deliveryId,

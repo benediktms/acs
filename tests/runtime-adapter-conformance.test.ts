@@ -646,6 +646,16 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       fixture.close();
     });
 
+    test("retries an absent accepted execution without resubmitting input", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+      await waitForMethodCount(fixture.methods, "thread/read", 3);
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
     test("reconciles exact markers and leaves missing or conflicting evidence inconclusive", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
