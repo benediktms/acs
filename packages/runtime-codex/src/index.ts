@@ -135,6 +135,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private events: RuntimeEvent[] = [];
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
+  private observingAcceptedExecutions = new Set<string>();
   private completedExecutions = new Set<string>();
   private interruptedExecutions = new Set<string>();
   private observations = new Map<
@@ -191,6 +192,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.client = undefined;
     this.runtimeVersion = undefined;
     this.observations.clear();
+    this.observingAcceptedExecutions.clear();
     this.interruptedExecutions.clear();
     this.wake();
   }
@@ -709,6 +711,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     signal?: AbortSignal,
     sessionAlreadyResumed = false,
   ) {
+    const key = executionKey(request.target.session.opaqueId, turnId);
+    if (this.stopped || this.observingAcceptedExecutions.has(key)) return;
+    this.observingAcceptedExecutions.add(key);
+    let retry = false,
+      resumed = sessionAlreadyResumed;
     try {
       const fence = await this.requireContext().assertBindingFence(
         request.target.bindingId,
@@ -718,16 +725,21 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (!fence.valid) return;
       // Only the endpoint just proven to own this accepted live turn is used.
       // Never retry input because listener attachment or projection fails.
-      if (!sessionAlreadyResumed)
+      if (!resumed) {
         await this.requireClient().resumeThread(request.target.session.opaqueId, signal);
+        resumed = true;
+      }
       const turn = await this.requireClient().readExecution(
         request.target.session.opaqueId,
         turnId,
         signal,
       );
-      if (!turn) return;
-      const execution = this.executions.get(executionKey(request.target.session.opaqueId, turnId));
+      const execution = this.executions.get(key);
       if (!execution) return;
+      if (!turn) {
+        retry = true;
+        return;
+      }
       for (const item of turn.items) {
         if (item.type === "agentMessage" && typeof item.text === "string")
           execution.finalParts = [{ kind: "text", text: item.text, mediaType: "text/markdown" }];
@@ -737,12 +749,20 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           threadId: request.target.session.opaqueId,
           turn,
         });
+      else retry = true;
     } catch {
       this.requireContext().logger.warn("runtime.observation-deferred", {
         deliveryId: request.deliveryId,
       });
-      if (!this.stopped)
-        setTimeout(() => void this.observeAcceptedExecution(request, turnId), 1_000).unref();
+      resumed = false;
+      retry = true;
+    } finally {
+      if (retry && !this.stopped)
+        setTimeout(() => {
+          this.observingAcceptedExecutions.delete(key);
+          void this.observeAcceptedExecution(request, turnId, undefined, resumed);
+        }, 1_000).unref();
+      else this.observingAcceptedExecutions.delete(key);
     }
   }
   private trackExecution(turnId: string, request: DeliveryReference) {
