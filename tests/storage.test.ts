@@ -346,7 +346,7 @@ test("reaps only continuously offline active bindings and fails queued work", ()
 test("retains managed bindings when their session is absent", () => {
   const store = fixture(),
     agent = store.createAgent("managed-worker"),
-    binding = store.bind(agent.id, "managed-session", { controlClass: "managed" }),
+    binding = store.bindManaged(agent.id, "managed-session"),
     stored = store.binding(binding.id);
   if (!stored) throw new Error("missing binding");
   store.observeSession({
@@ -362,6 +362,31 @@ test("retains managed bindings when their session is absent", () => {
     status: BindingState.Active,
     control_class: "managed",
   });
+  store.close();
+});
+
+test("reaps an eligible attached binding after older managed offline observations", () => {
+  const store = fixture(),
+    managed = Array.from({ length: 101 }, (_, index) => {
+      const agent = store.createAgent(`managed-offline-${index}`);
+      store.bindManaged(agent.id, `managed-offline-session-${index}`);
+      store.db.query("UPDATE agents SET offline_since_ms=0 WHERE id=?").run(agent.id);
+      return agent;
+    }),
+    attached = store.createAgent("attached-offline"),
+    binding = store.bind(attached.id, "attached-offline-session"),
+    stored = store.binding(binding.id);
+  if (!stored) throw new Error("missing binding");
+  store.observeSession({
+    session: { installationId: stored.installation_id, opaqueId: stored.session_opaque_id },
+    runtimeState: "offline",
+    blockingReason: "unknown",
+    interactivePresence: "unknown",
+    observedAt: new Date(1_000).toISOString(),
+    attributes: {},
+  });
+  expect(store.reapOfflineAgents(0, 10_000)).toEqual([attached.id]);
+  expect(store.agent(managed[0].id)?.id).toBe(managed[0].id);
   store.close();
 });
 
@@ -544,9 +569,7 @@ describe("schema migrations", () => {
       control_class: "attached",
     });
     const managedAgent = upgraded.createAgent("managed-control-class"),
-      managed = upgraded.bind(managedAgent.id, "managed-control-class-session", {
-        controlClass: "managed",
-      });
+      managed = upgraded.bindManaged(managedAgent.id, "managed-control-class-session");
     expect(() =>
       upgraded.db
         .query("UPDATE runtime_bindings SET control_class='attached' WHERE id=?")

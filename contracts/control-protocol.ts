@@ -100,6 +100,7 @@ export interface LogicalAgentDto {
     readonly harnessId: string;
     readonly epoch: number;
     readonly status: "pending" | "active" | "stale" | "revoked";
+    readonly controlClass: "attached" | "managed";
   };
   readonly createdAt: string;
   readonly updatedAt: string;

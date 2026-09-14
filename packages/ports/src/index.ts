@@ -177,7 +177,6 @@ export interface BindingOptions {
   grantPeerPreemption?: boolean;
   installationId?: RuntimeInstallationId;
   revokeExisting?: boolean;
-  controlClass?: "attached" | "managed";
 }
 
 export interface ClaimBindingResult extends BindingHandle {
@@ -280,6 +279,7 @@ export interface ControlStoragePort extends SqlPort {
     options?: BindingOptions,
   ): { claimId: string; claimCode: string; expiresAt: string };
   bind(agent: string, sessionId: string, options?: BindingOptions): BindingHandle;
+  bindManaged(agent: string, sessionId: string, options?: BindingOptions): BindingHandle;
   claim(code: string, sessionId: string, options?: BindingOptions): ClaimBindingResult;
   binding(bindingId: string): BindingRow | null;
   revokeBinding(bindingId: string, reason?: string): BindingRow | null;

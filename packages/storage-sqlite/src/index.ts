@@ -737,6 +737,17 @@ export class Store {
       : undefined;
   }
   bind(agentValue: string, sessionId: string, options: BindingOptions = {}) {
+    return this.createBinding(agentValue, sessionId, options, "attached");
+  }
+  bindManaged(agentValue: string, sessionId: string, options: BindingOptions = {}) {
+    return this.createBinding(agentValue, sessionId, options, "managed");
+  }
+  private createBinding(
+    agentValue: string,
+    sessionId: string,
+    options: BindingOptions,
+    controlClass: "attached" | "managed",
+  ) {
     const agent = this.agent(agentValue);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
     const installation = must(
@@ -807,7 +818,7 @@ export class Store {
           activeState,
           options.continuityPolicy ?? "follow-pending",
           JSON.stringify(policy),
-          options.controlClass ?? "attached",
+          controlClass,
           now,
           now,
         );
@@ -846,7 +857,7 @@ export class Store {
         epoch,
         principalId,
         rebound: active !== null,
-        controlClass: options.controlClass ?? "attached",
+        controlClass,
       };
     });
   }
@@ -927,7 +938,7 @@ export class Store {
           { id: `agt_${string}` },
           [number, RuntimeInstallationId | null, RuntimeInstallationId | null]
         >(
-          "SELECT a.id FROM agents a WHERE a.enabled=1 AND a.deleted_at_ms IS NULL AND a.offline_since_ms IS NOT NULL AND a.offline_since_ms<=? AND (? IS NULL OR EXISTS(SELECT 1 FROM runtime_bindings b WHERE b.agent_id=a.id AND b.installation_id=? AND b.status='active')) ORDER BY a.offline_since_ms,a.id LIMIT 100",
+          "SELECT a.id FROM agents a WHERE a.enabled=1 AND a.deleted_at_ms IS NULL AND a.offline_since_ms IS NOT NULL AND a.offline_since_ms<=? AND EXISTS(SELECT 1 FROM runtime_bindings b WHERE b.agent_id=a.id AND b.status='active' AND b.control_class='attached' AND (? IS NULL OR b.installation_id=?)) ORDER BY a.offline_since_ms,a.id LIMIT 100",
         )
         .all(now - retentionMs, installationId ?? null, installationId ?? null);
       const agents = candidates.filter((agent) => {
