@@ -136,8 +136,12 @@ export class CodexAppServerClient {
     signal?: AbortSignal,
   ) {
     const response = record(await this.request("thread/start", params, markRequestFlushed, signal));
-    const id = stringField(record(response.thread ?? response), "id");
-    if (!id) throw new Error("invalid app-server thread id");
+    const id = record(response.thread ?? response).id;
+    if (typeof id !== "string" || !id)
+      throw new CodexAppServerError("invalid app-server thread id", {
+        kind: CodexAppServerFailureKind.InvalidResponse,
+        requestFlushed: true,
+      });
     return { id };
   }
   async resumeThread(threadId: string, signal?: AbortSignal): Promise<void> {

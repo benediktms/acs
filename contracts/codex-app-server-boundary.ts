@@ -11,6 +11,7 @@ export enum CodexAppServerFailureKind {
   Backpressure = "BACKPRESSURE",
   ConnectionLost = "CONNECTION_LOST",
   ConnectionUnavailable = "CONNECTION_UNAVAILABLE",
+  InvalidResponse = "INVALID_RESPONSE",
   InvalidPayload = "INVALID_PAYLOAD",
   NotInitialized = "NOT_INITIALIZED",
   NotRunning = "NOT_RUNNING",

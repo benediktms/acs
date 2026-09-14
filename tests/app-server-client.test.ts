@@ -142,9 +142,15 @@ describe("Codex app-server transport", () => {
       id: "thread-created",
     });
     threadStartId = "";
-    await expect(client.startThread({ cwd: "/tmp/worker", ephemeral: false })).rejects.toThrow(
-      "invalid app-server thread id",
-    );
+    await expect(
+      client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
+    ).rejects.toMatchObject({
+      failure: {
+        kind: "INVALID_RESPONSE",
+        requestFlushed: true,
+      },
+      message: "invalid app-server thread id",
+    });
     threadStartId = "thread-created";
     expect(requests).toContainEqual(
       expect.objectContaining({

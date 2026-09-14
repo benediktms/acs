@@ -101,6 +101,11 @@ test("Codex managed creation is persistent, fenced to its installation, and neve
     create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
   ).resolves.toEqual({ outcome: "creation-unknown" });
   await fixture.adapter.start(fixture.context);
+  fixture.failNext("thread/start", "empty-id");
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
+  ).resolves.toEqual({ outcome: "creation-unknown" });
+  await fixture.adapter.start(fixture.context);
   fixture.failNext("thread/start", "overload");
   await expect(
     create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
@@ -122,9 +127,12 @@ test("Codex managed creation rejects incompatible and disconnected runtimes", as
   const disconnected = await codexFixture();
   await disconnected.adapter.start(disconnected.context);
   disconnected.disconnect();
+  await Bun.sleep(10);
+  const starts = disconnected.methods.filter((method) => method === "thread/start").length;
   await expect(
     disconnected.adapter.createManagedSession?.({ installationId: "ins_conformance", cwd: "/tmp" }),
-  ).resolves.toEqual({ outcome: "creation-unknown" });
+  ).resolves.toEqual({ outcome: "rejected", code: "unavailable" });
+  expect(disconnected.methods.filter((method) => method === "thread/start")).toHaveLength(starts);
   disconnected.close();
 });
 
@@ -136,7 +144,7 @@ type Fixture = {
   requests: Array<{ method: string; params: unknown }>;
   failNext(
     method: string,
-    failure: "overload" | "disconnect" | "hang" | "malformed" | "unloaded",
+    failure: "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded",
   ): void;
   holdNext(method: string): () => void;
   disconnect(): void;
@@ -687,7 +695,10 @@ async function codexFixture(
     methods: string[] = [],
     requests: Array<{ method: string; params: unknown }> = [],
     buffers = new WeakMap<object, Buffer>(),
-    failures = new Map<string, "overload" | "disconnect" | "hang" | "malformed" | "unloaded">(),
+    failures = new Map<
+      string,
+      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded"
+    >(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
   let fence = true,
     canAcceptDirectInput = true,
@@ -768,18 +779,20 @@ async function codexFixture(
                       result:
                         failure === "malformed"
                           ? {}
-                          : response(
-                              method,
-                              status,
-                              userAgent,
-                              historyDelivery,
-                              source,
-                              request.params,
-                              sessionPages,
-                              loadedOnly,
-                              canAcceptDirectInput,
-                              presence,
-                            ),
+                          : failure === "empty-id"
+                            ? { thread: { id: "" } }
+                            : response(
+                                method,
+                                status,
+                                userAgent,
+                                historyDelivery,
+                                source,
+                                request.params,
+                                sessionPages,
+                                loadedOnly,
+                                canAcceptDirectInput,
+                                presence,
+                              ),
                     }),
                   ),
                 ),
