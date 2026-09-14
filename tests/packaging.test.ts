@@ -744,7 +744,12 @@ test("compiled managed-worker commands fence control receipts before native laun
           error: {
             code: -32000,
             message: "RUNTIME_AMBIGUOUS: managed creation may have succeeded",
-            data: { code: "RUNTIME_AMBIGUOUS" },
+            data: {
+              code: "RUNTIME_AMBIGUOUS",
+              retryable: false,
+              correlationId: "correlation-managed-create",
+              details: { installationId: installation, threadId: "thread-managed" },
+            },
           },
         });
       return Response.json({ jsonrpc: "2.0", id: requestRpc.id, result });
@@ -803,6 +808,9 @@ test("compiled managed-worker commands fence control receipts before native laun
     const ambiguous = await run("codex", "workers", "create", "agent", "--cwd", root);
     expect(ambiguous.exitCode).not.toBe(0);
     expect(ambiguous.stderr).toContain("Do not retry blindly");
+    expect(ambiguous.stderr).toContain(`installation ${installation}`);
+    expect(ambiguous.stderr).toContain("thread thread-managed");
+    expect(ambiguous.stderr).toContain("Correlation ID: correlation-managed-create");
 
     const callsBeforeInvalid = calls.length;
     expect(

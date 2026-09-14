@@ -6,7 +6,11 @@ import { createConnection } from "node:net";
 import { Database } from "bun:sqlite";
 import { Command, Option } from "commander";
 import { handleA2A } from "../../../packages/protocol-a2a/src/index";
-import { controlCall, controlHandler } from "../../../packages/protocol-control/src/index";
+import {
+  ControlCallError,
+  controlCall,
+  controlHandler,
+} from "../../../packages/protocol-control/src/index";
 import { isConfiguredCodexRuntime, runMcp } from "../../../packages/bridge-mcp-codex/src/index";
 import { initFiles, Store } from "../../../packages/storage-sqlite/src/index";
 import {
@@ -504,8 +508,20 @@ async function main() {
           }),
         );
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith("RUNTIME_AMBIGUOUS"))
-          console.error("Do not retry blindly; a managed thread may have been created.");
+        if (error instanceof ControlCallError && error.data.code === "RUNTIME_AMBIGUOUS") {
+          const details = error.data.details,
+            evidence = [
+              typeof details?.installationId === "string"
+                ? `installation ${details.installationId}`
+                : undefined,
+              typeof details?.threadId === "string" ? `thread ${details.threadId}` : undefined,
+            ]
+              .filter((value) => value !== undefined)
+              .join(", ");
+          console.error(
+            `Do not retry blindly; a managed thread may have been created${evidence ? ` (${evidence})` : ""}. Correlation ID: ${error.data.correlationId}.`,
+          );
+        }
         throw error;
       }
     });
