@@ -1,0 +1,11 @@
+## 1. Proactive collaboration guidance
+
+- [x] 1.1 Add canonical repository Markdown sources for SessionStart guidance, the `acs-swarm` skill, and its linked proactive-coordination playbook; inject the startup source through the existing hook and verify `tests/service.test.ts` plus the focused real-Codex assertion cover exact identity/register/list order and source equality without changing live sessions.
+- [x] 1.2 Strengthen the canonical materialized `acs-swarm` skill with opportunity-driven active-agent refresh, proactive relevant updates to existing peers, and explicit user approval before managed-worker creation with `acs codex workers create <agent>`; clarify that submitted receipts do not prove readiness and wait for acknowledgement before scoped communication, using an opportunity-driven inspection only to refresh coordination state; verify `tests/service.test.ts` proves the generated skill contains each boundary and still rejects routine inbox or agent-list polling.
+- [x] 1.3 Materialize the linked proactive-coordination playbook with decision criteria and concrete examples for useful finding handoffs, existing-agent delegation, approved managed-worker creation, dependency/blocker and relevant post-merge updates, duplicate-work avoidance, shared-checkout ownership, and deliberate silence; verify `tests/service.test.ts` covers representative patterns, deterministic content, linkage, source equality, and private permissions.
+- [x] 1.4 Add the approved closed-loop delegation, same-task input reply, uncertain-delivery recovery, and coordination-grade activity patterns without changing runtime or protocol behavior; verify representative canonical-playbook assertions in `tests/service.test.ts`.
+
+## 2. Validation
+
+- [x] 2.1 Run `mise exec -- bun test tests/service.test.ts`, the focused opt-in real-Codex skill-discovery test, and `mise run specs:check`; verify hook injection and skill materialization remain deterministic and the OpenSpec change passes strict validation.
+- [x] 2.2 Re-run `mise exec -- bun test tests/service.test.ts` and `mise run specs:check` after the added playbook patterns; inspect the focused diff for exact camelCase tool names, approved scope, and excluded polling, duplicate resend, replacement-worker, and protocol changes.

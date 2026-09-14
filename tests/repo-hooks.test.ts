@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-test("automatically registers started, resumed, and cleared sessions with ACS", () => {
+test("loads canonical startup guidance for started, resumed, and cleared sessions", () => {
   const config = JSON.parse(readFileSync(".codex/hooks.json", "utf8"));
+  const startup = readFileSync("skills/acs-swarm/STARTUP.md", "utf8");
 
   expect(config.hooks.SessionStart).toEqual([
     {
@@ -10,17 +11,10 @@ test("automatically registers started, resumed, and cleared sessions with ACS", 
       hooks: [
         expect.objectContaining({
           type: "command",
-          command: expect.stringContaining("call acs_identity"),
+          command: "cat skills/acs-swarm/STARTUP.md",
         }),
       ],
     },
   ]);
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("unbound state");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("first model turn");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain(
-    "before handling the user request",
-  );
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("call acs_register immediately");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("generic session-derived slug");
-  expect(config.hooks.SessionStart[0].hooks[0].command).toContain("Do not ask the user");
+  expect(startup).toContain("starts, resumes, or is cleared");
 });
