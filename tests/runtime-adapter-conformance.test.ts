@@ -811,6 +811,7 @@ function delivery(mode: RuntimeDeliveryRequest["mode"] = "direct"): RuntimeDeliv
       session: { installationId: "ins_conformance", opaqueId: "thread-1" },
       bindingId: "bnd_conformance",
       bindingEpoch: 1,
+      controlClass: "attached",
     },
     mode,
     envelope: {

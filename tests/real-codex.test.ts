@@ -765,6 +765,7 @@ function delivery(threadId: string, id: DeliveryId): RuntimeDeliveryRequest {
       session: { installationId: "ins_native", opaqueId: threadId },
       bindingId: "bnd_native",
       bindingEpoch: 1,
+      controlClass: "attached",
     },
     payloadHash: `hash-${id}`,
     envelope: {

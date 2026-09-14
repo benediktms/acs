@@ -643,6 +643,7 @@ export class DeliveryScheduler {
           },
           bindingId: binding.id,
           bindingEpoch: binding.epoch,
+          controlClass: binding.control_class,
         },
         mode: "direct",
         envelope,

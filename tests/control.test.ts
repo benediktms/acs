@@ -570,6 +570,25 @@ describe("control protocol", () => {
     expect(
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
+    adapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "not-loaded",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    const managedAttestation = store.bindManaged(
+      store.createAgent("managed-attestation").id,
+      "managed-attestation-thread",
+    );
+    expect(
+      await (
+        await call("bridge.attestCaller", {
+          evidence: evidence("managed-attestation-thread"),
+        })
+      ).json(),
+    ).toMatchObject({ result: { kind: "attested", bindingId: managedAttestation.id } });
     adapter.inspectSession = inspectSession;
     const bridgeToken = readFileSync(paths.bridgeToken, "utf8");
     const originalProbe = adapter.probe.bind(adapter);

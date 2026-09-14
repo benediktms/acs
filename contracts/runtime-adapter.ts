@@ -231,7 +231,7 @@ export interface RuntimeDeliveryRequest {
     readonly session: RuntimeSessionRef;
     readonly bindingId: BindingId;
     readonly bindingEpoch: number;
-    readonly controlClass?: "attached" | "managed";
+    readonly controlClass: "attached" | "managed";
   };
   readonly mode: RuntimeDeliveryMode;
   readonly envelope: RuntimeDeliveryEnvelopeV1;

@@ -38,7 +38,7 @@ export interface AgentObservation {
   readonly runtimeState: RuntimeState;
   readonly blockingReason: BlockingReason;
   readonly interactivePresence: InteractivePresence;
-  readonly controlClass?: "attached" | "managed";
+  readonly controlClass: "attached" | "managed";
 }
 
 export function deriveAgentState(observation: AgentObservation): AgentState {

@@ -64,6 +64,7 @@ describe("domain", () => {
         runtimeState: "idle",
         blockingReason: "none",
         interactivePresence: "absent",
+        controlClass: "attached",
       }),
     ).toBe("offline");
     expect(
@@ -127,6 +128,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "approval",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("auth-required");
     expect(
@@ -134,6 +136,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "user-input",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("input-required");
     expect(
@@ -141,6 +144,7 @@ describe("domain", () => {
         runtimeState: "system-error",
         blockingReason: "none",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("error");
     expect(
@@ -148,6 +152,7 @@ describe("domain", () => {
         runtimeState: "idle",
         blockingReason: "none",
         interactivePresence: "unknown",
+        controlClass: "attached",
       }),
     ).toBe("unknown");
     expect(
@@ -155,6 +160,7 @@ describe("domain", () => {
         runtimeState: "not-loaded",
         blockingReason: "none",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("offline");
     expect(
@@ -162,6 +168,7 @@ describe("domain", () => {
         runtimeState: "offline",
         blockingReason: "none",
         interactivePresence: "unknown",
+        controlClass: "attached",
       }),
     ).toBe("offline");
     expect(
@@ -169,6 +176,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "approval",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("auth-required");
     expect(
@@ -176,6 +184,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "user-input",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("input-required");
     expect(
@@ -183,6 +192,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "none",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("working");
     expect(
@@ -190,6 +200,7 @@ describe("domain", () => {
         runtimeState: "idle",
         blockingReason: "none",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("ready");
     expect(
@@ -197,6 +208,7 @@ describe("domain", () => {
         runtimeState: "active",
         blockingReason: "unknown",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("unknown");
     expect(
@@ -204,6 +216,7 @@ describe("domain", () => {
         runtimeState: "idle",
         blockingReason: "unknown",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("unknown");
     expect(
@@ -211,6 +224,7 @@ describe("domain", () => {
         runtimeState: "offline",
         blockingReason: "none",
         interactivePresence: "present",
+        controlClass: "attached",
       }),
     ).toBe("offline");
   });
