@@ -1598,12 +1598,24 @@ export class Store {
         state = transition(state, TaskState.Working);
       if (["completed", "failed", "canceled", "rejected"].includes(state))
         throw new Error("ACS_TASK_STATE_CONFLICT");
-      if (!continuation)
-        this.db
-          .query(
-            "INSERT INTO conversation_contexts(id,target_agent_id,requester_principal_id,requester_agent_id,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?)",
+      if (!continuation) {
+        const context = this.db
+          .query<{ target_agent_id: string; requester_principal_id: string }, [string]>(
+            "SELECT target_agent_id,requester_principal_id FROM conversation_contexts WHERE id=?",
           )
-          .run(contextId, agentId, principalId, requester.agent_id, now, now);
+          .get(contextId);
+        if (
+          context &&
+          (context.target_agent_id !== agentId || context.requester_principal_id !== principalId)
+        )
+          throw new Error("ACS_TASK_NOT_VISIBLE");
+        if (!context)
+          this.db
+            .query(
+              "INSERT INTO conversation_contexts(id,target_agent_id,requester_principal_id,requester_agent_id,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?)",
+            )
+            .run(contextId, agentId, principalId, requester.agent_id, now, now);
+      }
       const inbound: StoredMessage = { ...message, contextId, taskId };
       const history = continuation
         ? [...(JSON.parse(continuation.a2a_snapshot_json).history ?? []), inbound]

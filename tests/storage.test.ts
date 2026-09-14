@@ -1129,6 +1129,65 @@ describe("durable acceptance", () => {
     expect(store.db.query("SELECT count(*) n FROM delivery_intents").get()).toEqual({ n: 1 });
     store.close();
   });
+  test("creates another task in an existing visible context", () => {
+    const store = fixture(),
+      target = store.createAgent("same-context"),
+      otherTarget = store.createAgent("other-context-target"),
+      otherRequester = store.createAgent("other-context-requester"),
+      otherRequesterBinding = store.bind(otherRequester.id, "other-context-requester-session"),
+      principal = authenticated(store),
+      first = store.accept(target.id, principal.id, requestMessage("same-context-first"), {}),
+      second = store.accept(
+        target.id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "same-context-second",
+          contextId: first.task.contextId,
+          role: Role.ROLE_USER,
+          parts: [{ text: "more work" }],
+        }),
+        {},
+      );
+    expect(second.task.contextId).toBe(first.task.contextId);
+    expect(second.task.id).not.toBe(first.task.id);
+    expect(() =>
+      store.accept(
+        otherTarget.id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "same-context-other-target",
+          contextId: first.task.contextId,
+          role: Role.ROLE_USER,
+          parts: [{ text: "must reject" }],
+        }),
+        {},
+      ),
+    ).toThrow("ACS_TASK_NOT_VISIBLE");
+    const before = {
+      tasks: store.db.query("SELECT count(*) n FROM a2a_tasks").get(),
+      messages: store.db.query("SELECT count(*) n FROM a2a_messages").get(),
+      deliveries: store.db.query("SELECT count(*) n FROM delivery_intents").get(),
+    };
+    expect(() =>
+      store.accept(
+        target.id,
+        otherRequesterBinding.principalId,
+        Message.fromJSON({
+          messageId: "same-context-other-requester",
+          contextId: first.task.contextId,
+          role: Role.ROLE_USER,
+          parts: [{ text: "must reject" }],
+        }),
+        {},
+      ),
+    ).toThrow("ACS_TASK_NOT_VISIBLE");
+    expect({
+      tasks: store.db.query("SELECT count(*) n FROM a2a_tasks").get(),
+      messages: store.db.query("SELECT count(*) n FROM a2a_messages").get(),
+      deliveries: store.db.query("SELECT count(*) n FROM delivery_intents").get(),
+    }).toEqual(before);
+    store.close();
+  });
   test("checks idempotency after acquiring the acceptance write lock", () => {
     const store = fixture(),
       agent = store.createAgent("idempotency-race"),
