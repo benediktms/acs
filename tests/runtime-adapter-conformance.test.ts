@@ -399,6 +399,7 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         ["notLoaded", "offline"],
         ["waitingOnApproval", "local-input"],
         ["waitingOnUserInput", "local-input"],
+        ["waitingOnFuture", "unsupported-active-state"],
         ["future-status", "unsupported-active-state"],
       ]) {
         fixture.setStatus(status);
@@ -414,8 +415,11 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         reason: "offline",
       });
       fixture.setPresence("unknown");
-      expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
-      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({
+        outcome: "deferred",
+        reason: "unsupported-active-state",
+      });
+      expect(mutations(fixture.methods)).toEqual([]);
       fixture.methods.length = 0;
       fixture.setPresence("present");
       fixture.setDirectInput(false);
@@ -874,7 +878,14 @@ async function codexFixture(
     buffers = new WeakMap<object, Buffer>(),
     failures = new Map<
       string,
-      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "no-rollout" | "invalid"
+      | "overload"
+      | "disconnect"
+      | "hang"
+      | "malformed"
+      | "empty-id"
+      | "unloaded"
+      | "no-rollout"
+      | "invalid"
     >(),
     failuresAfter = new Map<
       string,
