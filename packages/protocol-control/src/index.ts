@@ -1053,9 +1053,11 @@ async function attestEvidence(
         runtimeCwd = snapshot.attributes.cwdHint;
       }
     } catch {}
+  const observedBinding = store.binding(before.bindingId);
   if (
     !verified &&
-    (!binding?.last_observed_at_ms || binding.last_observed_at_ms < Date.now() - 30_000)
+    (!observedBinding?.last_observed_at_ms ||
+      observedBinding.last_observed_at_ms < Date.now() - 30_000)
   )
     return { kind: "unattested", reason: "runtime-unreachable" };
   const current = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);

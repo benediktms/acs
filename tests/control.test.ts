@@ -570,6 +570,32 @@ describe("control protocol", () => {
     expect(
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
+    let inspectionStarted = () => {},
+      releaseInspection = () => {};
+    const inspection = new Promise<void>((resolve) => {
+      inspectionStarted = resolve;
+    });
+    adapter.inspectSession = async () => {
+      inspectionStarted();
+      await new Promise<void>((resolve) => {
+        releaseInspection = resolve;
+      });
+      throw new Error("transient inspection failure");
+    };
+    const concurrentAttestation = call("bridge.attestCaller", { evidence: callerEvidence });
+    await inspection;
+    store.observeSession({
+      session: { installationId: installation.id, opaqueId: "thread-1" },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    releaseInspection();
+    expect(await (await concurrentAttestation).json()).toMatchObject({
+      result: { kind: "attested", bindingId: backendBinding.id },
+    });
     adapter.inspectSession = async (session) => ({
       session,
       runtimeState: "not-loaded",
