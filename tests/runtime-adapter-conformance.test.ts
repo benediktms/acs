@@ -415,11 +415,8 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
         reason: "offline",
       });
       fixture.setPresence("unknown");
-      expect(await fixture.adapter.deliver(delivery())).toMatchObject({
-        outcome: "deferred",
-        reason: "unsupported-active-state",
-      });
-      expect(mutations(fixture.methods)).toEqual([]);
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+      expect(mutations(fixture.methods)).toEqual(["turn/start"]);
       fixture.methods.length = 0;
       fixture.setPresence("present");
       fixture.setDirectInput(false);
