@@ -711,8 +711,9 @@ export function controlHandler(
             throw new Error("BINDING_CONFLICT: agent already has an active binding");
           const installation = runtimeInstallation(store, adapters, p.installationId);
           const adapter = adapterFor(installation.id);
+          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
           if (
-            !adapter?.createManagedSession ||
+            !adapter.createManagedSession ||
             !adapter.descriptor.capabilities.createManagedSession
           )
             throw new Error("UNSUPPORTED_CAPABILITY");
@@ -785,6 +786,11 @@ export function controlHandler(
                   threadId: created.session.opaqueId,
                 },
                 "created session belongs to another installation",
+              );
+            if (typeof created.session.opaqueId !== "string" || !created.session.opaqueId)
+              return ambiguous(
+                { selectedInstallationId: installation.id, session: created.session },
+                "created session has no valid opaque ID",
               );
             let binding;
             let initialization: { taskId: string; deliveryId: string };

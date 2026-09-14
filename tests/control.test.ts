@@ -44,12 +44,8 @@ describe("control protocol", () => {
       outcome: "created",
       session: { installationId: installation.id, opaqueId: "thread-managed" },
     };
-    const handler = controlHandler(
-      store,
-      new Date().toISOString(),
-      () => {},
-      new Map([[installation.id, adapter]]),
-    );
+    const adapters = new Map([[installation.id, adapter]]);
+    const handler = controlHandler(store, new Date().toISOString(), () => {}, adapters);
     const call = (params: unknown, token = readFileSync(paths.token, "utf8")) =>
       handler(
         new Request("http://localhost", {
@@ -90,11 +86,42 @@ describe("control protocol", () => {
     expect(
       await (await call({ agent: "managed", cwd: root, installationId: "ins_missing" })).json(),
     ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE" } } });
+    adapters.clear();
+    expect(
+      await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "RUNTIME_UNAVAILABLE" } } });
+    adapters.set(installation.id, adapter);
     adapter.disableManagedCreation();
     expect(
       await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
     ).toMatchObject({ error: { data: { code: "UNSUPPORTED_CAPABILITY" } } });
     adapter.enableManagedCreation();
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "" },
+    };
+    const malformed = await (
+      await call({ agent: "managed", cwd: root, installationId: installation.id })
+    ).json();
+    expect(malformed).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM runtime_bindings WHERE agent_id=(SELECT id FROM agents WHERE slug='managed')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    expect(
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM a2a_tasks WHERE target_agent_id=(SELECT id FROM agents WHERE slug='managed')",
+        )
+        .get()?.n,
+    ).toBe(0);
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-managed" },
+    };
     expect(
       await (
         await call(
@@ -185,7 +212,7 @@ describe("control protocol", () => {
       taskId: task.id,
       deliveryId: delivery.id,
     });
-    expect(adapter.managedCreateCalls).toBe(1);
+    expect(adapter.managedCreateCalls).toBe(2);
     store.createAgent("inspection-deferred");
     adapter.managedCreateResult = {
       outcome: "created",
@@ -331,7 +358,7 @@ describe("control protocol", () => {
           "SELECT count(*) n FROM audit_events WHERE action='runtime.managed-create.ambiguous'",
         )
         .get()?.n,
-    ).toBe(3);
+    ).toBe(4);
     store.createAgent("bind-failure");
     adapter.managedCreateResult = {
       outcome: "created",
