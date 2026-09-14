@@ -1118,7 +1118,17 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       expect(await adapter.deliver(delivery(threadId, "int_preempt_fallback"))).toMatchObject({
         outcome: "accepted",
       });
-      expect(requests).toHaveLength(1);
+      release.resolve();
+      await until(
+        () =>
+          requests
+            .flatMap(envelopes)
+            .some((envelope) => envelope.deliveryId === "int_preempt_fallback"),
+        "fallback delivery",
+      );
+      expect(requests.flatMap(envelopes).map((envelope) => envelope.deliveryId)).toEqual([
+        "int_preempt_fallback",
+      ]);
     } finally {
       release.resolve();
       await adapter.stop({ reason: "shutdown" });
@@ -1225,7 +1235,17 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
         outcome: "accepted",
       });
       expect(proxy.interceptedCount()).toBe(1);
-      expect(requests).toHaveLength(1);
+      release.resolve();
+      await until(
+        () =>
+          requests
+            .flatMap(envelopes)
+            .some((envelope) => envelope.deliveryId === "int_preempt_loss_fallback"),
+        "fallback delivery",
+      );
+      expect(requests.flatMap(envelopes).map((envelope) => envelope.deliveryId)).toEqual([
+        "int_preempt_loss_fallback",
+      ]);
     } finally {
       release.resolve();
       await lossy.stop({ reason: "shutdown" });

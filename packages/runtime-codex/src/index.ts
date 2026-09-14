@@ -737,6 +737,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           threadId: request.target.session.opaqueId,
           turn,
         });
+      else if (!this.stopped)
+        setTimeout(() => void this.observeAcceptedExecution(request, turnId), 1_000).unref();
     } catch {
       this.requireContext().logger.warn("runtime.observation-deferred", {
         deliveryId: request.deliveryId,
