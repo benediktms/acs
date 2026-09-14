@@ -37,11 +37,11 @@
 
 ## 5. Operator CLI
 
-- [ ] 5.1 Add `acs codex workers create <agent> [--account <label>] [--cwd <absolute-dir>]`, defaulting `cwd` to the CLI working directory and calling the local control method without attaching or starting work; verify `tests/packaging.test.ts` covers argument parsing, account/cwd forwarding, success output, ambiguity guidance, and no side effects for invalid input.
-- [ ] 5.2 Add `acs codex workers attach <agent>` using existing control reads to resolve exactly one current active managed binding, then verify its recorded installation, canonical account home, exact derived listening socket, and opaque thread before spawn; verify packaging tests reject missing, attached, revoked, ambiguous, drifted, and unavailable targets.
-- [ ] 5.3 Reuse the native child launch pattern with recorded `CODEX_HOME`, `--dangerously-bypass-hook-trust`, exact `--remote unix://...`, `resume <thread-id>`, and inherited terminal I/O; print detach-versus-interrupt guidance and make child exit a no-op, with packaging tests asserting exact arguments, environment, I/O, and absence of prompt/policy/ownership mutations.
-- [ ] 5.4 Extend root/group/leaf help for `codex workers`, `create`, and `attach` through the existing Commander tree; verify packaging tests show help and syntax errors complete before configuration, storage, socket, runtime, or service mutation.
-- [ ] 5.5 Update create output and help to say initialization is durably submitted and not yet ready; verify packaging tests cover the new response wording without adding polling or a readiness wait.
+- [x] 5.1 Add `acs codex workers create <agent> [--account <label>] [--cwd <absolute-dir>]`, defaulting `cwd` to the CLI working directory and calling the local control method without attaching or starting work; verify `tests/packaging.test.ts` covers argument parsing, account/cwd forwarding, success output, ambiguity guidance, and no side effects for invalid input.
+- [x] 5.2 Add `acs codex workers attach <agent>` using existing control reads to resolve exactly one current active managed binding, then verify its recorded installation, canonical account home, exact derived listening socket, and opaque thread before spawn; verify packaging tests reject missing, attached, revoked, ambiguous, drifted, and unavailable targets.
+- [x] 5.3 Reuse the native child launch pattern with recorded `CODEX_HOME`, `--dangerously-bypass-hook-trust`, exact `--remote unix://...`, `resume <thread-id>`, and inherited terminal I/O; print detach-versus-interrupt guidance and make child exit a no-op, with packaging tests asserting exact arguments, environment, I/O, and absence of prompt/policy/ownership mutations.
+- [x] 5.4 Extend root/group/leaf help for `codex workers`, `create`, and `attach` through the existing Commander tree; verify packaging tests show help and syntax errors complete before configuration, storage, socket, runtime, or service mutation.
+- [x] 5.5 Update create output and help to say initialization is durably submitted and not yet ready; verify packaging tests cover the new response wording without adding polling or a readiness wait.
 
 ## 6. Pinned Native Evidence
 
@@ -51,7 +51,7 @@
 
 ## 7. Documentation and Operator Certification
 
-- [ ] 7.1 Add or revise `docs/codex-managed-workers.md` to document readiness as asynchronous submitted state, exact bootstrap prompt/tool boundary, retained receipts, and fail-closed unsupported behavior; verify each support claim maps to a contract, focused test, or pinned evidence row.
+- [x] 7.1 Add or revise `docs/codex-managed-workers.md` to document readiness as asynchronous submitted state, exact bootstrap prompt/tool boundary, retained receipts, and fail-closed unsupported behavior; verify each support claim maps to a contract, focused test, or pinned evidence row.
 - [ ] 7.2 Run the isolated operator matrix for Ctrl+D, `/exit`, `/quit`, Ctrl+C, terminal close, approval/user-input reattachment, two native clients plus the ACS observer, and restart/reconnect without using an existing ACS service or user session; record Codex version, topology, installation, exact action, observed RPCs, terminal status, and completion count, and mark any unproven prompt or multi-client behavior fail-closed rather than supported.
 
 ## 8. Focused Validation and Handoff

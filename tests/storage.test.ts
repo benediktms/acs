@@ -365,6 +365,37 @@ test("retains managed bindings when their session is absent", () => {
   store.close();
 });
 
+test("rejects managed caller attestation after endpoint drift", () => {
+  const store = fixture();
+  store.syncCodexInstallations([
+    { label: "managed", home: "/accounts/original", socket: "/tmp/original.sock" },
+  ]);
+  const installation = store.db
+    .query<{ id: `ins_${string}` }, []>(
+      "SELECT id FROM runtime_installations WHERE harness_id='codex' AND label='managed'",
+    )
+    .get();
+  if (!installation) throw new Error("missing installation");
+  const agent = store.createAgent("managed-attestation"),
+    binding = store.bindManaged(agent.id, "managed-thread", {
+      installationId: installation.id,
+      runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" },
+    }),
+    session = { installationId: installation.id, opaqueId: "managed-thread" };
+  expect(store.attestSession(session, "test", "fingerprint")).toMatchObject({
+    kind: "attested",
+    bindingId: binding.id,
+  });
+  store.syncCodexInstallations([
+    { label: "managed", home: "/accounts/replacement", socket: "/tmp/replacement.sock" },
+  ]);
+  expect(store.attestSession(session, "test", "fingerprint")).toEqual({
+    kind: "unattested",
+    reason: "unbound-session",
+  });
+  store.close();
+});
+
 test("reaps an eligible attached binding after older managed offline observations", () => {
   const store = fixture(),
     managed = Array.from({ length: 101 }, (_, index) => {

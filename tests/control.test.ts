@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import {
   ControlCallError,
+  ControlTransportError,
   controlCall,
   controlHandler,
 } from "../packages/protocol-control/src/index";
@@ -642,12 +643,46 @@ describe("control protocol", () => {
     writeFileSync(token, "test-token");
     try {
       const started = performance.now();
-      await expect(controlCall(socket, token, "system.shutdown")).rejects.toThrow(
-        "Control connection closed without a response",
+      const error = await controlCall(socket, token, "system.shutdown").catch(
+        (caught: unknown) => caught,
       );
+      expect(error).toBeInstanceOf(ControlTransportError);
+      expect(error).toMatchObject({
+        message: "Control connection closed without a response",
+        requestDispatched: true,
+      });
       expect(performance.now() - started).toBeLessThan(2_000);
     } finally {
       listener.stop();
+    }
+  });
+
+  test("retains dispatch evidence for a truncated control response", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-truncated-")),
+      socket = join(root, "control.sock"),
+      token = join(root, "control.token"),
+      listener = Bun.listen({
+        unix: socket,
+        socket: {
+          open() {},
+          data(connection) {
+            connection.write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{");
+            connection.end();
+          },
+          close() {},
+          error() {},
+        },
+      });
+    roots.push(root);
+    writeFileSync(token, "test-token");
+    try {
+      const error = await controlCall(socket, token, "system.shutdown").catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(ControlTransportError);
+      expect(error).toMatchObject({ requestDispatched: true });
+    } finally {
+      listener.stop(true);
     }
   });
 
@@ -1232,9 +1267,16 @@ describe("control protocol", () => {
       observedAt: new Date().toISOString(),
       attributes: {},
     });
+    store.db
+      .query("UPDATE runtime_installations SET endpoint_json=? WHERE id=?")
+      .run(JSON.stringify({ home: root, socket: "/tmp/codex.sock" }), installation.id);
     const managedAttestation = store.bindManaged(
       store.createAgent("managed-attestation").id,
       "managed-attestation-thread",
+      {
+        installationId: installation.id,
+        runtimeEndpoint: { home: root, socket: "/tmp/codex.sock" },
+      },
     );
     expect(
       await (

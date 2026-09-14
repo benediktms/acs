@@ -204,6 +204,7 @@ const taskStates: Record<TaskState, number> = {
   "auth-required": 8,
 };
 const deliveryStatus = "urn:agent-communications:delivery-status:v1";
+const managedRuntimeEndpoint = "urn:agent-communications:managed-runtime-endpoint:v1";
 const taskActivityMetadata = "urn:agent-communications:task-activity:v1";
 const bindingActivityMetadata = "urn:agent-communications:binding-activity:v1";
 const taskActivityTtlMs = 30 * 60 * 1000;
@@ -776,7 +777,24 @@ export class Store {
       policy = {
         interruptOnCancel: options.deliveryPolicy?.interruptOnCancel ?? false,
         allowPeerPreemption: options.deliveryPolicy?.allowPeerPreemption ?? false,
-      };
+      },
+      endpoint = bindingMetadata(
+        must(
+          this.db
+            .query<{ endpoint_json: string }, [RuntimeInstallationId]>(
+              "SELECT endpoint_json FROM runtime_installations WHERE id=?",
+            )
+            .get(installation.id),
+          "STORAGE_CORRUPT: runtime installation missing",
+        ).endpoint_json,
+      ),
+      runtimeEndpoint =
+        options.runtimeEndpoint ??
+        (controlClass === "managed" &&
+        typeof endpoint.home === "string" &&
+        typeof endpoint.socket === "string"
+          ? { home: endpoint.home, socket: endpoint.socket }
+          : undefined);
     return this.write(() => {
       if (this.managedCreationReservations.has(agent.id))
         throw new Error("BINDING_CONFLICT: agent has a managed creation in progress");
@@ -818,7 +836,7 @@ export class Store {
         .run(transitionBinding(BindingState.Active, BindingState.Revoked), now, agent.id);
       this.db
         .query(
-          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,control_class,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,metadata_json,control_class,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           bindingId,
@@ -829,6 +847,7 @@ export class Store {
           activeState,
           options.continuityPolicy ?? "follow-pending",
           JSON.stringify(policy),
+          JSON.stringify(runtimeEndpoint ? { [managedRuntimeEndpoint]: runtimeEndpoint } : {}),
           controlClass,
           now,
           now,
@@ -1185,7 +1204,17 @@ export class Store {
         },
         [RuntimeInstallationId, string]
       >(
-        "SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,p.scopes_json,a.slug,a.display_name FROM runtime_bindings b JOIN principals p ON p.binding_id=b.id JOIN agents a ON a.id=b.agent_id WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active' AND p.disabled_at_ms IS NULL",
+        `SELECT b.installation_id,b.id binding_id,b.epoch,b.agent_id,p.id principal_id,p.scopes_json,a.slug,a.display_name
+         FROM runtime_bindings b
+         JOIN runtime_installations i ON i.id=b.installation_id
+         JOIN principals p ON p.binding_id=b.id
+         JOIN agents a ON a.id=b.agent_id
+         WHERE b.installation_id=? AND b.session_opaque_id=? AND b.status='active'
+           AND p.disabled_at_ms IS NULL
+           AND (b.control_class<>'managed' OR (
+             json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".home')=json_extract(i.endpoint_json, '$.home')
+             AND json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".socket')=json_extract(i.endpoint_json, '$.socket')
+           ))`,
       )
       .get(session.installationId, session.opaqueId);
     return row

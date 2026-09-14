@@ -509,6 +509,9 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     ["codex", "run"],
     ["codex", "doctor"],
     ["codex", "socket"],
+    ["codex", "workers"],
+    ["codex", "workers", "create"],
+    ["codex", "workers", "attach"],
     ["codex", "install-mcp"],
     ["codex", "bind"],
     ["codex", "app-server"],
@@ -522,6 +525,13 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
       expect(result.exitCode).toBe(0);
       expect(existsSync(stateHome)).toBe(false);
     }
+  const createHelp = Bun.spawnSync([binary, "codex", "workers", "create", "--help"], {
+    env: environment,
+  });
+  expect(createHelp.stdout.toString()).toContain("atomically submit readiness initialization");
+  expect(createHelp.stdout.toString()).toContain(
+    "binding/task/delivery submitted receipts (not ready)",
+  );
   expect(
     Bun.spawnSync([binary, "help", "codex", "app-server"], { env: environment }).exitCode,
   ).toBe(0);
@@ -532,10 +542,13 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
     ["agents", "get"],
     ["agents", "update", "agent", "--enable", "--disable"],
     ["agents", "list", "--unknown"],
+    ["codex", "workers", "create"],
+    ["codex", "workers", "create", "agent", "--cwd", "relative"],
+    ["codex", "workers", "attach"],
   ]) {
     const result = Bun.spawnSync([binary, ...args], { env: environment });
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr.toString()).toContain("error:");
+    expect(result.stderr.toString()).toMatch(/error:|VALIDATION_FAILED/);
     expect(existsSync(stateHome)).toBe(false);
   }
   const invalidHelp = Bun.spawnSync([binary, "help", "codex", "missing"], {
@@ -635,6 +648,247 @@ test("compiled CLI help, usage, and Codex passthrough stay isolated", async () =
   expect(passedLaunchArgs()).toBe(
     `--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\n--cd\n${workingDirectory}\n--\n-C\n/chosen\n`,
   );
+}, 30_000);
+
+test("compiled managed-worker commands fence control receipts before native launch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "acs-workers-"));
+  roots.push(root);
+  const binary = join(root, "acs"),
+    codexHome = join(root, "codex"),
+    bin = join(root, "bin"),
+    codex = join(bin, "codex"),
+    launched = join(root, "launched"),
+    childInput = join(root, "child-input"),
+    controlSocket = join(root, "control.sock"),
+    environment = {
+      ...process.env,
+      HOME: join(root, "user-home"),
+      ACS_HOME: join(root, "state"),
+      ACS_CONTROL_SOCKET: controlSocket,
+      ACS_CODEX_BINARY: codex,
+      ACS_TEST_LAUNCHED: launched,
+      ACS_TEST_CHILD_INPUT: childInput,
+      CODEX_HOME: codexHome,
+      PATH: `${bin}:/usr/bin:/bin`,
+    };
+  mkdirSync(codexHome, { recursive: true });
+  mkdirSync(bin);
+  writeFileSync(
+    codex,
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "codex-cli 0.153.2\\n"; else IFS= read -r line; printf "%s\\n" "$line" > "$ACS_TEST_CHILD_INPUT"; printf "child-stdout\\n"; printf "child-stderr\\n" >&2; printf "%s\\n" "$CODEX_HOME" "$@" > "$ACS_TEST_LAUNCHED"; fi\n',
+  );
+  chmodSync(codex, 0o700);
+  expect(
+    Bun.spawnSync([
+      process.execPath,
+      "build",
+      "apps/acs/src/main.ts",
+      "--compile",
+      "--outfile",
+      binary,
+    ]).exitCode,
+  ).toBe(0);
+  expect(Bun.spawnSync([binary, "init", "--no-service"], { env: environment }).exitCode).toBe(0);
+  const socket = Bun.spawnSync([binary, "codex", "socket"], { env: environment })
+    .stdout.toString()
+    .trim();
+  mkdirSync(dirname(socket), { recursive: true });
+  let listener = Bun.listen({
+    unix: socket,
+    socket: { open() {}, data() {}, close() {}, error() {} },
+  });
+  servers.push(listener);
+  const installation = "ins_managed",
+    runtime = {
+      installationId: installation,
+      harnessId: "codex",
+      label: "local",
+      endpoint: { home: codexHome, socket },
+      probe: { state: "ready" },
+    },
+    binding = {
+      id: "bnd_managed",
+      epoch: 1,
+      status: "active",
+      installationId: installation,
+      controlClass: "managed",
+      session: { installationId: installation, opaqueId: "thread-managed" },
+      runtimeEndpoint: { home: codexHome, socket },
+    },
+    initialization = {
+      taskId: "tsk_readiness",
+      deliveryId: "dlv_readiness",
+      state: "submitted",
+    };
+  let bindings: unknown[] = [binding],
+    runtimes: unknown[] = [runtime],
+    createResult: "success" | "ambiguous" = "success",
+    rebindAfterList = false;
+  const calls: { method: string; params: unknown }[] = [];
+  const control = Bun.serve({
+    unix: controlSocket,
+    async fetch(request) {
+      const requestRpc = record(await request.json()),
+        method = string(requestRpc.method),
+        params = requestRpc.params;
+      calls.push({ method, params });
+      if (method === "bindings.list" && rebindAfterList) {
+        rebindAfterList = false;
+        const result = { items: bindings };
+        bindings = [{ ...binding, epoch: 2 }];
+        return Response.json({ jsonrpc: "2.0", id: requestRpc.id, result });
+      }
+      const result =
+        method === "system.initialize"
+          ? {}
+          : method === "runtimes.list"
+            ? { runtimes }
+            : method === "bindings.list"
+              ? { items: bindings }
+              : method === "runtimes.sessions.createManaged"
+                ? { binding, initialization }
+                : {};
+      if (method === "runtimes.sessions.createManaged" && createResult === "ambiguous")
+        return Response.json({
+          jsonrpc: "2.0",
+          id: requestRpc.id,
+          error: {
+            code: -32000,
+            message: "RUNTIME_AMBIGUOUS: managed creation may have succeeded",
+            data: {
+              code: "RUNTIME_AMBIGUOUS",
+              retryable: false,
+              correlationId: "correlation-managed-create",
+              details: { installationId: installation, threadId: "thread-managed" },
+            },
+          },
+        });
+      return Response.json({ jsonrpc: "2.0", id: requestRpc.id, result });
+    },
+  });
+  try {
+    const runInput = async (input: string | undefined, ...args: string[]) => {
+      const child = Bun.spawn([binary, ...args], {
+        env: environment,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (input !== undefined) child.stdin.write(input);
+      child.stdin.end();
+      return {
+        exitCode: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      };
+    };
+    const run = (...args: string[]) => runInput(undefined, ...args);
+    const created = await run(
+      "codex",
+      "workers",
+      "create",
+      "agent",
+      "--account",
+      "local",
+      "--cwd",
+      root,
+    );
+    expect(created.exitCode).toBe(0);
+    expect(JSON.parse(created.stdout)).toEqual({ binding, initialization });
+    expect(calls.map((call) => call.method)).toEqual([
+      "system.initialize",
+      "runtimes.list",
+      "runtimes.sessions.createManaged",
+    ]);
+    expect(calls.find((call) => call.method === "runtimes.sessions.createManaged")?.params).toEqual(
+      {
+        agent: "agent",
+        installationId: installation,
+        cwd: root,
+      },
+    );
+    expect(existsSync(launched)).toBe(false);
+
+    const defaultCreated = await run("codex", "workers", "create", "default-agent");
+    expect(defaultCreated.exitCode).toBe(0);
+    expect(
+      calls.findLast((call) => call.method === "runtimes.sessions.createManaged")?.params,
+    ).toEqual({ agent: "default-agent", installationId: installation, cwd: process.cwd() });
+
+    createResult = "ambiguous";
+    const ambiguous = await run("codex", "workers", "create", "agent", "--cwd", root);
+    expect(ambiguous.exitCode).not.toBe(0);
+    expect(ambiguous.stderr).toContain("Do not retry blindly");
+    expect(ambiguous.stderr).toContain(`installation ${installation}`);
+    expect(ambiguous.stderr).toContain("thread thread-managed");
+    expect(ambiguous.stderr).toContain("Correlation ID: correlation-managed-create");
+
+    const callsBeforeInvalid = calls.length;
+    expect(
+      (await run("codex", "workers", "create", "agent", "--cwd", "relative")).exitCode,
+    ).not.toBe(0);
+    expect(calls).toHaveLength(callsBeforeInvalid);
+
+    const rejectedBindings: unknown[][] = [
+      [],
+      [{ ...binding, controlClass: "attached" }],
+      [binding, binding],
+      [{ ...binding, session: { installationId: "ins_other", opaqueId: "thread-managed" } }],
+      [{ ...binding, session: { installationId: installation, opaqueId: "" } }],
+    ];
+    for (const rejected of rejectedBindings) {
+      bindings = rejected;
+      expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+      expect(existsSync(launched)).toBe(false);
+    }
+    bindings = [binding];
+    runtimes = [];
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    expect(existsSync(launched)).toBe(false);
+
+    runtimes = [{ ...runtime, endpoint: { home: join(root, "other-home"), socket } }];
+    const drifted = await run("codex", "workers", "attach", "agent");
+    expect(drifted.exitCode).not.toBe(0);
+    expect(drifted.stderr).toContain("BINDING_CONFLICT");
+    expect(existsSync(launched)).toBe(false);
+    runtimes = [{ ...runtime, endpoint: { home: codexHome, socket: join(root, "other.sock") } }];
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    expect(existsSync(launched)).toBe(false);
+
+    runtimes = [runtime];
+    listener.stop(true);
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    expect(existsSync(launched)).toBe(false);
+    listener = Bun.listen({
+      unix: socket,
+      socket: { open() {}, data() {}, close() {}, error() {} },
+    });
+    servers.push(listener);
+    runtimes = [{ ...runtime, probe: { state: "incompatible" } }];
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    runtimes = [runtime];
+    rebindAfterList = true;
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    bindings = [binding];
+    const attached = await runInput("operator-input\n", "codex", "workers", "attach", "agent");
+    expect(attached.exitCode).toBe(0);
+    expect(attached.stdout).toContain("Native Codex controls the attached session");
+    expect(attached.stdout).toContain("child-stdout");
+    expect(attached.stderr).toContain("child-stderr");
+    expect(readFileSync(childInput, "utf8")).toBe("operator-input\n");
+    expect(readFileSync(launched, "utf8")).toBe(
+      `${canonicalCodexHome(codexHome)}\n--dangerously-bypass-hook-trust\n--remote\nunix://${socket}\nresume\nthread-managed\n`,
+    );
+    expect(calls.map((call) => call.method)).not.toContain("turn/start");
+    expect(calls.map((call) => call.method)).not.toContain("bindings.revoke");
+    expect(calls.find((call) => call.method === "bindings.list")?.params).toEqual({
+      agent: "agent",
+      status: ["active"],
+      limit: 2,
+    });
+  } finally {
+    control.stop(true);
+  }
 }, 30_000);
 
 test("compiled daemon ownership ignores listener overrides and releases after a crash", async () => {
