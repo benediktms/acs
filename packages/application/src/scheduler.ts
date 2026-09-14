@@ -145,11 +145,7 @@ export class DeliveryScheduler {
       clock: { now: () => new Date().toISOString() },
       logger: { debug() {}, info() {}, warn() {}, error() {} },
       assertBindingFence: async (bindingId, epoch) => {
-        const valid = Boolean(
-          this.store
-            .query("SELECT 1 FROM runtime_bindings WHERE id=? AND epoch=? AND status='active'")
-            .get(bindingId, epoch),
-        );
+        const valid = this.bindingFence(bindingId, epoch);
         return valid ? { valid: true } : { valid: false, reason: "stale" };
       },
     };
@@ -518,6 +514,8 @@ export class DeliveryScheduler {
             )
             .get(intent.target_agent_id);
     if (!binding) return this.defer(intent.id, "offline", 30_000);
+    if (!this.bindingFence(binding.id, binding.epoch))
+      return this.failTerminal(intent.id, "stale-binding");
     const state = deriveAgentState({
       runtimeState: runtimeState(binding.last_observed_runtime_state),
       blockingReason: blockingReason(binding.last_observed_blocking_reason),
@@ -558,9 +556,7 @@ export class DeliveryScheduler {
       number = intent.attempt_count + 1;
     const startedAttempt = this.store.write(() => {
       const attempting = transitionDelivery(intent.state, DeliveryState.Attempting);
-      const fenced = this.store
-        .query("SELECT 1 FROM runtime_bindings WHERE id=? AND epoch=? AND status='active'")
-        .get(binding.id, binding.epoch);
+      const fenced = this.bindingFence(binding.id, binding.epoch);
       if (!fenced) throw new Error("stale binding");
       const updated = this.store
         .query(
@@ -1114,6 +1110,20 @@ export class DeliveryScheduler {
         );
       if (unknown) telemetry.increment("acs_acceptance_unknown_total");
     });
+  }
+  private bindingFence(bindingId: BindingId, epoch: number) {
+    return Boolean(
+      this.store
+        .query(
+          `SELECT 1 FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id
+           WHERE b.id=? AND b.epoch=? AND b.status='active' AND (b.control_class='attached' OR
+             json_type(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1"') IS NULL OR (
+             json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".home')=json_extract(i.endpoint_json, '$.home') AND
+             json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".socket')=json_extract(i.endpoint_json, '$.socket')
+           ))`,
+        )
+        .get(bindingId, epoch),
+    );
   }
   private failTerminal(intentId: string, reason: string) {
     this.store.write(() => {

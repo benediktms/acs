@@ -2451,6 +2451,76 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
+  test("fences managed deliveries after their configured endpoint drifts", async () => {
+    for (const runtimeState of ["idle", "not-loaded"] as const) {
+      const store = fixture(),
+        principal = authenticated(store);
+      store.syncCodexInstallations([
+        { label: "managed", home: "/accounts/original", socket: "/tmp/original.sock" },
+      ]);
+      const installation = store.db
+        .query<{ id: `ins_${string}` }, []>(
+          "SELECT id FROM runtime_installations WHERE harness_id='codex' AND label='managed'",
+        )
+        .get();
+      if (!installation) throw new Error("missing installation");
+      const agent = store.createAgent(`managed-endpoint-${runtimeState}`),
+        binding = store.bindManaged(agent.id, `managed-endpoint-${runtimeState}`, {
+          installationId: installation.id,
+          runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" },
+        }),
+        accepted = store.accept(
+          agent.id,
+          principal.id,
+          Message.fromJSON({
+            messageId: `managed-endpoint-${runtimeState}`,
+            role: "ROLE_USER",
+            parts: [{ text: "work" }],
+          }),
+          {},
+        ),
+        adapter = new FakeRuntimeAdapter();
+      store.observeSession({
+        session: { installationId: installation.id, opaqueId: `managed-endpoint-${runtimeState}` },
+        runtimeState,
+        blockingReason: "none",
+        interactivePresence: "absent",
+        observedAt: new Date().toISOString(),
+        attributes: {},
+      });
+      store.syncCodexInstallations([
+        { label: "managed", home: "/accounts/replacement", socket: "/tmp/replacement.sock" },
+      ]);
+      let deliveries = 0;
+      adapter.deliver = async () => {
+        deliveries++;
+        return {
+          outcome: "accepted",
+          acceptedAt: new Date().toISOString(),
+          execution: { opaqueId: "unexpected", relationship: "unknown" },
+          evidence: { scheme: "fake", value: "unexpected" },
+        };
+      };
+      const scheduler = new DeliveryScheduler(
+        store,
+        adapter,
+        `managed-endpoint-${runtimeState}`,
+        {},
+        installation.id,
+      );
+      await scheduler.start();
+      await until(
+        () => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal",
+      );
+      expect(deliveryState(store, accepted.deliveryId)).toEqual({
+        state: "failed-terminal",
+        state_reason: "stale-binding",
+      });
+      expect(deliveries).toBe(0);
+      await scheduler.stop();
+      store.close();
+    }
+  });
   test("reaps overdue offline agents at startup and allows disabled retention", async () => {
     const setup = (slug: string) => {
       const store = fixture(),
