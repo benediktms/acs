@@ -768,7 +768,10 @@ async function codexFixture(
           else if (typeof request.id === "number" && failure === "invalid")
             socket.write(
               serverFrame(
-                JSON.stringify({ id: request.id, error: { code: -32602, message: "invalid params" } }),
+                JSON.stringify({
+                  id: request.id,
+                  error: { code: -32602, message: "invalid params" },
+                }),
               ),
             );
           else if (typeof request.id === "number" && failure === "unloaded")

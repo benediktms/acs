@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
-import { ControlCallError, controlCall, controlHandler } from "../packages/protocol-control/src/index";
+import {
+  ControlCallError,
+  controlCall,
+  controlHandler,
+} from "../packages/protocol-control/src/index";
 import { CodexCallerAttestor } from "../packages/runtime-codex/src/index";
 import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
@@ -191,8 +195,8 @@ describe("control protocol", () => {
       inspect = spyOn(adapter, "inspectSession").mockImplementation(() => inspection.promise);
     await expect(
       Promise.race([
-        call({ agent: "inspection-deferred", cwd: root, installationId: installation.id }).then((response) =>
-          response.json(),
+        call({ agent: "inspection-deferred", cwd: root, installationId: installation.id }).then(
+          (response) => response.json(),
         ),
         Bun.sleep(100).then(() => {
           throw new Error("managed creation waited for inspection");
@@ -451,7 +455,11 @@ describe("control protocol", () => {
     store.accept(
       agent.id,
       principal.id,
-      Message.fromJSON({ messageId: "capacity", role: Role.ROLE_USER, parts: [{ text: "queued" }] }),
+      Message.fromJSON({
+        messageId: "capacity",
+        role: Role.ROLE_USER,
+        parts: [{ text: "queued" }],
+      }),
       {},
     );
     const handler = controlHandler(
@@ -482,7 +490,9 @@ describe("control protocol", () => {
     expect(adapter.managedCreateCalls).toBe(0);
     expect(
       store.db
-        .query<{ count: number }, [string]>("SELECT count(*) count FROM runtime_bindings WHERE agent_id=?")
+        .query<{ count: number }, [string]>(
+          "SELECT count(*) count FROM runtime_bindings WHERE agent_id=?",
+        )
         .get(agent.id)?.count,
     ).toBe(0);
     store.close();

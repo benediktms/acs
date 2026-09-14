@@ -1086,7 +1086,10 @@ export function controlHandler(
 }
 
 export class ControlCallError extends Error {
-  constructor(message: string, readonly data: ControlErrorData) {
+  constructor(
+    message: string,
+    readonly data: ControlErrorData,
+  ) {
     super(message);
   }
 }
@@ -1152,9 +1155,10 @@ export async function controlCall(
         if (!isRecord(rpc)) throw new Error("Invalid control response");
         if (isRecord(rpc.error) && typeof rpc.error.message === "string") {
           const data = controlErrorData(rpc.error.data);
-          reject(data ? new ControlCallError(rpc.error.message, data) : new Error(rpc.error.message));
-        }
-        else resolve(rpc.result);
+          reject(
+            data ? new ControlCallError(rpc.error.message, data) : new Error(rpc.error.message),
+          );
+        } else resolve(rpc.result);
       } catch (error) {
         reject(error);
       }
