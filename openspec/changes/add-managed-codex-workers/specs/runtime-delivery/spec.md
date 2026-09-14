@@ -43,6 +43,8 @@ Runtime delivery SHALL carry the current binding control class. If a fenced mana
 
 The readiness task SHALL be deliverable only when its task and delivery receipt are scoped to the exact current managed binding and epoch, and carry `principalKind: local-user`, `workAuthority: local-bootstrap`, and `purpose: managed-worker-readiness`. Unmarked or mismatched local-user work SHALL remain terminal `unsupported`; public A2A work remains rejected. All existing runtime fences and prompt-ownership gates continue to apply.
 
+MCP initialization instructions SHALL permit autonomous execution for `workAuthority=delegated`, or only for the paired `workAuthority=local-bootstrap` and `purpose=managed-worker-readiness` envelope; all sandbox, approval, credential, network, permission, local-authorization, and peer-content boundaries remain unchanged.
+
 #### Scenario: Readiness receipt matches its binding
 
 - **WHEN** a submitted readiness task has the exact managed binding and current epoch plus the required provenance fields

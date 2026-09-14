@@ -738,105 +738,110 @@ export function controlHandler(
             throw error;
           }
           try {
-            store.validateDeliveryCapacity(agent.id);
+            store.reserveManagedCreation(agent.id);
           } catch (error) {
             if (error instanceof Error && error.message === "ACS_OVERLOADED")
               throw new Error("OVERLOADED", { cause: error });
             throw error;
           }
-          const created = await adapter.createManagedSession({
-            installationId: installation.id,
-            cwd,
-          });
-          const ambiguous = (details: Record<string, unknown>, message: string): never => {
-            const correlationId = crypto.randomUUID(),
-              evidence = { installationId: installation.id, ...details };
-            try {
-              audit(
-                "runtime.managed-create.ambiguous",
-                "runtime",
-                installation.id,
-                evidence,
-                correlationId,
-              );
-            } catch {}
-            throw new ControlError(`RUNTIME_AMBIGUOUS: ${message}`, evidence, correlationId);
-          };
-          if (created.outcome === "creation-unknown") {
-            return ambiguous(
-              created.threadId ? { threadId: created.threadId } : {},
-              "managed creation may have succeeded; do not retry blindly",
-            );
-          }
-          if (created.outcome !== "created")
-            throw new Error(
-              created.code === "incompatible"
-                ? "RUNTIME_INCOMPATIBLE"
-                : created.code === "invalid"
-                  ? "VALIDATION_FAILED"
-                  : "RUNTIME_UNAVAILABLE",
-            );
-          if (created.session.installationId !== installation.id)
-            return ambiguous(
-              {
-                selectedInstallationId: installation.id,
-                returnedInstallationId: created.session.installationId,
-                threadId: created.session.opaqueId,
-              },
-              "created session belongs to another installation",
-            );
-          let binding;
-          let initialization: { taskId: string; deliveryId: string };
           try {
-            ({ binding, initialization } = store.write(() => {
-              const receipt = store.bindManaged(agent.id, created.session.opaqueId, {
-                installationId: installation.id,
-              });
-              const acceptance = store.accept(
-                agent.id,
-                principal.id,
-                {
-                  messageId: `managed-readiness:${receipt.id}:${receipt.epoch}`,
-                  contextId: "",
-                  taskId: "",
-                  role: 1,
-                  parts: readinessParts,
-                  metadata: {
-                    "urn:agent-communications:managed-worker-readiness:v1": {
-                      bindingId: receipt.id,
-                      bindingEpoch: receipt.epoch,
-                    },
-                  },
-                  extensions: [],
-                  referenceTaskIds: [],
-                },
-                { mode: "direct", priority: "normal", replyExpected: true },
+            const created = await adapter.createManagedSession({
+              installationId: installation.id,
+              cwd,
+            });
+            const ambiguous = (details: Record<string, unknown>, message: string): never => {
+              const correlationId = crypto.randomUUID(),
+                evidence = { installationId: installation.id, ...details };
+              try {
+                audit(
+                  "runtime.managed-create.ambiguous",
+                  "runtime",
+                  installation.id,
+                  evidence,
+                  correlationId,
+                );
+              } catch {}
+              throw new ControlError(`RUNTIME_AMBIGUOUS: ${message}`, evidence, correlationId);
+            };
+            if (created.outcome === "creation-unknown") {
+              return ambiguous(
+                created.threadId ? { threadId: created.threadId } : {},
+                "managed creation may have succeeded; do not retry blindly",
               );
-              audit("runtime.managed-create", "binding", receipt.id, {
-                installationId: installation.id,
-                threadId: created.session.opaqueId,
-                taskId: acceptance.task.id,
-                deliveryId: acceptance.deliveryId,
-              });
-              return {
-                binding: receipt,
-                initialization: { taskId: acceptance.task.id, deliveryId: acceptance.deliveryId },
-              };
-            }));
-          } catch {
-            return ambiguous(
-              { threadId: created.session.opaqueId },
-              "thread was created but its ownership receipt could not be committed; do not retry blindly",
-            );
+            }
+            if (created.outcome !== "created")
+              throw new Error(
+                created.code === "incompatible"
+                  ? "RUNTIME_INCOMPATIBLE"
+                  : created.code === "invalid"
+                    ? "VALIDATION_FAILED"
+                    : "RUNTIME_UNAVAILABLE",
+              );
+            if (created.session.installationId !== installation.id)
+              return ambiguous(
+                {
+                  selectedInstallationId: installation.id,
+                  returnedInstallationId: created.session.installationId,
+                  threadId: created.session.opaqueId,
+                },
+                "created session belongs to another installation",
+              );
+            let binding;
+            let initialization: { taskId: string; deliveryId: string };
+            try {
+              store.releaseManagedCreation(agent.id);
+              ({ binding, initialization } = store.write(() => {
+                const receipt = store.bindManaged(agent.id, created.session.opaqueId, {
+                  installationId: installation.id,
+                });
+                const acceptance = store.accept(
+                  agent.id,
+                  principal.id,
+                  {
+                    messageId: `managed-readiness:${receipt.id}:${receipt.epoch}`,
+                    contextId: "",
+                    taskId: "",
+                    role: 1,
+                    parts: readinessParts,
+                    metadata: {
+                      "urn:agent-communications:managed-worker-readiness:v1": {
+                        bindingId: receipt.id,
+                        bindingEpoch: receipt.epoch,
+                      },
+                    },
+                    extensions: [],
+                    referenceTaskIds: [],
+                  },
+                  { mode: "direct", priority: "normal", replyExpected: true },
+                );
+                audit("runtime.managed-create", "binding", receipt.id, {
+                  installationId: installation.id,
+                  threadId: created.session.opaqueId,
+                  taskId: acceptance.task.id,
+                  deliveryId: acceptance.deliveryId,
+                });
+                return {
+                  binding: receipt,
+                  initialization: { taskId: acceptance.task.id, deliveryId: acceptance.deliveryId },
+                };
+              }));
+            } catch {
+              return ambiguous(
+                { threadId: created.session.opaqueId },
+                "thread was created but its ownership receipt could not be committed; do not retry blindly",
+              );
+            }
+            void adapter
+              .inspectSession(created.session)
+              .then((snapshot) => store.observeSession(snapshot))
+              .catch(() => {});
+            return ok(rpc.id, {
+              binding: bindingDto(binding, store),
+              initialization: { ...initialization, state: "submitted" },
+            });
+          } finally {
+            store.releaseManagedCreation(agent.id);
           }
-          void adapter
-            .inspectSession(created.session)
-            .then((snapshot) => store.observeSession(snapshot))
-            .catch(() => {});
-          return ok(rpc.id, {
-            binding: bindingDto(binding, store),
-            initialization: { ...initialization, state: "submitted" },
-          });
         }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);

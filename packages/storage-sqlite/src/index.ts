@@ -251,6 +251,7 @@ export function initFiles(target = paths()): string {
 export class Store {
   readonly db: Database;
   readonly secret: Buffer;
+  private readonly managedCreationReservations = new Set<AgentRow["id"]>();
   readonly limits: {
     maxInlineContentBytes: number;
     maxParts: number;
@@ -623,29 +624,37 @@ export class Store {
       skills?: unknown[];
     },
   ) {
-    const agent = this.agent(value);
-    if (!agent) throw new Error("AGENT_NOT_FOUND");
-    const enabled = patch.enabled === undefined ? agent.enabled : Number(patch.enabled);
-    this.db
-      .query(
-        "UPDATE agents SET slug=?,display_name=?,description=?,enabled=?,offline_since_ms=CASE WHEN ?=0 THEN NULL ELSE offline_since_ms END,skills_json=?,profile_revision=profile_revision+1,updated_at_ms=? WHERE id=?",
-      )
-      .run(
-        patch.slug ? agentSlug(patch.slug) : agent.slug,
-        patch.slug ? agentSlug(patch.slug) : agent.display_name,
-        patch.description ?? agent.description,
-        enabled,
-        enabled,
-        JSON.stringify(patch.skills ?? JSON.parse(agent.skills_json)),
-        Date.now(),
-        agent.id,
-      );
-    return must(this.agent(agent.id), "AGENT_NOT_FOUND");
+    return this.write(() => {
+      const agent = this.agent(value);
+      if (!agent) throw new Error("AGENT_NOT_FOUND");
+      if (patch.enabled === false && this.managedCreationReservations.has(agent.id))
+        throw new Error("BINDING_CONFLICT: agent has a managed creation in progress");
+      const enabled = patch.enabled === undefined ? agent.enabled : Number(patch.enabled);
+      this.db
+        .query(
+          "UPDATE agents SET slug=?,display_name=?,description=?,enabled=?,offline_since_ms=CASE WHEN ?=0 THEN NULL ELSE offline_since_ms END,skills_json=?,profile_revision=profile_revision+1,updated_at_ms=? WHERE id=?",
+        )
+        .run(
+          patch.slug ? agentSlug(patch.slug) : agent.slug,
+          patch.slug ? agentSlug(patch.slug) : agent.display_name,
+          patch.description ?? agent.description,
+          enabled,
+          enabled,
+          JSON.stringify(patch.skills ?? JSON.parse(agent.skills_json)),
+          Date.now(),
+          agent.id,
+        );
+      return must(this.agent(agent.id), "AGENT_NOT_FOUND");
+    });
   }
   deleteAgent(value: string) {
     const agent = this.agent(value);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
-    this.write(() => this.logicalDelete(agent.id, "agent-deleted", false, Date.now()));
+    this.write(() => {
+      if (this.managedCreationReservations.has(agent.id))
+        throw new Error("BINDING_CONFLICT: agent has a managed creation in progress");
+      this.logicalDelete(agent.id, "agent-deleted", false, Date.now());
+    });
   }
   agent(value: string) {
     return this.db
@@ -769,6 +778,8 @@ export class Store {
         allowPeerPreemption: options.deliveryPolicy?.allowPeerPreemption ?? false,
       };
     return this.write(() => {
+      if (this.managedCreationReservations.has(agent.id))
+        throw new Error("BINDING_CONFLICT: agent has a managed creation in progress");
       const active = this.db
         .query<{ id: BindingId }, [`agt_${string}`]>(
           "SELECT id FROM runtime_bindings WHERE agent_id=? AND status='active'",
@@ -1743,7 +1754,33 @@ export class Store {
         .get(agentId),
       "STORAGE_CORRUPT: delivery count query failed",
     ).count;
-    if (queued >= this.limits.maxQueuedDeliveryIntents) throw new Error("ACS_OVERLOADED");
+    if (
+      queued + Number(this.managedCreationReservations.has(agentId)) >=
+      this.limits.maxQueuedDeliveryIntents
+    )
+      throw new Error("ACS_OVERLOADED");
+  }
+  reserveManagedCreation(agentValue: string) {
+    return this.write(() => {
+      const agent = this.agent(agentValue);
+      if (!agent) throw new Error("AGENT_NOT_FOUND");
+      if (!agent.enabled) throw new Error("AGENT_DISABLED");
+      const active = this.db
+        .query<{ id: BindingId }, [`agt_${string}`]>(
+          "SELECT id FROM runtime_bindings WHERE agent_id=? AND status='active'",
+        )
+        .get(agent.id);
+      if (active || this.managedCreationReservations.has(agent.id))
+        throw new Error(
+          "BINDING_CONFLICT: agent already has an active binding or managed creation",
+        );
+      this.validateDeliveryCapacity(agent.id);
+      this.managedCreationReservations.add(agent.id);
+      return agent;
+    });
+  }
+  releaseManagedCreation(agentId: AgentRow["id"]) {
+    this.managedCreationReservations.delete(agentId);
   }
   setTaskState(
     taskId: string,
@@ -2022,6 +2059,16 @@ export class Store {
           const filters = stringArray(subscription.event_filter_json),
             isTerminal = ["completed", "failed", "canceled", "rejected"].includes(state);
           if (!filters.includes(state) && !(isTerminal && filters.includes("terminal"))) continue;
+          const origin = this.db
+            .query<{ id: BindingId }, [BindingId, `agt_${string}`, number]>(
+              "SELECT id FROM runtime_bindings WHERE id=? AND agent_id=? AND epoch=? AND status='active'",
+            )
+            .get(
+              subscription.origin_binding_id,
+              subscription.subscriber_agent_id,
+              subscription.origin_binding_epoch,
+            );
+          if (!origin) continue;
           const payload = {
               taskId,
               contextId: row.context_id,

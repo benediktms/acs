@@ -19,6 +19,11 @@ The CLI SHALL provide `acs codex workers create <agent>` for a local user to cre
 - **WHEN** the agent is missing, disabled, already bound, the account is unknown, the runtime lacks the capability, or `--cwd` is relative or does not exist
 - **THEN** ACS rejects the request before runtime thread creation and creates no binding
 
+#### Scenario: Same-daemon creation is already reserved
+
+- **WHEN** another managed creation has reserved the same enabled unbound agent and one target delivery slot before runtime I/O
+- **THEN** ACS rejects a competing create, bind/rebind, claim consumption, disable, delete, or last-slot message admission without runtime I/O or local mutation; it releases the reservation on every definite, exceptional, ambiguous, and successful outcome
+
 #### Scenario: Caller is not a local user
 
 - **WHEN** a bound agent, service, or external A2A principal invokes the managed-create control operation

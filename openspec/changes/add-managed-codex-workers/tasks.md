@@ -56,5 +56,8 @@
 
 ## 8. Focused Validation and Handoff
 
+- [x] 8.3 Add process-local managed-creation reservation across runtime I/O, including shared mutation/admission guards, idempotent release, and current-origin task-event notification fencing; verify focused storage and control coverage without a durable coordination record.
+- [x] 8.4 Narrow MCP initialization authorization to the exact `local-bootstrap` managed-readiness purpose while retaining its security boundary and 768-character contract; verify `tests/mcp.test.ts`.
+
 - [ ] 8.1 Run `mise run specs:check` and the focused readiness suites for control, scheduler, A2A, runtime conformance, packaging, and native proof; verify all changed contracts pass without touching generated protocol, dependencies, account configuration, or LaunchAgents.
 - [ ] 8.2 Run `mise exec -- bun run build` plus the repository type, lint, format, boundary, enum, and generated-code checks; verify the standalone binary builds and record the exact readiness validation evidence.

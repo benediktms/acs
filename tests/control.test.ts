@@ -383,6 +383,75 @@ describe("control protocol", () => {
     ).toBe(0);
     store.close();
   });
+  test("reserves managed creation before runtime I/O and releases it for the receipt commit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-managed-reservation-"));
+    roots.push(root);
+    const paths: Paths = {
+      data: join(root, "acs.db"),
+      runtime: join(root, "control.sock"),
+      token: join(root, "control.token"),
+      bridgeToken: join(root, "bridge.token"),
+      secret: join(root, "secret.key"),
+    };
+    const store = new Store(paths),
+      installation = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      adapter = new FakeRuntimeAdapter();
+    if (!installation) throw new Error("missing installation");
+    store.createAgent("reserved");
+    adapter.enableManagedCreation();
+    const started = Promise.withResolvers<void>(),
+      deferred =
+        Promise.withResolvers<
+          Awaited<ReturnType<NonNullable<typeof adapter.createManagedSession>>>
+        >();
+    adapter.createManagedSession = async () => {
+      adapter.managedCreateCalls++;
+      started.resolve();
+      return deferred.promise;
+    };
+    const handler = controlHandler(
+      store,
+      new Date().toISOString(),
+      () => {},
+      new Map([[installation.id, adapter]]),
+    );
+    const call = () =>
+      handler(
+        new Request("http://localhost", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+            "ACS-Control-Version": "1",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "runtimes.sessions.createManaged",
+            params: { agent: "reserved", cwd: root, installationId: installation.id },
+          }),
+        }),
+      );
+    const first = call();
+    await started.promise;
+    expect(await (await call()).json()).toMatchObject({
+      error: { data: { code: "BINDING_CONFLICT" } },
+    });
+    expect(adapter.managedCreateCalls).toBe(1);
+    deferred.resolve({
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "reserved-thread" },
+    });
+    expect(await (await first).json()).toMatchObject({
+      result: { binding: { controlClass: "managed", session: { opaqueId: "reserved-thread" } } },
+    });
+    expect(
+      store.db.query<{ n: number }, []>("SELECT count(*) n FROM runtime_bindings").get()?.n,
+    ).toBe(1);
+    store.close();
+  });
   test("preflights managed readiness parts before creating a runtime session", async () => {
     for (const limits of [{ maxTextPartBytes: 1 }, { maxInlineContentBytes: 1 }]) {
       const root = mkdtempSync(join(tmpdir(), "acs-control-managed-preflight-"));
