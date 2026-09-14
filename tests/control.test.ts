@@ -570,13 +570,12 @@ describe("control protocol", () => {
     expect(
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
-    let inspectionStarted = () => {},
-      releaseInspection = () => {};
+    let inspectionStarted: (() => void) | undefined, releaseInspection: (() => void) | undefined;
     const inspection = new Promise<void>((resolve) => {
       inspectionStarted = resolve;
     });
     adapter.inspectSession = async () => {
-      inspectionStarted();
+      inspectionStarted?.();
       await new Promise<void>((resolve) => {
         releaseInspection = resolve;
       });
@@ -592,7 +591,7 @@ describe("control protocol", () => {
       observedAt: new Date().toISOString(),
       attributes: {},
     });
-    releaseInspection();
+    releaseInspection?.();
     expect(await (await concurrentAttestation).json()).toMatchObject({
       result: { kind: "attested", bindingId: backendBinding.id },
     });
