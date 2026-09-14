@@ -656,6 +656,21 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
       fixture.close();
     });
 
+    test("shares absent-execution polling across deliveries for one turn", async () => {
+      const fixture = await create();
+      await fixture.adapter.start(fixture.context);
+      expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+      expect(
+        await fixture.adapter.deliver({ ...delivery(), deliveryId: "int_second" }),
+      ).toMatchObject({ outcome: "accepted" });
+      expect(fixture.methods.filter((method) => method === "thread/read")).toHaveLength(3);
+      await waitForMethodCount(fixture.methods, "thread/read", 4);
+      expect(fixture.methods.filter((method) => method === "thread/read")).toHaveLength(4);
+      expect(mutations(fixture.methods)).toEqual(["turn/start", "turn/start"]);
+      await fixture.adapter.stop({ reason: "shutdown" });
+      fixture.close();
+    });
+
     test("reconciles exact markers and leaves missing or conflicting evidence inconclusive", async () => {
       const fixture = await create();
       await fixture.adapter.start(fixture.context);
