@@ -1,8 +1,18 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
+  BindingId,
   DeliveryId,
   RuntimeDeliveryRequest,
   RuntimeEvent,
@@ -11,7 +21,13 @@ import type {
 } from "../contracts/runtime-adapter";
 import { CodexRuntimeAdapter, TESTED_CODEX_VERSION } from "../packages/runtime-codex/src/index";
 import { CodexAppServerClient } from "../packages/runtime-codex/src/app-server-client";
-import { materializeSwarmSkill } from "../apps/acs/src/service";
+import { CodexCallerAttestor } from "../packages/runtime-codex/src/index";
+import { controlCall, controlHandler } from "../packages/protocol-control/src/index";
+import { DeliveryScheduler } from "../packages/application/src/scheduler";
+import { Store, type Paths } from "../packages/storage-sqlite/src/index";
+import { codexSocket } from "../packages/config/src/index";
+import { codexIntegrationArguments, materializeSwarmSkill } from "../apps/acs/src/service";
+import { Message, Role } from "@a2a-js/sdk";
 
 test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
   "real Codex discovers the ACS collaboration skill from its extra root",
@@ -102,6 +118,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
         },
       ),
       owner = new CodexAppServerClient(socket),
+      steering = new CodexAppServerClient(socket),
       adapter = new CodexRuntimeAdapter(socket),
       abort = new AbortController();
     let observed: Promise<void> | undefined;
@@ -115,6 +132,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
         first = delivery(threadId, "int_first"),
         second = delivery(threadId, "int_second"),
         third = delivery(threadId, "int_third");
+      owner.close();
       await adapter.start({
         installationId: "ins_native",
         instanceId: "native-test",
@@ -147,8 +165,9 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       expect(envelopes(requests[0])).toEqual([
         expect.objectContaining({ deliveryId: first.deliveryId }),
       ]);
+      await steering.start();
       await expect(
-        owner.request("turn/steer", {
+        steering.request("turn/steer", {
           threadId,
           expectedTurnId: accepted.execution.opaqueId,
           input: [],
@@ -217,6 +236,7 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       await adapter.stop({ reason: "shutdown" });
       await observed;
       owner.close();
+      steering.close();
       child.kill("SIGKILL");
       await child.exited;
       await model.stop(true);
@@ -224,6 +244,690 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
     }
   },
   30_000,
+);
+
+test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
+  "real Codex creates, initializes, and resumes one managed worker through ACS",
+  async () => {
+    const requests: Record<string, unknown>[] = [],
+      toolCalls: { name: string; arguments: unknown }[] = [],
+      controlCalls: { authorization: string | null; method: string; params: unknown }[] = [];
+    const readinessPrompt =
+      "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.";
+    type Phase = {
+      name: "readiness" | "followup";
+      taskId: string;
+      deliveryId: string;
+      calls: readonly (readonly [string, unknown])[];
+      postCount: number;
+      outputOffset: number;
+      bindingEpoch: number;
+    };
+    let root: string | undefined,
+      phase: Phase | undefined,
+      primaryError: unknown,
+      cleanupErrors: unknown[] = [],
+      tripwire: ReturnType<typeof Bun.serve> | undefined,
+      model: ReturnType<typeof Bun.serve> | undefined,
+      openedStore: Store | undefined,
+      control: ReturnType<typeof Bun.serve> | undefined,
+      child: ReturnType<typeof Bun.spawn> | undefined,
+      scheduler: DeliveryScheduler | undefined,
+      recovered: CodexRuntimeAdapter | undefined,
+      proxy: ReturnType<typeof responseLossProxy> | undefined;
+    try {
+      const workspaceRoot = realpathSync(mkdtempSync("/tmp/acs-native-readiness-"));
+      root = workspaceRoot;
+      const acsHome = join(workspaceRoot, "acs-home"),
+        codexHome = join(workspaceRoot, "codex-home"),
+        appSocket = codexSocket(join(workspaceRoot, "codex-home"), workspaceRoot),
+        controlSocket = join(workspaceRoot, "control.sock"),
+        paths: Paths = {
+          data: join(workspaceRoot, "acs.db"),
+          runtime: controlSocket,
+          token: join(acsHome, "control.token"),
+          bridgeToken: join(acsHome, "bridge.token"),
+          secret: join(acsHome, "secret.key"),
+        };
+      mkdirSync(acsHome, { recursive: true, mode: 0o700 });
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+      let a2aRequests = 0;
+      tripwire = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch() {
+          a2aRequests++;
+          return new Response("unexpected A2A contact", { status: 500 });
+        },
+      });
+      model = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          const body = record(await request.json());
+          requests.push(body);
+          if (!phase) throw new Error("model request without an active phase");
+          const activePhase = phase;
+          activePhase.postCount++;
+          const envelope = array(body.input)
+            .map(record)
+            .filter(
+              (item) =>
+                item.type === "function_call_output" &&
+                item.namespace === "acs" &&
+                item.name === "receive_agent_message",
+            )
+            .map((item) => record(JSON.parse(string(item.output))));
+          if (activePhase.postCount === 1) {
+            expect(envelope).toHaveLength(activePhase.name === "readiness" ? 1 : 2);
+            const currentEnvelope = envelope.at(-1);
+            if (!currentEnvelope) throw new Error("missing current delivery envelope");
+            expect(currentEnvelope).toMatchObject({
+              deliveryId: activePhase.deliveryId,
+              task: { id: activePhase.taskId },
+              reply: { taskId: activePhase.taskId, deliveryId: activePhase.deliveryId },
+              to: { agentId: managed.id, name: managed.slug },
+              provenance:
+                activePhase.name === "readiness"
+                  ? {
+                      principalKind: "local-user",
+                      workAuthority: "local-bootstrap",
+                      purpose: "managed-worker-readiness",
+                    }
+                  : { principalKind: "service", workAuthority: "untrusted" },
+            });
+            if (activePhase.name === "readiness") {
+              expect(record(currentEnvelope.message).parts).toMatchObject([
+                { kind: "text", text: readinessPrompt },
+              ]);
+              const acsTools = array(
+                record(
+                  array(body.tools)
+                    .map(record)
+                    .find((tool) => tool.name === "mcp__acs"),
+                ).tools,
+              ).map(record);
+              expect(acsTools.map((tool) => tool.name)).toEqual(
+                expect.arrayContaining([
+                  "acs_identity",
+                  "acs_agents_list",
+                  "acs_task_acknowledge",
+                  "acs_task_complete",
+                ]),
+              );
+            }
+          }
+          const prior = array(body.input)
+            .map(record)
+            .filter((item) => item.type === "function_call_output");
+          for (const item of prior)
+            expect(
+              (item.namespace === "acs" && item.name === "receive_agent_message") ||
+                typeof item.call_id === "string",
+            ).toBe(true);
+          if (activePhase.postCount > 1) {
+            const expectedId = `call_${activePhase.name}_${activePhase.postCount - 1}`;
+            const outputs = prior.filter((item) => typeof item.call_id === "string");
+            const phaseOutputs = outputs.slice(activePhase.outputOffset);
+            expect(outputs.map((item) => item.call_id)).toEqual([
+              ...(activePhase.name === "followup"
+                ? Array.from({ length: 4 }, (_, index) => `call_readiness_${index + 1}`)
+                : []),
+              ...Array.from(
+                { length: activePhase.postCount - 1 },
+                (_, index) => `call_${activePhase.name}_${index + 1}`,
+              ),
+            ]);
+            expect(phaseOutputs.filter((item) => item.call_id === expectedId)).toHaveLength(1);
+            for (const output of phaseOutputs)
+              expect(controlOutput(string(output.output)).ok).toBe(true);
+            expect(controlOutput(string(phaseOutputs[0].output)).data).toEqual({
+              state: "bound",
+              agent: { id: managed.id, slug: managed.slug },
+              harness: "codex",
+              bindingEpoch: activePhase.bindingEpoch,
+            });
+            const acknowledgementIndex = activePhase.name === "readiness" ? 2 : 1;
+            if (phaseOutputs[acknowledgementIndex])
+              expect(
+                controlOutput(string(phaseOutputs[acknowledgementIndex].output)).data,
+              ).toMatchObject({ taskId: activePhase.taskId, state: "working" });
+            if (phaseOutputs[acknowledgementIndex + 1])
+              expect(
+                controlOutput(string(phaseOutputs[acknowledgementIndex + 1].output)).data,
+              ).toMatchObject({ taskId: activePhase.taskId, state: "completed" });
+            if (activePhase.name === "readiness" && activePhase.postCount === 3)
+              expect(controlOutput(string(phaseOutputs[1].output)).data).toMatchObject({
+                agents: [{ slug: "managed" }, { slug: "visible-peer" }],
+              });
+            expect(record(outputs[0]).output).toBeString();
+          }
+          const call = activePhase.calls[activePhase.postCount - 1];
+          if (call) {
+            toolCalls.push({ name: call[0], arguments: call[1] });
+            return new Response(
+              mcpResponse(
+                requests.length,
+                call[0],
+                call[1],
+                `call_${activePhase.name}_${activePhase.postCount}`,
+              ),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          }
+          if (activePhase.postCount !== activePhase.calls.length + 1)
+            throw new Error(`too many ${activePhase.name} model requests`);
+          return new Response(modelResponse(requests.length, "done"), {
+            headers: { "content-type": "text/event-stream" },
+          });
+        },
+      });
+      writeFileSync(
+        join(codexHome, "config.toml"),
+        [
+          'model_provider = "acs_probe"',
+          'model = "acs-probe"',
+          'approval_policy = "never"',
+          'sandbox_mode = "danger-full-access"',
+          "[model_providers.acs_probe]",
+          'name = "Isolated ACS test"',
+          `base_url = "${model.url.origin}/v1"`,
+          'wire_api = "responses"',
+          "requires_openai_auth = false",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(acsHome, "config.toml"),
+        `[runtimes.codex]\nenabled = true\ncodex_binary = "codex"\nconnection = "daemon"\n\n[[runtimes.codex.accounts]]\nlabel = "native"\ncodex_home = "${codexHome}"\n`,
+      );
+      const environment = {
+        PATH: process.env.PATH ?? "",
+        HOME: codexHome,
+        CODEX_HOME: codexHome,
+        TMPDIR: workspaceRoot,
+        ACS_HOME: acsHome,
+        ACS_CONFIG_PATH: join(acsHome, "config.toml"),
+        ACS_CONTROL_SOCKET: controlSocket,
+        ACS_STORAGE_PATH: paths.data,
+        ACS_A2A_PORT: String(tripwire.port),
+        ACS_CODEX_BINARY: process.env.ACS_CODEX_BINARY ?? "codex",
+      };
+      mkdirSync(dirname(appSocket), { recursive: true, mode: 0o700 });
+      const store = (openedStore = new Store(paths));
+      store.syncCodexInstallations([
+        { label: "native", home: codexHome, socket: codexSocket(codexHome, workspaceRoot) },
+      ]);
+      const installation = store
+        .query<{ id: `ins_${string}` }, []>(
+          "SELECT id FROM runtime_installations WHERE label='native'",
+        )
+        .get();
+      if (!installation) throw new Error("missing installation");
+      const managed = store.createAgent("managed"),
+        peer = store.createAgent("visible-peer"),
+        adapter = new CodexRuntimeAdapter(appSocket, 128, codexHome),
+        adapters = new Map([[installation.id, adapter]]),
+        attestors = new Map([[installation.id, new CodexCallerAttestor(installation.id)]]);
+      const visiblePeerBefore = structuredClone(store.agent(peer.id));
+      if (!visiblePeerBefore) throw new Error("missing visible peer");
+      const handler = controlHandler(
+        store,
+        new Date().toISOString(),
+        () => {},
+        adapters,
+        attestors,
+      );
+      control = Bun.serve({
+        unix: controlSocket,
+        async fetch(request) {
+          const body = record(await request.clone().json());
+          controlCalls.push({
+            authorization: request.headers.get("authorization"),
+            method: string(body.method),
+            params: body.params,
+          });
+          return handler(request);
+        },
+      });
+      chmodSync(controlSocket, 0o600);
+      child = Bun.spawn(
+        [
+          process.env.ACS_CODEX_BINARY ?? "codex",
+          ...codexIntegrationArguments(
+            [process.execPath, join(import.meta.dir, "../apps/acs/src/main.ts")],
+            environment,
+          ),
+          "app-server",
+          "--listen",
+          `unix://${appSocket}`,
+        ],
+        { env: environment, stdout: "ignore", stderr: "ignore" },
+      );
+      scheduler = new DeliveryScheduler(store, adapter, "native-readiness", {}, installation.id);
+      await until(() => existsSync(appSocket), "Codex app-server socket", 1_000);
+      await scheduler.start();
+      const created = await controlCall(
+        controlSocket,
+        paths.token,
+        "runtimes.sessions.createManaged",
+        { agent: managed.slug, cwd: workspaceRoot, installationId: installation.id },
+      );
+      expect(created).toMatchObject({ initialization: { state: "submitted" } });
+      const initialization = record(created).initialization;
+      if (!isRecord(initialization)) throw new Error("missing initialization");
+      const readinessTaskId = string(initialization.taskId),
+        readinessDeliveryId = string(initialization.deliveryId);
+      const readinessBinding = store
+        .query<{ id: BindingId; epoch: number; session_opaque_id: string }, [string]>(
+          "SELECT id,epoch,session_opaque_id FROM runtime_bindings WHERE agent_id=?",
+        )
+        .get(managed.id);
+      if (!readinessBinding) throw new Error("missing readiness binding");
+      phase = {
+        name: "readiness",
+        taskId: readinessTaskId,
+        deliveryId: readinessDeliveryId,
+        postCount: 0,
+        outputOffset: 0,
+        bindingEpoch: readinessBinding.epoch,
+        calls: [
+          ["acs_identity", {}],
+          ["acs_agents_list", {}],
+          [
+            "acs_task_acknowledge",
+            {
+              taskId: readinessTaskId,
+              deliveryId: readinessDeliveryId,
+              activitySummary: "Validating managed readiness",
+            },
+          ],
+          ["acs_task_complete", { taskId: readinessTaskId, summary: "Managed readiness complete" }],
+        ],
+      };
+      scheduler.signal();
+      try {
+        await until(
+          () =>
+            store
+              .query<{ state: string }, []>(
+                "SELECT state FROM a2a_tasks ORDER BY created_at_ms DESC LIMIT 1",
+              )
+              .get()?.state === "completed",
+          "readiness completion",
+          1_000,
+        );
+      } catch {
+        throw new Error(
+          JSON.stringify({
+            requests: requests.length,
+            tools: requests[0]?.tools,
+            task: store
+              .query("SELECT id,state FROM a2a_tasks ORDER BY created_at_ms DESC LIMIT 1")
+              .get(),
+            intent: store
+              .query(
+                "SELECT state,state_reason,attempt_count FROM delivery_intents ORDER BY created_at_ms DESC LIMIT 1",
+              )
+              .get(),
+            attempts: store
+              .query(
+                "SELECT outcome,error_code FROM delivery_attempts ORDER BY started_at_ms DESC LIMIT 1",
+              )
+              .get(),
+            binding: store
+              .query(
+                "SELECT installation_id,session_opaque_id,control_class FROM runtime_bindings ORDER BY created_at_ms DESC LIMIT 1",
+              )
+              .get(),
+          }),
+        );
+      }
+      await until(
+        () =>
+          store
+            .query<{ n: number }, [string]>(
+              "SELECT count(*) n FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id WHERE i.task_id=? AND e.state='completed' AND e.completed_at_ms IS NOT NULL",
+            )
+            .get(readinessTaskId)?.n === 1,
+        "readiness execution completion",
+        1_000,
+      );
+      const readinessExecution = store
+        .query<{ runtime_execution_opaque_id: string }, [string]>(
+          "SELECT e.runtime_execution_opaque_id FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id WHERE i.task_id=?",
+        )
+        .get(readinessTaskId);
+      if (!readinessExecution) throw new Error("missing readiness execution");
+      expect(phase.postCount).toBeGreaterThanOrEqual(4);
+      expect(phase.postCount).toBeLessThanOrEqual(5);
+      expect(toolCalls).toEqual(phase.calls.map(([name, args]) => ({ name, arguments: args })));
+      expect(
+        store
+          .query<{ n: number }, [string]>(
+            "SELECT count(*) n FROM task_events WHERE task_id=? AND event_type='task-acknowledged'",
+          )
+          .get(readinessTaskId)?.n,
+      ).toBe(1);
+      expect(
+        store
+          .query<{ n: number }, [string]>(
+            "SELECT count(*) n FROM task_events WHERE task_id=? AND event_type='task-completed'",
+          )
+          .get(readinessTaskId)?.n,
+      ).toBe(1);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM runtime_bindings WHERE control_class='managed'",
+          )
+          .get()?.n,
+      ).toBe(1);
+      expect(
+        store
+          .query<{ n: number }, [string]>(
+            "SELECT count(*) n FROM a2a_messages WHERE task_id=? AND role='user'",
+          )
+          .get(readinessTaskId)?.n,
+      ).toBe(1);
+      expect(store.query<{ n: number }, []>("SELECT count(*) n FROM agents").get()?.n).toBe(2);
+      expect(peer.slug).toBe("visible-peer");
+      expect(a2aRequests).toBe(0);
+      await scheduler.stop();
+      scheduler = undefined;
+      child.kill();
+      await child.exited;
+      rmSync(appSocket, { force: true });
+      child = Bun.spawn(
+        [
+          process.env.ACS_CODEX_BINARY ?? "codex",
+          ...codexIntegrationArguments(
+            [process.execPath, join(import.meta.dir, "../apps/acs/src/main.ts")],
+            environment,
+          ),
+          "app-server",
+          "--listen",
+          `unix://${appSocket}`,
+        ],
+        { env: environment, stdout: "ignore", stderr: "ignore" },
+      );
+      await until(() => existsSync(appSocket), "restarted Codex app-server socket", 1_000);
+      const proxySocket = join(root, "resume.sock");
+      proxy = responseLossProxy(proxySocket, appSocket, "thread/resume", false);
+      recovered = new CodexRuntimeAdapter(proxySocket, 128, codexHome);
+      adapters.set(installation.id, recovered);
+      attestors.set(installation.id, new CodexCallerAttestor(installation.id));
+      scheduler = new DeliveryScheduler(
+        store,
+        recovered,
+        "native-readiness-recovered",
+        {},
+        installation.id,
+      );
+      const binding = store
+        .query<{ id: BindingId; epoch: number; session_opaque_id: string }, [string]>(
+          "SELECT id,epoch,session_opaque_id FROM runtime_bindings WHERE agent_id=?",
+        )
+        .get(managed.id);
+      if (!binding) throw new Error("missing managed binding");
+      expect(binding).toEqual(readinessBinding);
+      await scheduler.start();
+      const recoveredSession = await recovered.inspectSession({
+        installationId: installation.id,
+        opaqueId: binding.session_opaque_id,
+      });
+      expect(recoveredSession.runtimeState).toBe("not-loaded");
+      store.observeSession(recoveredSession);
+      const attachedBase = delivery(binding.session_opaque_id, "int_attached_unloaded"),
+        attached = {
+          ...attachedBase,
+          target: {
+            ...attachedBase.target,
+            session: { installationId: installation.id, opaqueId: binding.session_opaque_id },
+            bindingId: binding.id,
+            bindingEpoch: binding.epoch,
+            controlClass: "attached" as const,
+          },
+        };
+      expect(await recovered.deliver(attached)).toMatchObject({
+        outcome: "deferred",
+        reason: "offline",
+      });
+      expect(proxy.interceptedCount()).toBe(0);
+      const principal = store.authenticate(readFileSync(paths.bridgeToken, "utf8"));
+      if (!principal) throw new Error("missing service principal");
+      const followup = store.accept(
+        managed.id,
+        principal.id,
+        Message.fromJSON({
+          messageId: "native-followup",
+          role: Role.ROLE_USER,
+          parts: [{ text: "resume managed worker" }],
+        }),
+        {},
+      );
+      phase = {
+        name: "followup",
+        taskId: followup.task.id,
+        deliveryId: followup.deliveryId,
+        postCount: 0,
+        outputOffset: toolCalls.length,
+        bindingEpoch: readinessBinding.epoch,
+        calls: [
+          ["acs_identity", {}],
+          [
+            "acs_task_acknowledge",
+            {
+              taskId: followup.task.id,
+              deliveryId: followup.deliveryId,
+              activitySummary: "Validating managed readiness",
+            },
+          ],
+          [
+            "acs_task_complete",
+            { taskId: followup.task.id, summary: "Managed readiness complete" },
+          ],
+        ],
+      };
+      scheduler.signal();
+      await until(
+        () =>
+          store
+            .query<{ state: string }, [string]>("SELECT state FROM a2a_tasks WHERE id=?")
+            .get(followup.task.id)?.state === "completed",
+        "followup completion",
+        1_000,
+      );
+      await until(
+        () =>
+          store
+            .query<{ n: number }, [string]>(
+              "SELECT count(*) n FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id WHERE i.task_id=? AND e.state='completed' AND e.completed_at_ms IS NOT NULL",
+            )
+            .get(followup.task.id)?.n === 1,
+        "followup execution completion",
+        1_000,
+      );
+      const followupExecution = store
+        .query<{ runtime_execution_opaque_id: string }, [string]>(
+          "SELECT e.runtime_execution_opaque_id FROM runtime_executions e JOIN delivery_intents i ON i.id=e.intent_id WHERE i.task_id=?",
+        )
+        .get(followup.task.id);
+      if (!followupExecution) throw new Error("missing followup execution");
+      expect(phase.postCount).toBeGreaterThanOrEqual(3);
+      expect(phase.postCount).toBeLessThanOrEqual(4);
+      expect(toolCalls.slice(4)).toEqual(
+        phase.calls.map(([name, args]) => ({ name, arguments: args })),
+      );
+      expect(proxy.interceptedCount()).toBe(1);
+      expect(a2aRequests).toBe(0);
+      expect(controlCalls.map((call) => call.method)).toEqual([
+        "runtimes.sessions.createManaged",
+        "system.initialize",
+        "runtimes.list",
+        "bridge.identity",
+        "agents.list",
+        "bridge.attestCaller",
+        "executor.task.acknowledge",
+        "bridge.attestCaller",
+        "executor.task.complete",
+        "system.initialize",
+        "runtimes.list",
+        "bridge.identity",
+        "bridge.attestCaller",
+        "executor.task.acknowledge",
+        "bridge.attestCaller",
+        "executor.task.complete",
+      ]);
+      expect(controlCalls[0]).toMatchObject({
+        params: { agent: managed.slug, cwd: workspaceRoot, installationId: installation.id },
+      });
+      const phaseControls = [
+        {
+          taskId: readinessTaskId,
+          deliveryId: readinessDeliveryId,
+          turnId: readinessExecution.runtime_execution_opaque_id,
+          calls: controlCalls.slice(2, 9),
+        },
+        {
+          taskId: followup.task.id,
+          deliveryId: followup.deliveryId,
+          turnId: followupExecution.runtime_execution_opaque_id,
+          calls: controlCalls.slice(11, 16),
+        },
+      ];
+      expect(phaseControls[0].turnId).not.toBe(phaseControls[1].turnId);
+      for (const current of phaseControls) {
+        const protectedCalls = current.calls.filter((call) =>
+          [
+            "bridge.identity",
+            "bridge.attestCaller",
+            "executor.task.acknowledge",
+            "executor.task.complete",
+          ].includes(call.method),
+        );
+        expect(protectedCalls.map((call) => call.method)).toEqual([
+          "bridge.identity",
+          "bridge.attestCaller",
+          "executor.task.acknowledge",
+          "bridge.attestCaller",
+          "executor.task.complete",
+        ]);
+        for (const call of protectedCalls) {
+          const metadata = record(record(call.params).evidence).metadata;
+          expect(metadata).toMatchObject({
+            acsInstallationId: installation.id,
+            threadId: readinessBinding.session_opaque_id,
+            "x-codex-turn-metadata": {
+              thread_id: readinessBinding.session_opaque_id,
+              turn_id: current.turnId,
+            },
+          });
+        }
+        expect(record(protectedCalls[2].params)).toMatchObject({
+          taskId: current.taskId,
+          deliveryId: current.deliveryId,
+        });
+        expect(record(protectedCalls[4].params)).toMatchObject({ taskId: current.taskId });
+      }
+      expect(
+        store
+          .query<{ n: number }, []>("SELECT count(*) n FROM a2a_tasks WHERE state='completed'")
+          .get()?.n,
+      ).toBe(2);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM runtime_executions WHERE state='completed'",
+          )
+          .get()?.n,
+      ).toBe(2);
+      expect(store.query<{ n: number }, []>("SELECT count(*) n FROM a2a_messages").get()?.n).toBe(
+        2,
+      );
+      expect(
+        store.query<{ n: number }, []>("SELECT count(*) n FROM delivery_intents").get()?.n,
+      ).toBe(2);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM delivery_attempts WHERE outcome='accepted'",
+          )
+          .get()?.n,
+      ).toBe(2);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM task_events WHERE event_type='task-acknowledged'",
+          )
+          .get()?.n,
+      ).toBe(2);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM task_events WHERE event_type='task-completed'",
+          )
+          .get()?.n,
+      ).toBe(2);
+      expect(
+        store
+          .query<{ n: number }, []>(
+            "SELECT count(*) n FROM a2a_tasks WHERE a2a_snapshot_json LIKE '%visible-peer%'",
+          )
+          .get()?.n,
+      ).toBe(0);
+      expect(
+        store.query<{ n: number }, []>("SELECT count(*) n FROM runtime_bindings").get()?.n,
+      ).toBe(1);
+      expect(store.agent(peer.id)).toEqual(visiblePeerBefore);
+      expect(
+        controlCalls
+          .filter(
+            (call) => call.authorization === `Bearer ${readFileSync(paths.token, "utf8").trim()}`,
+          )
+          .map((call) => call.method),
+      ).toEqual(["runtimes.sessions.createManaged"]);
+      expect(
+        controlCalls
+          .filter(
+            (call) => call.authorization !== `Bearer ${readFileSync(paths.token, "utf8").trim()}`,
+          )
+          .every(
+            (call) =>
+              call.authorization === `Bearer ${readFileSync(paths.bridgeToken, "utf8").trim()}`,
+          ),
+      ).toBe(true);
+      expect(
+        controlCalls.filter((call) =>
+          /bindings\.register|acs_register|acs_send|contacts?\./.test(call.method),
+        ),
+      ).toEqual([]);
+    } catch (error) {
+      primaryError = error;
+    } finally {
+      for (const cleanup of [
+        async () => await scheduler?.stop(),
+        () => control?.stop(true),
+        () => tripwire?.stop(true),
+        () => proxy?.close(),
+        async () => {
+          child?.kill("SIGKILL");
+          await child?.exited;
+        },
+        async () => await model?.stop(true),
+        () => openedStore?.close(),
+        () => root && rmSync(root, { recursive: true, force: true }),
+      ])
+        try {
+          await cleanup();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+    }
+    if (primaryError !== undefined) throw primaryError;
+    if (cleanupErrors.length)
+      throw new AggregateError(cleanupErrors, "managed worker cleanup failed");
+  },
+  60_000,
 );
 
 test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
@@ -564,7 +1268,7 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
     try {
       await until(() => existsSync(socket), "authenticated Codex socket");
       await client.start();
-      ({ id: threadId } = await client.startThread({ cwd: root, ephemeral: false }));
+      threadId = (await client.startThread({ cwd: root, ephemeral: false })).id;
       await adapter.start({
         installationId: "ins_native",
         instanceId: "model-test",
@@ -617,7 +1321,8 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
 function responseLossProxy(
   socketPath: string,
   upstreamPath: string,
-  responseLossMethod: "turn/start" | "turn/interrupt" = "turn/start",
+  responseLossMethod: "turn/start" | "turn/interrupt" | "thread/resume" = "turn/start",
+  dropResponses = true,
 ) {
   const requestFlushed = Promise.withResolvers<void>();
   let upstream: { write(data: Uint8Array): unknown; end(): void } | undefined,
@@ -640,7 +1345,7 @@ function responseLossProxy(
               upstream = connection;
               for (const data of pending) connection.write(data);
               pending = [];
-              if (interceptedWhilePending) {
+              if (interceptedWhilePending && dropResponses) {
                 suppressResponses = true;
                 requestFlushed.resolve();
               }
@@ -658,17 +1363,17 @@ function responseLossProxy(
         }).catch(() => client?.end());
       },
       data(_socket, data) {
-        const interceptedRequest = containsMethod(Buffer.from(data));
-        if (interceptedRequest) intercepted++;
+        const interceptedRequests = matchingRequestCount(Buffer.from(data));
+        intercepted += interceptedRequests;
         if (upstream) {
           upstream.write(data);
-          if (interceptedRequest) {
+          if (interceptedRequests && dropResponses) {
             suppressResponses = true;
             requestFlushed.resolve();
           }
         } else {
           pending.push(Buffer.from(data));
-          interceptedWhilePending ||= interceptedRequest;
+          interceptedWhilePending ||= interceptedRequests > 0;
         }
       },
       close() {
@@ -680,22 +1385,22 @@ function responseLossProxy(
     },
   });
 
-  function containsMethod(data: Buffer) {
+  function matchingRequestCount(data: Buffer) {
     clientFrames = Buffer.concat([clientFrames, data]);
     if (!upgraded) {
       const end = clientFrames.indexOf("\r\n\r\n");
-      if (end < 0) return false;
+      if (end < 0) return 0;
       upgraded = true;
       clientFrames = clientFrames.subarray(end + 4);
     }
-    let found = false;
+    let count = 0;
     for (;;) {
       const frame = clientFrame(clientFrames);
       if (!frame) break;
       clientFrames = clientFrames.subarray(frame.consumed);
-      found ||= record(JSON.parse(frame.text)).method === responseLossMethod;
+      if (record(JSON.parse(frame.text)).method === responseLossMethod) count++;
     }
-    return found;
+    return count;
   }
 
   return {
@@ -766,6 +1471,34 @@ function modelResponse(index: number, text: string) {
     .map((event) => `data: ${JSON.stringify(event)}\n\n`)
     .join("");
 }
+function mcpResponse(index: number, name: string, arguments_: unknown, callId = `call_${index}`) {
+  return [
+    { type: "response.created", response: { id: `resp_${index}` } },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        id: callId,
+        type: "function_call",
+        status: "completed",
+        call_id: callId,
+        namespace: "mcp__acs",
+        name,
+        arguments: JSON.stringify(arguments_),
+      },
+    },
+    {
+      type: "response.completed",
+      response: {
+        id: `resp_${index}`,
+        status: "completed",
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      },
+    },
+  ]
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("");
+}
 function envelopes(request: Record<string, unknown> | undefined) {
   if (!request) throw new Error("missing model request");
   return array(request.input)
@@ -803,6 +1536,9 @@ function string(value: unknown): string {
   if (typeof value !== "string") throw new Error("expected string");
   return value;
 }
+function controlOutput(value: string) {
+  return record(JSON.parse(value.slice(value.indexOf("\nOutput:\n") + "\nOutput:\n".length)));
+}
 function clientFrame(frame: Buffer) {
   if (frame.length < 6) return undefined;
   const lengthCode = frame[1] & 0x7f,
@@ -821,8 +1557,8 @@ function clientFrame(frame: Buffer) {
     consumed: offset + 4 + length,
   };
 }
-async function until(condition: () => boolean, label: string) {
-  for (let i = 0; i < 200; i++) {
+async function until(condition: () => boolean, label: string, attempts = 200) {
+  for (let i = 0; i < attempts; i++) {
     if (condition()) return;
     await Bun.sleep(25);
   }

@@ -45,9 +45,9 @@
 
 ## 6. Pinned Native Evidence
 
-- [ ] 6.1 Extend `tests/real-codex.test.ts` using a temporary real `CODEX_HOME`, temporary Unix socket, local mock model, and no credentials or live LaunchAgent to prove Codex 0.154.0 persistent creation returns the receipt thread without policy overrides and an active turn completes after the creator transport closes with one authenticated completion; verify with `ACS_REAL_CODEX=1 mise exec -- bun test tests/real-codex.test.ts`.
-- [ ] 6.2 In the same isolated native suite, create one managed thread and complete the first real delivery before a graceful same-home/socket app-server restart; verify attached-class control causes no resume or input, then verify the managed attempt resumes the exact thread once and completes the second delivery once with the same receipt/session and no duplicate; verify the opt-in native command passes and leaves no real user service/session changes.
-- [ ] 6.3 Extend the pinned native proof through the first managed readiness turn: assert the exact prompt, bound identity, one `acs_agents_list` over a seeded visible peer, no registration/contact or peer snapshot, ordinary completion, one execution/completion, and seeded restart/resume without duplicate delivery.
+- [x] 6.1 Extend `tests/real-codex.test.ts` using a temporary real `CODEX_HOME`, temporary Unix socket, local mock model, and no credentials or live LaunchAgent to prove Codex 0.154.0 persistent creation returns the receipt thread without policy overrides and an active turn completes after the creator transport closes with one authenticated completion; verify with `ACS_REAL_CODEX=1 mise exec -- bun test tests/real-codex.test.ts`.
+- [x] 6.2 In the same isolated native suite, create one managed thread and complete the first real delivery before a graceful same-home/socket app-server restart; verify attached-class control causes no resume or input, then verify the managed attempt resumes the exact thread once and completes the second delivery once with the same receipt/session and no duplicate; verify the opt-in native command passes and leaves no real user service/session changes.
+- [x] 6.3 Extend the pinned native proof through the first managed readiness turn: assert the exact prompt, bound identity, one `acs_agents_list` over a seeded visible peer, no registration/contact or peer snapshot, ordinary completion, one execution/completion, and seeded restart/resume without duplicate delivery.
 
 ## 7. Documentation and Operator Certification
 
@@ -59,5 +59,5 @@
 - [x] 8.3 Add process-local managed-creation reservation across runtime I/O, including shared mutation/admission guards, idempotent release, and current-origin task-event notification fencing; verify focused storage and control coverage without a durable coordination record.
 - [x] 8.4 Narrow MCP initialization authorization to the exact `local-bootstrap` managed-readiness purpose while retaining its security boundary and 768-character contract; verify `tests/mcp.test.ts`.
 
-- [ ] 8.1 Run `mise run specs:check` and the focused readiness suites for control, scheduler, A2A, runtime conformance, packaging, and native proof; verify all changed contracts pass without touching generated protocol, dependencies, account configuration, or LaunchAgents.
-- [ ] 8.2 Run `mise exec -- bun run build` plus the repository type, lint, format, boundary, enum, and generated-code checks; verify the standalone binary builds and record the exact readiness validation evidence.
+- [x] 8.1 Run `mise run specs:check` and the focused readiness suites for control, scheduler, A2A, runtime conformance, packaging, and native proof; verify all changed contracts pass without touching generated protocol, dependencies, account configuration, or LaunchAgents.
+- [x] 8.2 Run `mise exec -- bun run build` plus the repository type, lint, format, boundary, enum, and generated-code checks; verify the standalone binary builds and record the exact readiness validation evidence.

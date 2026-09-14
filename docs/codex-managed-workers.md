@@ -34,10 +34,10 @@ adopt, or delete the possible thread blindly. Managed receipts are retained when
 unreachable. Interactive presence reported as `unknown` retains the existing attached-session
 behavior.
 
-The pinned native evidence is deliberately narrow. Restarting the app-server before any model turn
-produces terminal `session-not-found` while retaining the managed receipt; ACS does not retry,
-recreate, adopt, or delete it. After one completed delivery seeds the rollout, a graceful restart on
-the same home and socket lets one managed attempt resume that exact session and complete one second
-delivery without duplication. An attached control does not resume. Do not generalize this evidence
-to other Codex versions or restart topologies. Lost-create reconciliation, approval restoration,
-and multiple-client/TUI behavior remain unsupported pending task 7.2.
+The pinned native evidence is deliberately narrow. A crash before readiness completion may leave the
+receipt with terminal `session-not-found`; ACS does not retry, recreate, adopt, or delete it. After
+the readiness completion seeds the rollout, a graceful restart on the same home and socket lets one
+managed attempt resume that exact session and complete one second delivery without duplication. An
+attached control does not resume. Do not generalize this evidence to other Codex versions or restart
+topologies. Lost-create reconciliation, approval restoration, and multiple-client/TUI behavior remain
+unsupported pending task 7.2.
