@@ -66,6 +66,14 @@ test("Codex runtime adapter fails closed when skill-root registration fails", as
   fixture.close();
 });
 
+test("Codex adapter does not advertise managed-session creation before MW-2", async () => {
+  const fixture = await codexFixture();
+  await fixture.adapter.start(fixture.context);
+  expect(fixture.adapter.descriptor.capabilities.createManagedSession).toBe(false);
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
 type Fixture = {
   adapter: RuntimeAdapter;
   socketPath: string;
@@ -803,6 +811,7 @@ function delivery(mode: RuntimeDeliveryRequest["mode"] = "direct"): RuntimeDeliv
       session: { installationId: "ins_conformance", opaqueId: "thread-1" },
       bindingId: "bnd_conformance",
       bindingEpoch: 1,
+      controlClass: "attached",
     },
     mode,
     envelope: {

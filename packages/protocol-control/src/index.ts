@@ -392,7 +392,7 @@ export function controlHandler(
             installationId: bindInstallation.id,
             opaqueId: sessionId,
           });
-          if (deriveAgentState(bindSnapshot) === "offline")
+          if (deriveAgentState({ ...bindSnapshot, controlClass: "attached" }) === "offline")
             throw new Error("RUNTIME_UNAVAILABLE: session not found");
           const createdBinding = store.bind(required(p.agent, "agent"), sessionId, {
             continuityPolicy: p.continuityPolicy,
@@ -418,7 +418,7 @@ export function controlHandler(
             const claimAdapter = adapterFor(proof.session.installationId);
             if (!claimAdapter) throw new Error("RUNTIME_UNAVAILABLE");
             const claimSnapshot = await claimAdapter.inspectSession(proof.session);
-            if (deriveAgentState(claimSnapshot) === "offline")
+            if (deriveAgentState({ ...claimSnapshot, controlClass: "attached" }) === "offline")
               throw new Error("RUNTIME_UNAVAILABLE: session not found");
             const binding = store.claim(
               required(p.claimCode, "claimCode"),
@@ -460,7 +460,7 @@ export function controlHandler(
           const registerAdapter = adapterFor(proof.session.installationId);
           if (!registerAdapter) throw new Error("RUNTIME_UNAVAILABLE");
           const registerSnapshot = await registerAdapter.inspectSession(proof.session);
-          if (deriveAgentState(registerSnapshot) === "offline")
+          if (deriveAgentState({ ...registerSnapshot, controlClass: "attached" }) === "offline")
             throw new Error("RUNTIME_UNAVAILABLE: session not found");
           const registered = store.write(() => {
             const current = store.attestSession(
@@ -1039,22 +1039,25 @@ async function attestEvidence(
   if (proof.kind !== "attested") return proof;
   const before = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);
   if (before.kind !== "attested") return before;
+  const binding = store.binding(before.bindingId);
+  if (!binding) return { kind: "unattested", reason: "unbound-session" };
   let verified = false,
     runtimeCwd: string | undefined;
   const adapter = isAdapterMap(adapters) ? adapters.get(before.session.installationId) : adapters;
   if (adapter)
     try {
       const snapshot = await adapter.inspectSession(before.session);
-      if (deriveAgentState(snapshot) !== "offline") {
+      if (deriveAgentState({ ...snapshot, controlClass: binding.control_class }) !== "offline") {
         store.observeSession(snapshot);
         verified = true;
         runtimeCwd = snapshot.attributes.cwdHint;
       }
     } catch {}
-  const binding = store.binding(before.bindingId);
+  const observedBinding = store.binding(before.bindingId);
   if (
     !verified &&
-    (!binding?.last_observed_at_ms || binding.last_observed_at_ms < Date.now() - 30_000)
+    (!observedBinding?.last_observed_at_ms ||
+      observedBinding.last_observed_at_ms < Date.now() - 30_000)
   )
     return { kind: "unattested", reason: "runtime-unreachable" };
   const current = store.attestSession(proof.session, proof.scheme, proof.evidenceFingerprint);
@@ -1111,6 +1114,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery = false,
     cancelOwnedExecution = false,
     reconcileDelivery = false,
+    createManagedSession = false,
     peerPreemption = false;
   const callerAttestationSchemes = new Set<string>(),
     supportedPartKinds = new Set<RuntimeCapabilities["supportedPartKinds"][number]>();
@@ -1122,6 +1126,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery ||= capabilities.directDelivery;
     cancelOwnedExecution ||= capabilities.cancelOwnedExecution;
     reconcileDelivery ||= capabilities.reconcileDelivery;
+    createManagedSession ||= capabilities.createManagedSession;
     peerPreemption ||= capabilities.peerPreemption;
     for (const scheme of capabilities.callerAttestationSchemes)
       callerAttestationSchemes.add(scheme);
@@ -1134,6 +1139,7 @@ function combineCodexCapabilities(probes: readonly RuntimeProbeResult[]): Runtim
     directDelivery,
     cancelOwnedExecution,
     reconcileDelivery,
+    createManagedSession,
     peerPreemption,
     callerAttestationSchemes: [...callerAttestationSchemes],
     supportedPartKinds: [...supportedPartKinds],
@@ -1247,7 +1253,10 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
     description: agent.description,
     enabled: Boolean(agent.enabled),
     skills: jsonArray(agent.skills_json),
-    state: runtimeObservation ? deriveAgentState(runtimeObservation) : "unknown",
+    state:
+      runtimeObservation && binding
+        ? deriveAgentState({ ...runtimeObservation, controlClass: binding.control_class })
+        : "unknown",
     runtimeObservation,
     binding: binding
       ? {
@@ -1255,6 +1264,7 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
           harnessId: runtimeHarnessId(store, binding.installation_id),
           epoch: binding.epoch,
           status: binding.status,
+          controlClass: binding.control_class,
         }
       : undefined,
     createdAt: new Date(agent.created_at_ms).toISOString(),
@@ -1362,6 +1372,7 @@ function bindingDto(
     session: { installationId: row.installation_id, opaqueId: row.session_opaque_id },
     epoch: row.epoch,
     status: row.status,
+    controlClass: row.control_class,
     continuityPolicy: row.continuity_policy,
     deliveryPolicy: jsonRecord(row.delivery_policy_json),
     createdAt: new Date(row.created_at_ms).toISOString(),

@@ -88,6 +88,7 @@ const capabilities: RuntimeCapabilities = {
   cancelOwnedExecution: false,
   peerPreemption: false,
   reconcileDelivery: true,
+  createManagedSession: false,
   callerAttestationSchemes: ["codex-mcp-thread-meta-v1"],
   supportedPartKinds: ["text", "uri", "data"],
 };
@@ -97,6 +98,7 @@ const disabledCapabilities = (): RuntimeCapabilities => ({
   cancelOwnedExecution: false,
   peerPreemption: false,
   reconcileDelivery: false,
+  createManagedSession: false,
 });
 const runtimeStates: RuntimeState[] = [
   "unknown",
@@ -116,7 +118,7 @@ type TrackedExecution = {
   deliveries: Map<DeliveryId, string>;
   finalParts: NeutralPart[];
 };
-type DeliveryReference = Pick<RuntimeDeliveryRequest, "deliveryId" | "payloadHash" | "target">;
+type DeliveryReference = Pick<RuntimeReconcileRequest, "deliveryId" | "payloadHash" | "target">;
 
 export class CodexRuntimeAdapter implements RuntimeAdapter {
   readonly descriptor: RuntimeAdapterDescriptor = {
@@ -393,7 +395,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!supportsCodexVersion(this.runtimeVersion))
       return { outcome: "rejected", reason: "runtime-protocol-error", retryable: false };
     const snapshot = await this.inspectSession(request.target.session, signal);
-    const agentState = deriveAgentState(snapshot);
+    const agentState = deriveAgentState({ ...snapshot, controlClass: request.target.controlClass });
     if (agentState === "offline") return { outcome: "deferred", reason: "offline" };
     if (agentState === "input-required" || agentState === "auth-required")
       return { outcome: "deferred", reason: "local-input" };

@@ -136,7 +136,7 @@ describe("control protocol", () => {
       },
     });
     expect(await (await call("system.capabilities", {})).json()).toMatchObject({
-      result: { codex: { directDelivery: true } },
+      result: { codex: { directDelivery: true, createManagedSession: false } },
     });
     store.db.query("DELETE FROM runtime_installations WHERE id=?").run(second);
     adapters.delete(second);
@@ -345,6 +345,7 @@ describe("control protocol", () => {
     ).toMatchObject({
       result: {
         binding: {
+          controlClass: "attached",
           continuityPolicy: "strict",
           deliveryPolicy: { interruptOnCancel: false },
         },
@@ -384,6 +385,7 @@ describe("control protocol", () => {
         agent: { slug: "claimed" },
         idempotent: false,
         binding: {
+          controlClass: "attached",
           installationId: installation.id,
           session: { opaqueId: "claimed-thread" },
           continuityPolicy: "strict",
@@ -568,6 +570,50 @@ describe("control protocol", () => {
     expect(
       await (await call("bridge.attestCaller", { evidence: callerEvidence })).json(),
     ).toMatchObject({ result: { kind: "unattested", reason: "runtime-unreachable" } });
+    let inspectionStarted: (() => void) | undefined, releaseInspection: (() => void) | undefined;
+    const inspection = new Promise<void>((resolve) => {
+      inspectionStarted = resolve;
+    });
+    adapter.inspectSession = async () => {
+      inspectionStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseInspection = resolve;
+      });
+      throw new Error("transient inspection failure");
+    };
+    const concurrentAttestation = call("bridge.attestCaller", { evidence: callerEvidence });
+    await inspection;
+    store.observeSession({
+      session: { installationId: installation.id, opaqueId: "thread-1" },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    releaseInspection?.();
+    expect(await (await concurrentAttestation).json()).toMatchObject({
+      result: { kind: "attested", bindingId: backendBinding.id },
+    });
+    adapter.inspectSession = async (session) => ({
+      session,
+      runtimeState: "not-loaded",
+      blockingReason: "none",
+      interactivePresence: "absent",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    const managedAttestation = store.bindManaged(
+      store.createAgent("managed-attestation").id,
+      "managed-attestation-thread",
+    );
+    expect(
+      await (
+        await call("bridge.attestCaller", {
+          evidence: evidence("managed-attestation-thread"),
+        })
+      ).json(),
+    ).toMatchObject({ result: { kind: "attested", bindingId: managedAttestation.id } });
     adapter.inspectSession = inspectSession;
     const bridgeToken = readFileSync(paths.bridgeToken, "utf8");
     const originalProbe = adapter.probe.bind(adapter);
@@ -598,13 +644,14 @@ describe("control protocol", () => {
       },
     });
     const selfRegistration = store.db
-      .query<{ id: string; delivery_policy_json: string }, [string]>(
-        "SELECT id,delivery_policy_json FROM runtime_bindings WHERE session_opaque_id=? AND status='active'",
+      .query<{ id: string; delivery_policy_json: string; control_class: string }, [string]>(
+        "SELECT id,delivery_policy_json,control_class FROM runtime_bindings WHERE session_opaque_id=? AND status='active'",
       )
       .get("self-service-thread");
     expect(selfRegistration?.delivery_policy_json).toBe(
       '{"interruptOnCancel":false,"allowPeerPreemption":false}',
     );
+    expect(selfRegistration?.control_class).toBe("attached");
     expect(
       store.db
         .query<{ scopes_json: string }, [string]>(

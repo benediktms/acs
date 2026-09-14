@@ -85,6 +85,7 @@ export interface BindingRow {
   session_opaque_id: string;
   epoch: number;
   status: BindingState;
+  control_class: "attached" | "managed";
   continuity_policy: "follow-pending" | "strict";
   delivery_policy_json: string;
   metadata_json: string;
@@ -163,6 +164,7 @@ export interface BindingHandle {
   epoch: number;
   principalId: `prn_${string}`;
   rebound: boolean;
+  controlClass: "attached" | "managed";
 }
 
 export interface BindingOptions {
@@ -277,6 +279,7 @@ export interface ControlStoragePort extends SqlPort {
     options?: BindingOptions,
   ): { claimId: string; claimCode: string; expiresAt: string };
   bind(agent: string, sessionId: string, options?: BindingOptions): BindingHandle;
+  bindManaged(agent: string, sessionId: string, options?: BindingOptions): BindingHandle;
   claim(code: string, sessionId: string, options?: BindingOptions): ClaimBindingResult;
   binding(bindingId: string): BindingRow | null;
   revokeBinding(bindingId: string, reason?: string): BindingRow | null;

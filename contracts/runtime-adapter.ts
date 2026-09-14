@@ -94,6 +94,7 @@ export interface RuntimeCapabilities {
   /** Disabled until the adapter's isolated interruption matrix is verified. */
   readonly peerPreemption: boolean;
   readonly reconcileDelivery: boolean;
+  readonly createManagedSession: boolean;
   readonly callerAttestationSchemes: readonly string[];
   readonly supportedPartKinds: readonly NeutralPart["kind"][];
 }
@@ -230,6 +231,7 @@ export interface RuntimeDeliveryRequest {
     readonly session: RuntimeSessionRef;
     readonly bindingId: BindingId;
     readonly bindingEpoch: number;
+    readonly controlClass: "attached" | "managed";
   };
   readonly mode: RuntimeDeliveryMode;
   readonly envelope: RuntimeDeliveryEnvelopeV1;
@@ -466,6 +468,15 @@ export interface RuntimeAdapter {
   listSessions(query: RuntimeSessionQuery, signal?: AbortSignal): Promise<RuntimeSessionPage>;
 
   inspectSession(session: RuntimeSessionRef, signal?: AbortSignal): Promise<RuntimeSessionSnapshot>;
+
+  createManagedSession?(
+    request: { readonly installationId: RuntimeInstallationId; readonly cwd: string },
+    signal?: AbortSignal,
+  ): Promise<
+    | { readonly outcome: "created"; readonly session: RuntimeSessionRef }
+    | { readonly outcome: "rejected"; readonly code: "unavailable" | "incompatible" | "invalid" }
+    | { readonly outcome: "creation-unknown"; readonly threadId?: string }
+  >;
 
   observe(signal: AbortSignal): AsyncIterable<RuntimeEvent>;
 
