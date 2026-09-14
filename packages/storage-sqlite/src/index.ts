@@ -1528,15 +1528,7 @@ export class Store {
           duplicate: true,
         };
       }
-      const queued = must(
-        this.db
-          .query<{ count: number }, [string]>(
-            "SELECT count(*) count FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','leased','attempting','deferred','acceptance-unknown')",
-          )
-          .get(agentId),
-        "STORAGE_CORRUPT: delivery count query failed",
-      ).count;
-      if (queued >= this.limits.maxQueuedDeliveryIntents) throw new Error("ACS_OVERLOADED");
+      this.validateDeliveryCapacity(agentId);
       const now = Date.now(),
         contextId = message.contextId || id("ctx"),
         taskId = message.taskId || id("tsk"),
@@ -1741,6 +1733,17 @@ export class Store {
         );
       return { ...response, duplicate: false };
     });
+  }
+  validateDeliveryCapacity(agentId: string) {
+    const queued = must(
+      this.db
+        .query<{ count: number }, [string]>(
+          "SELECT count(*) count FROM delivery_intents WHERE target_agent_id=? AND state IN ('pending','leased','attempting','deferred','acceptance-unknown')",
+        )
+        .get(agentId),
+      "STORAGE_CORRUPT: delivery count query failed",
+    ).count;
+    if (queued >= this.limits.maxQueuedDeliveryIntents) throw new Error("ACS_OVERLOADED");
   }
   setTaskState(
     taskId: string,

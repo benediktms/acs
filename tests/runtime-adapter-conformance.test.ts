@@ -110,6 +110,10 @@ test("Codex managed creation is persistent, fenced to its installation, and neve
   await expect(
     create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
   ).resolves.toEqual({ outcome: "rejected", code: "unavailable" });
+  fixture.failNext("thread/start", "invalid");
+  await expect(
+    create.call(fixture.adapter, { installationId: "ins_conformance", cwd: "/tmp/worker" }),
+  ).resolves.toEqual({ outcome: "rejected", code: "invalid" });
   await fixture.adapter.stop({ reason: "shutdown" });
   fixture.close();
 });
@@ -144,7 +148,7 @@ type Fixture = {
   requests: Array<{ method: string; params: unknown }>;
   failNext(
     method: string,
-    failure: "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded",
+    failure: "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid",
   ): void;
   holdNext(method: string): () => void;
   disconnect(): void;
@@ -697,7 +701,7 @@ async function codexFixture(
     buffers = new WeakMap<object, Buffer>(),
     failures = new Map<
       string,
-      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded"
+      "overload" | "disconnect" | "hang" | "malformed" | "empty-id" | "unloaded" | "invalid"
     >(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
   let fence = true,
@@ -759,6 +763,12 @@ async function codexFixture(
                   id: request.id,
                   error: { code: -32000, message: "ingress overloaded" },
                 }),
+              ),
+            );
+          else if (typeof request.id === "number" && failure === "invalid")
+            socket.write(
+              serverFrame(
+                JSON.stringify({ id: request.id, error: { code: -32602, message: "invalid params" } }),
               ),
             );
           else if (typeof request.id === "number" && failure === "unloaded")

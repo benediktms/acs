@@ -737,6 +737,13 @@ export function controlHandler(
               );
             throw error;
           }
+          try {
+            store.validateDeliveryCapacity(agent.id);
+          } catch (error) {
+            if (error instanceof Error && error.message === "ACS_OVERLOADED")
+              throw new Error("OVERLOADED", { cause: error });
+            throw error;
+          }
           const created = await adapter.createManagedSession({
             installationId: installation.id,
             cwd,
@@ -822,9 +829,10 @@ export function controlHandler(
               "thread was created but its ownership receipt could not be committed; do not retry blindly",
             );
           }
-          try {
-            store.observeSession(await adapter.inspectSession(created.session));
-          } catch {}
+          void adapter
+            .inspectSession(created.session)
+            .then((snapshot) => store.observeSession(snapshot))
+            .catch(() => {});
           return ok(rpc.id, {
             binding: bindingDto(binding, store),
             initialization: { ...initialization, state: "submitted" },
@@ -1077,6 +1085,12 @@ export function controlHandler(
   };
 }
 
+export class ControlCallError extends Error {
+  constructor(message: string, readonly data: ControlErrorData) {
+    super(message);
+  }
+}
+
 export async function controlCall(
   socketPath: string,
   tokenPath: string,
@@ -1136,8 +1150,10 @@ export async function controlCall(
       try {
         const rpc: unknown = JSON.parse(response.subarray(split + 4).toString());
         if (!isRecord(rpc)) throw new Error("Invalid control response");
-        if (isRecord(rpc.error) && typeof rpc.error.message === "string")
-          reject(new Error(rpc.error.message));
+        if (isRecord(rpc.error) && typeof rpc.error.message === "string") {
+          const data = controlErrorData(rpc.error.data);
+          reject(data ? new ControlCallError(rpc.error.message, data) : new Error(rpc.error.message));
+        }
         else resolve(rpc.result);
       } catch (error) {
         reject(error);
@@ -1629,6 +1645,39 @@ function controlErrorCode(raw: string): ControlErrorData["code"] {
     default:
       return "INTERNAL";
   }
+}
+function controlErrorData(value: unknown): ControlErrorData | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.code !== "string" ||
+    !isControlErrorCode(value.code) ||
+    typeof value.retryable !== "boolean" ||
+    typeof value.correlationId !== "string" ||
+    (value.details !== undefined && !isJsonObject(value.details))
+  )
+    return undefined;
+  return {
+    code: value.code,
+    retryable: value.retryable,
+    correlationId: value.correlationId,
+    ...(value.details === undefined ? {} : { details: value.details }),
+  };
+}
+function isControlErrorCode(value: string): value is ControlErrorData["code"] {
+  return controlErrorCode(value) === value;
+}
+function isJsonObject(value: unknown): value is NonNullable<ControlErrorData["details"]> {
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+function isJsonValue(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    (Array.isArray(value) && value.every(isJsonValue)) ||
+    isJsonObject(value)
+  );
 }
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new Error(`VALIDATION_FAILED: missing ${name}`);

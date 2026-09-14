@@ -223,7 +223,13 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const failure = appServerFailure(error);
       if ((flushed || failure.requestFlushed) && deliveryAmbiguous(failure.kind))
         return { outcome: "creation-unknown" as const };
-      return { outcome: "rejected" as const, code: "unavailable" as const };
+      return {
+        outcome: "rejected" as const,
+        code:
+          failure.kind === CodexAppServerFailureKind.InvalidPayload
+            ? ("invalid" as const)
+            : ("unavailable" as const),
+      };
     }
   }
   async probe(signal?: AbortSignal): Promise<RuntimeProbeResult> {

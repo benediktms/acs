@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
-import { controlCall, controlHandler } from "../packages/protocol-control/src/index";
+import { ControlCallError, controlCall, controlHandler } from "../packages/protocol-control/src/index";
 import { CodexCallerAttestor } from "../packages/runtime-codex/src/index";
 import { Store, type Paths } from "../packages/storage-sqlite/src/index";
 import { FakeRuntimeAdapter } from "./fake-runtime-adapter";
@@ -182,6 +182,33 @@ describe("control protocol", () => {
       deliveryId: delivery.id,
     });
     expect(adapter.managedCreateCalls).toBe(1);
+    store.createAgent("inspection-deferred");
+    adapter.managedCreateResult = {
+      outcome: "created",
+      session: { installationId: installation.id, opaqueId: "thread-inspection-deferred" },
+    };
+    const inspection = Promise.withResolvers<Awaited<ReturnType<typeof adapter.inspectSession>>>(),
+      inspect = spyOn(adapter, "inspectSession").mockImplementation(() => inspection.promise);
+    await expect(
+      Promise.race([
+        call({ agent: "inspection-deferred", cwd: root, installationId: installation.id }).then((response) =>
+          response.json(),
+        ),
+        Bun.sleep(100).then(() => {
+          throw new Error("managed creation waited for inspection");
+        }),
+      ]),
+    ).resolves.toMatchObject({ result: { binding: { controlClass: "managed" } } });
+    inspection.resolve({
+      session: { installationId: installation.id, opaqueId: "thread-inspection-deferred" },
+      runtimeState: "idle",
+      blockingReason: "none",
+      interactivePresence: "present",
+      observedAt: new Date().toISOString(),
+      attributes: {},
+    });
+    await Bun.sleep(0);
+    inspect.mockRestore();
     expect(
       await (await call({ agent: "managed", cwd: root, installationId: installation.id })).json(),
     ).toMatchObject({ error: { data: { code: "BINDING_CONFLICT" } } });
@@ -402,6 +429,64 @@ describe("control protocol", () => {
       store.close();
     }
   });
+  test("preflights managed delivery capacity before creating a runtime session", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-managed-capacity-"));
+    roots.push(root);
+    const paths: Paths = {
+        data: join(root, "acs.db"),
+        runtime: join(root, "control.sock"),
+        token: join(root, "control.token"),
+        bridgeToken: join(root, "bridge.token"),
+        secret: join(root, "secret.key"),
+      },
+      store = new Store(paths, { maxQueuedDeliveryIntents: 1 }),
+      installation = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get(),
+      agent = store.createAgent("managed"),
+      principal = required(store.authenticate(readFileSync(paths.token, "utf8")), "principal"),
+      adapter = new FakeRuntimeAdapter();
+    if (!installation) throw new Error("missing installation");
+    adapter.enableManagedCreation();
+    store.accept(
+      agent.id,
+      principal.id,
+      Message.fromJSON({ messageId: "capacity", role: Role.ROLE_USER, parts: [{ text: "queued" }] }),
+      {},
+    );
+    const handler = controlHandler(
+      store,
+      new Date().toISOString(),
+      () => {},
+      new Map([[installation.id, adapter]]),
+    );
+    const response = await (
+      await handler(
+        new Request("http://localhost", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+            "ACS-Control-Version": "1",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "runtimes.sessions.createManaged",
+            params: { agent: "managed", cwd: root, installationId: installation.id },
+          }),
+        }),
+      )
+    ).json();
+    expect(response).toMatchObject({ error: { data: { code: "OVERLOADED", retryable: true } } });
+    expect(adapter.managedCreateCalls).toBe(0);
+    expect(
+      store.db
+        .query<{ count: number }, [string]>("SELECT count(*) count FROM runtime_bindings WHERE agent_id=?")
+        .get(agent.id)?.count,
+    ).toBe(0);
+    store.close();
+  });
   test("bounds a control call when a Unix listener never responds", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-timeout-")),
       socket = join(root, "control.sock"),
@@ -455,6 +540,60 @@ describe("control protocol", () => {
         "Control connection closed without a response",
       );
       expect(performance.now() - started).toBeLessThan(2_000);
+    } finally {
+      listener.stop();
+    }
+  });
+
+  test("preserves validated control error data for callers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-error-data-")),
+      socket = join(root, "control.sock"),
+      token = join(root, "control.token"),
+      body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: "call",
+        error: {
+          code: -32000,
+          message: "RUNTIME_AMBIGUOUS: do not retry",
+          data: {
+            code: "RUNTIME_AMBIGUOUS",
+            retryable: false,
+            correlationId: "correlation-1",
+            details: { installationId: "ins_1", threadId: "thread-1" },
+          },
+        },
+      }),
+      listener = Bun.listen({
+        unix: socket,
+        socket: {
+          open() {},
+          data(connection) {
+            connection.write(
+              `HTTP/1.1 200 OK\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+            );
+            connection.end();
+          },
+          close() {},
+          error() {},
+        },
+      });
+    roots.push(root);
+    writeFileSync(token, "test-token");
+    try {
+      let error: unknown;
+      try {
+        await controlCall(socket, token, "runtimes.sessions.createManaged");
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ControlCallError);
+      if (!(error instanceof ControlCallError)) throw new Error("expected typed control error");
+      expect(error.data).toEqual({
+        code: "RUNTIME_AMBIGUOUS",
+        retryable: false,
+        correlationId: "correlation-1",
+        details: { installationId: "ins_1", threadId: "thread-1" },
+      });
     } finally {
       listener.stop(true);
     }
