@@ -1201,7 +1201,14 @@ export async function controlCall(
           );
         } else resolve(rpc.result);
       } catch (error) {
-        reject(error);
+        reject(
+          error instanceof ControlCallError
+            ? error
+            : new ControlTransportError(
+                error instanceof Error ? error.message : String(error),
+                requestDispatched,
+              ),
+        );
       }
     }
   });

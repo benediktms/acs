@@ -554,8 +554,19 @@ async function main() {
       const threadId = required(session.opaqueId, "thread ID");
       if (typeof threadId !== "string")
         throw new Error("VALIDATION_FAILED: invalid managed thread ID");
+      const current = arrayValue(
+        recordValue(await call("bindings.list", { agent, status: ["active"], limit: 2 })).items,
+      ).map(recordValue);
+      if (
+        current.length !== 1 ||
+        current[0].id !== binding.id ||
+        current[0].epoch !== binding.epoch ||
+        current[0].status !== "active" ||
+        current[0].controlClass !== "managed"
+      )
+        throw new Error("BINDING_CONFLICT: managed binding changed before attach");
       console.log(
-        "Detach with Ctrl+D on an empty composer, /exit, or /quit. Ctrl+C interrupts active work.",
+        "Native Codex controls the attached session. Verify its current detach and interrupt behavior before use.",
       );
       const child = Bun.spawn(
         [
@@ -1219,6 +1230,8 @@ async function managedBindingAccount(
     if (runtime) {
       if (!isConfiguredCodexRuntime(runtime, account.label, account.home, account.socket))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
+      if (runtime.state !== "ready")
+        throw new Error("RUNTIME_UNAVAILABLE: managed binding runtime is not ready");
       if (account.home !== canonicalCodexHome(account.home))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
       return account;

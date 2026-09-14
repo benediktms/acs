@@ -704,9 +704,12 @@ test("compiled managed-worker commands fence control receipts before native laun
       harnessId: "codex",
       label: "local",
       endpoint: { home: codexHome, socket },
+      state: "ready",
     },
     binding = {
       id: "bnd_managed",
+      epoch: 1,
+      status: "active",
       installationId: installation,
       controlClass: "managed",
       session: { installationId: installation, opaqueId: "thread-managed" },
@@ -719,7 +722,8 @@ test("compiled managed-worker commands fence control receipts before native laun
     };
   let bindings: unknown[] = [binding],
     runtimes: unknown[] = [runtime],
-    createResult: "success" | "ambiguous" = "success";
+    createResult: "success" | "ambiguous" = "success",
+    rebindAfterList = false;
   const calls: { method: string; params: unknown }[] = [];
   const control = Bun.serve({
     unix: controlSocket,
@@ -728,6 +732,12 @@ test("compiled managed-worker commands fence control receipts before native laun
         method = string(requestRpc.method),
         params = requestRpc.params;
       calls.push({ method, params });
+      if (method === "bindings.list" && rebindAfterList) {
+        rebindAfterList = false;
+        const result = { items: bindings };
+        bindings = [{ ...binding, epoch: 2 }];
+        return Response.json({ jsonrpc: "2.0", id: requestRpc.id, result });
+      }
       const result =
         method === "system.initialize"
           ? {}
@@ -854,9 +864,15 @@ test("compiled managed-worker commands fence control receipts before native laun
       socket: { open() {}, data() {}, close() {}, error() {} },
     });
     servers.push(listener);
+    runtimes = [{ ...runtime, state: "incompatible" }];
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    runtimes = [runtime];
+    rebindAfterList = true;
+    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    bindings = [binding];
     const attached = await runInput("operator-input\n", "codex", "workers", "attach", "agent");
     expect(attached.exitCode).toBe(0);
-    expect(attached.stdout).toContain("Detach with Ctrl+D");
+    expect(attached.stdout).toContain("Native Codex controls the attached session");
     expect(attached.stdout).toContain("child-stdout");
     expect(attached.stderr).toContain("child-stderr");
     expect(readFileSync(childInput, "utf8")).toBe("operator-input\n");

@@ -6,7 +6,15 @@ Create a persistent worker for an existing, unbound logical agent:
 acs codex workers create <agent> [--account <label>] [--cwd <absolute-dir>]
 ```
 
-The command creates one persistent Codex thread and records its managed binding receipt.
+The command creates one persistent Codex thread, records its managed binding receipt, and submits
+one asynchronous readiness task and delivery. A successful response reports all three receipts as
+submitted; it does not claim that the worker is ready. The readiness prompt is:
+
+> Initialize for readiness: call acs_identity and follow the existing registration guidance if
+> needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not
+> contact them or persist a peer snapshot. Complete this task normally.
+
+The prompt calls `acs_identity` first and `acs_agents_list` once without contacting peers.
 The binding ID is diagnostic evidence; attachment is addressed by agent:
 
 ```sh
@@ -14,8 +22,7 @@ acs codex workers attach <agent>
 ```
 
 Attachment verifies the receipt's configured installation and socket, then starts native Codex on
-that exact thread. ACS prints that Ctrl+D on an empty composer, `/exit`, and `/quit` detach while
-Ctrl+C interrupts active work; native interaction behavior remains operator-certification work.
+that exact thread. Native detach and interrupt controls remain operator-certification work.
 ACS does not unsubscribe, interrupt, or change binding ownership when the child exits.
 
 Managed workers remain owned while no interactive client is present. They may resume only for a

@@ -2464,12 +2464,12 @@ describe("delivery scheduler", () => {
         )
         .get();
       if (!installation) throw new Error("missing installation");
-      const agent = store.createAgent(`managed-endpoint-${runtimeState}`),
-        binding = store.bindManaged(agent.id, `managed-endpoint-${runtimeState}`, {
-          installationId: installation.id,
-          runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" },
-        }),
-        accepted = store.accept(
+      const agent = store.createAgent(`managed-endpoint-${runtimeState}`);
+      store.bindManaged(agent.id, `managed-endpoint-${runtimeState}`, {
+        installationId: installation.id,
+        runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" },
+      });
+      const accepted = store.accept(
           agent.id,
           principal.id,
           Message.fromJSON({
@@ -2509,9 +2509,7 @@ describe("delivery scheduler", () => {
         installation.id,
       );
       await scheduler.start();
-      await until(
-        () => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal",
-      );
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
       expect(deliveryState(store, accepted.deliveryId)).toEqual({
         state: "failed-terminal",
         state_reason: "stale-binding",

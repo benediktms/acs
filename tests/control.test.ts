@@ -657,6 +657,35 @@ describe("control protocol", () => {
     }
   });
 
+  test("retains dispatch evidence for a truncated control response", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-truncated-")),
+      socket = join(root, "control.sock"),
+      token = join(root, "control.token"),
+      listener = Bun.listen({
+        unix: socket,
+        socket: {
+          open() {},
+          data(connection) {
+            connection.write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{");
+            connection.end();
+          },
+          close() {},
+          error() {},
+        },
+      });
+    roots.push(root);
+    writeFileSync(token, "test-token");
+    try {
+      const error = await controlCall(socket, token, "system.shutdown").catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(ControlTransportError);
+      expect(error).toMatchObject({ requestDispatched: true });
+    } finally {
+      listener.stop(true);
+    }
+  });
+
   test("preserves validated control error data for callers", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-error-data-")),
       socket = join(root, "control.sock"),
