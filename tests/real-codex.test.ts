@@ -564,18 +564,7 @@ test.skipIf(process.env.ACS_REAL_CODEX_MODEL !== "1")(
     try {
       await until(() => existsSync(socket), "authenticated Codex socket");
       await client.start();
-      threadId = string(
-        record(
-          record(
-            await client.startThread({
-              cwd: root,
-              ephemeral: false,
-              approvalPolicy: "never",
-              sandbox: "read-only",
-            }),
-          ).thread,
-        ).id,
-      );
+      ({ id: threadId } = await client.startThread({ cwd: root, ephemeral: false }));
       await adapter.start({
         installationId: "ins_native",
         instanceId: "model-test",
