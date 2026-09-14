@@ -777,7 +777,24 @@ export class Store {
       policy = {
         interruptOnCancel: options.deliveryPolicy?.interruptOnCancel ?? false,
         allowPeerPreemption: options.deliveryPolicy?.allowPeerPreemption ?? false,
-      };
+      },
+      endpoint = bindingMetadata(
+        must(
+          this.db
+            .query<{ endpoint_json: string }, [RuntimeInstallationId]>(
+              "SELECT endpoint_json FROM runtime_installations WHERE id=?",
+            )
+            .get(installation.id),
+          "STORAGE_CORRUPT: runtime installation missing",
+        ).endpoint_json,
+      ),
+      runtimeEndpoint =
+        options.runtimeEndpoint ??
+        (controlClass === "managed" &&
+        typeof endpoint.home === "string" &&
+        typeof endpoint.socket === "string"
+          ? { home: endpoint.home, socket: endpoint.socket }
+          : undefined);
     return this.write(() => {
       if (this.managedCreationReservations.has(agent.id))
         throw new Error("BINDING_CONFLICT: agent has a managed creation in progress");
@@ -830,9 +847,7 @@ export class Store {
           activeState,
           options.continuityPolicy ?? "follow-pending",
           JSON.stringify(policy),
-          JSON.stringify(
-            options.runtimeEndpoint ? { [managedRuntimeEndpoint]: options.runtimeEndpoint } : {},
-          ),
+          JSON.stringify(runtimeEndpoint ? { [managedRuntimeEndpoint]: runtimeEndpoint } : {}),
           controlClass,
           now,
           now,

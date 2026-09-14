@@ -1117,7 +1117,7 @@ export class DeliveryScheduler {
         .query(
           `SELECT 1 FROM runtime_bindings b JOIN runtime_installations i ON i.id=b.installation_id
            WHERE b.id=? AND b.epoch=? AND b.status='active' AND (b.control_class='attached' OR
-             json_type(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1"') IS NULL OR (
+             (
              json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".home')=json_extract(i.endpoint_json, '$.home') AND
              json_extract(b.metadata_json, '$."urn:agent-communications:managed-runtime-endpoint:v1".socket')=json_extract(i.endpoint_json, '$.socket')
            ))`,

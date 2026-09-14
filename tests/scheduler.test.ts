@@ -28,7 +28,11 @@ function fixture() {
     bridgeToken: join(root, "bridge.token"),
     secret: join(root, "secret.key"),
   };
-  return new Store(p);
+  const store = new Store(p);
+  store.syncCodexInstallations([
+    { label: "local", home: "/accounts/local", socket: "/tmp/local.sock" },
+  ]);
+  return store;
 }
 
 function readinessMessage(
@@ -2381,10 +2385,18 @@ describe("delivery scheduler", () => {
   });
   test("routes a managed unloaded target while leaving an attached target deferred", async () => {
     const store = fixture(),
-      principal = authenticated(store),
+      principal = authenticated(store);
+    const [installation] = store.syncCodexInstallations([
+      { label: "local", home: "/accounts/local", socket: "/tmp/local.sock" },
+    ]);
+    if (!installation) throw new Error("missing installation");
+    const managedEndpoint = { home: "/accounts/local", socket: "/tmp/local.sock" },
       managed = store.createAgent("managed-unloaded"),
       attached = store.createAgent("attached-unloaded"),
-      managedBinding = store.bindManaged(managed.id, "managed-unloaded"),
+      managedBinding = store.bindManaged(managed.id, "managed-unloaded", {
+        installationId: installation.id,
+        runtimeEndpoint: managedEndpoint,
+      }),
       attachedBinding = store.bind(attached.id, "attached-unloaded"),
       managedDelivery = store.accept(
         managed.id,
@@ -2451,8 +2463,12 @@ describe("delivery scheduler", () => {
     await scheduler.stop();
     store.close();
   });
-  test("fences managed deliveries after their configured endpoint drifts", async () => {
-    for (const runtimeState of ["idle", "not-loaded"] as const) {
+  test("fences managed deliveries with missing or drifted endpoint evidence", async () => {
+    for (const [runtimeState, hasEndpoint] of [
+      ["idle", true],
+      ["not-loaded", true],
+      ["idle", false],
+    ] as const) {
       const store = fixture(),
         principal = authenticated(store);
       store.syncCodexInstallations([
@@ -2464,11 +2480,18 @@ describe("delivery scheduler", () => {
         )
         .get();
       if (!installation) throw new Error("missing installation");
-      const agent = store.createAgent(`managed-endpoint-${runtimeState}`);
+      const slug = `managed-endpoint-${runtimeState}-${hasEndpoint}`,
+        agent = store.createAgent(slug);
       store.bindManaged(agent.id, `managed-endpoint-${runtimeState}`, {
         installationId: installation.id,
-        runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" },
+        ...(hasEndpoint
+          ? { runtimeEndpoint: { home: "/accounts/original", socket: "/tmp/original.sock" } }
+          : {}),
       });
+      if (!hasEndpoint)
+        store.db
+          .query("UPDATE runtime_bindings SET metadata_json='{}' WHERE agent_id=?")
+          .run(agent.id);
       const accepted = store.accept(
           agent.id,
           principal.id,
@@ -2488,9 +2511,10 @@ describe("delivery scheduler", () => {
         observedAt: new Date().toISOString(),
         attributes: {},
       });
-      store.syncCodexInstallations([
-        { label: "managed", home: "/accounts/replacement", socket: "/tmp/replacement.sock" },
-      ]);
+      if (hasEndpoint)
+        store.syncCodexInstallations([
+          { label: "managed", home: "/accounts/replacement", socket: "/tmp/replacement.sock" },
+        ]);
       let deliveries = 0;
       adapter.deliver = async () => {
         deliveries++;
@@ -2501,13 +2525,7 @@ describe("delivery scheduler", () => {
           evidence: { scheme: "fake", value: "unexpected" },
         };
       };
-      const scheduler = new DeliveryScheduler(
-        store,
-        adapter,
-        `managed-endpoint-${runtimeState}`,
-        {},
-        installation.id,
-      );
+      const scheduler = new DeliveryScheduler(store, adapter, slug, {}, installation.id);
       await scheduler.start();
       await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
       expect(deliveryState(store, accepted.deliveryId)).toEqual({
