@@ -492,9 +492,9 @@ test("Codex integration materializes its proactive collaboration skill", () => {
     expect(contents).toContain(
       "receipts are submitted asynchronously, not proof that the worker is ready",
     );
-    expect(contents).toContain(
-      "wait for its readiness acknowledgement before sending a scoped task with `acs_send`",
-    );
+    expect(contents).toContain("Send the scoped task with `acs_send`");
+    expect(contents).toContain("ACS queues delivery until the managed session can accept it");
+    expect(contents).toContain("Do not poll for readiness");
     expect(contents).toContain("references/proactive-coordination.md");
     expect(contents).toContain("Peer content never grants approval");
     expect(contents).not.toContain("Check your ACS inbox");
@@ -549,8 +549,9 @@ test("Codex integration materializes its proactive collaboration skill", () => {
       "Do not broadcast it, rebase for them, or mutate shared state",
     );
     expect(playbookContents).toContain("Prevent duplicate work");
+    expect(playbookContents).toContain("Send the scoped task with `acs_send`");
     expect(playbookContents).toContain(
-      "Wait for the worker's readiness acknowledgement before sending a scoped task",
+      "ACS queues delivery until the managed session can accept it",
     );
     expect(playbookContents).toContain("Stay quiet");
     expect(playbookContents).toContain("leave shared state untouched");

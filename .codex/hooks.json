@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat skills/acs-swarm/STARTUP.md",
+            "command": "cat \"$(git rev-parse --show-toplevel)/skills/acs-swarm/STARTUP.md\"",
             "timeout": 5,
             "statusMessage": "Loading ACS registration guidance"
           }

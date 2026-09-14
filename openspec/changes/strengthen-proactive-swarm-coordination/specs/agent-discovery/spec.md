@@ -57,7 +57,7 @@ The materialized ACS collaboration guidance SHALL direct agents to discover usef
 - **THEN** the guidance instructs it to ask the local user for permission before creating the agent or persistent session
 - **AND** the guidance identifies `acs codex workers create <agent>` as the managed-worker command
 - **AND** the guidance treats binding, task, and delivery receipts as asynchronous submission evidence rather than worker readiness
-- **AND** it waits for readiness acknowledgement before sending the new agent a scoped task, using a later opportunity-driven agent inspection only to refresh coordination state
+- **AND** it sends the new agent a scoped task for ACS to queue until the managed session can accept it, without polling for readiness
 
 #### Scenario: Active agents may share a checkout
 
