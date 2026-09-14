@@ -544,7 +544,7 @@ describe("delivery scheduler", () => {
   test("starts degraded and reconnects when the runtime appears", async () => {
     const store = fixture();
     const agent = store.createAgent("reconnected-session");
-    const binding = store.bind(agent.id, "reconnected-thread", { controlClass: "managed" });
+    const binding = store.bindManaged(agent.id, "reconnected-thread");
     let starts = 0;
     const inspected: string[] = [],
       adapter = new FakeRuntimeAdapter();
@@ -2384,7 +2384,7 @@ describe("delivery scheduler", () => {
       principal = authenticated(store),
       managed = store.createAgent("managed-unloaded"),
       attached = store.createAgent("attached-unloaded"),
-      managedBinding = store.bind(managed.id, "managed-unloaded", { controlClass: "managed" }),
+      managedBinding = store.bindManaged(managed.id, "managed-unloaded"),
       attachedBinding = store.bind(attached.id, "attached-unloaded"),
       managedDelivery = store.accept(
         managed.id,
