@@ -2,12 +2,12 @@
 
 ### Requirement: Local operators can create managed Codex workers
 
-The CLI SHALL provide `acs codex workers create <agent>` for a local user to create one persistent Codex worker thread for an existing enabled logical agent with no active binding. The command SHALL accept an optional configured account label and an optional absolute existing working directory, defaulting to the invoking CLI's current directory. It SHALL validate the command, agent, binding state, account route, runtime capability, and working directory before requesting thread creation. It SHALL preserve the configured Codex approval and sandbox policy, start no model turn or task, and attach no TUI automatically.
+The CLI SHALL provide `acs codex workers create <agent>` for a local user to create one persistent Codex worker thread for an existing enabled logical agent with no active binding. The command SHALL accept an optional configured account label and an optional absolute existing working directory, defaulting to the invoking CLI's current directory. It SHALL validate the command, agent, binding state, account route, runtime capability, and working directory before requesting thread creation. It SHALL preserve the configured Codex approval and sandbox policy. The neutral runtime thread-start SHALL start no model turn or task; after confirmed thread creation, the control operation SHALL atomically accept exactly one readiness task/delivery receipt with the binding and success audit. The command SHALL not attach a TUI automatically.
 
 #### Scenario: Managed worker creation succeeds
 
 - **WHEN** a local user creates a worker for an enabled unbound agent on a ready compatible configured account
-- **THEN** ACS creates one persistent thread, commits one active managed binding receipt, and reports the agent and diagnostic binding identity without starting work or attaching a client
+- **THEN** ACS creates one persistent thread, atomically commits one active managed binding receipt and exactly one asynchronous readiness task/delivery receipt in `submitted` state, and reports the agent and diagnostic binding identity without waiting for or claiming readiness or attaching a client
 
 #### Scenario: Working directory is omitted
 
@@ -19,6 +19,11 @@ The CLI SHALL provide `acs codex workers create <agent>` for a local user to cre
 - **WHEN** the agent is missing, disabled, already bound, the account is unknown, the runtime lacks the capability, or `--cwd` is relative or does not exist
 - **THEN** ACS rejects the request before runtime thread creation and creates no binding
 
+#### Scenario: Same-daemon creation is already reserved
+
+- **WHEN** another managed creation has reserved the same enabled unbound agent and one target delivery slot before runtime I/O
+- **THEN** ACS rejects a competing create, bind/rebind, claim consumption, disable, delete, or last-slot message admission without runtime I/O or local mutation; it releases the reservation on every definite, exceptional, ambiguous, and successful outcome
+
 #### Scenario: Caller is not a local user
 
 - **WHEN** a bound agent, service, or external A2A principal invokes the managed-create control operation
@@ -28,6 +33,11 @@ The CLI SHALL provide `acs codex workers create <agent>` for a local user to cre
 
 - **WHEN** ACS cannot prove both the created thread identity and successful managed binding commit
 - **THEN** the command reports `RUNTIME_AMBIGUOUS` with actionable no-blind-retry guidance and does not claim success
+
+#### Scenario: Local transaction fails after thread creation
+
+- **WHEN** persistent thread creation succeeds but the local binding and readiness-task transaction cannot commit
+- **THEN** ACS rolls back all local rows, reports `RUNTIME_AMBIGUOUS` with the strongest known installation and thread evidence, and does not delete, adopt, or retry the thread
 
 ### Requirement: Local operators can attach to a managed worker by agent
 

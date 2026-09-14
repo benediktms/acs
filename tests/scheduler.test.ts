@@ -31,6 +31,42 @@ function fixture() {
   return new Store(p);
 }
 
+function readinessMessage(
+  bindingId: string,
+  bindingEpoch: number,
+  options: {
+    messageId?: string;
+    metadata?: Record<string, unknown>;
+    purpose?: string;
+  } = {},
+) {
+  return {
+    messageId: options.messageId ?? `managed-readiness:${bindingId}:${bindingEpoch}`,
+    contextId: "",
+    taskId: "",
+    role: 1,
+    parts: [
+      {
+        content: { $case: "text" as const, value: "Initialize for readiness." },
+        filename: "",
+        mediaType: "text/plain",
+      },
+    ],
+    metadata:
+      "metadata" in options
+        ? options.metadata
+        : {
+            "urn:agent-communications:managed-worker-readiness:v1": {
+              bindingId,
+              bindingEpoch,
+              ...(options.purpose ? { purpose: options.purpose } : {}),
+            },
+          },
+    extensions: [],
+    referenceTaskIds: [],
+  };
+}
+
 describe("delivery scheduler", () => {
   test("includes activity maintenance for messages or nonterminal resumed work only", () => {
     expect(activityMaintenancePrompt(false)).toContain(
@@ -758,6 +794,129 @@ describe("delivery scheduler", () => {
       state: "failed-terminal",
       state_reason: "unsupported-requester-principal",
     });
+    await scheduler.stop();
+    store.close();
+  });
+  test("delivers only the exact managed readiness bootstrap from local-user", async () => {
+    const store = fixture(),
+      agent = store.createAgent("readiness"),
+      local = store.db
+        .query<{ id: string }, []>("SELECT id FROM principals WHERE kind='local-user'")
+        .get();
+    if (!local) throw new Error("missing local principal");
+    const binding = store.bindManaged(agent.id, "thread-readiness"),
+      accepted = store.accept(agent.id, local.id, readinessMessage(binding.id, binding.epoch), {
+        mode: "direct",
+      }),
+      adapter = new FakeRuntimeAdapter();
+    let delivered: RuntimeDeliveryRequest | undefined;
+    adapter.deliver = async (request) => {
+      delivered = request;
+      return {
+        outcome: "accepted",
+        acceptedAt: new Date().toISOString(),
+        execution: { opaqueId: "readiness-turn", relationship: "unknown" },
+        evidence: { scheme: "fake", value: "readiness" },
+      };
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "readiness");
+    await scheduler.start();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
+    expect(delivered?.envelope).toMatchObject({
+      agentNotice: "AGENT MESSAGE from Local user — managed worker readiness bootstrap.",
+      from: { agentId: "local-user", name: "Local user" },
+      provenance: {
+        principalKind: "local-user",
+        workAuthority: "local-bootstrap",
+        purpose: "managed-worker-readiness",
+      },
+    });
+    await scheduler.stop();
+    store.close();
+  });
+  test("rejects malformed local-user readiness receipts without adapter delivery", async () => {
+    const cases = [
+      {
+        name: "unmarked",
+        message: (bindingId: string, epoch: number) =>
+          readinessMessage(bindingId, epoch, { metadata: undefined }),
+      },
+      {
+        name: "wrong marker",
+        message: (bindingId: string, epoch: number) =>
+          readinessMessage(bindingId, epoch, {
+            metadata: { wrong: { bindingId, bindingEpoch: epoch } },
+          }),
+      },
+      {
+        name: "wrong purpose",
+        message: (bindingId: string, epoch: number) =>
+          readinessMessage(bindingId, epoch, { purpose: "other" }),
+      },
+      {
+        name: "wrong message id",
+        message: (bindingId: string, epoch: number) =>
+          readinessMessage(bindingId, epoch, { messageId: `managed-readiness:${bindingId}:0` }),
+      },
+      {
+        name: "wrong binding",
+        message: (_bindingId: string, epoch: number) => readinessMessage("bnd_other", epoch),
+      },
+      {
+        name: "wrong epoch",
+        message: (bindingId: string, epoch: number) => readinessMessage(bindingId, epoch + 1),
+      },
+    ];
+    for (const [index, { message }] of cases.entries()) {
+      const store = fixture(),
+        agent = store.createAgent(`readiness-case-${index}`),
+        local = store.db
+          .query<{ id: string }, []>("SELECT id FROM principals WHERE kind='local-user'")
+          .get();
+      if (!local) throw new Error("missing local principal");
+      const binding = store.bindManaged(agent.id, `thread-readiness-case-${index}`),
+        accepted = store.accept(agent.id, local.id, message(binding.id, binding.epoch), {
+          mode: "direct",
+        }),
+        adapter = new FakeRuntimeAdapter();
+      let deliveries = 0;
+      adapter.deliver = async () => {
+        deliveries++;
+        throw new Error("must not deliver");
+      };
+      const scheduler = new DeliveryScheduler(store, adapter, `readiness-case-${index}`);
+      await scheduler.start();
+      await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+      expect(deliveries).toBe(0);
+      expect(deliveryState(store, accepted.deliveryId)).toEqual({
+        state: "failed-terminal",
+        state_reason: "unsupported-requester-principal",
+      });
+      await scheduler.stop();
+      store.close();
+    }
+  });
+  test("rejects a local-user readiness receipt for an attached binding", async () => {
+    const store = fixture(),
+      agent = store.createAgent("attached-readiness"),
+      local = store.db
+        .query<{ id: string }, []>("SELECT id FROM principals WHERE kind='local-user'")
+        .get();
+    if (!local) throw new Error("missing local principal");
+    const binding = store.bind(agent.id, "thread-attached-readiness"),
+      accepted = store.accept(agent.id, local.id, readinessMessage(binding.id, binding.epoch), {
+        mode: "direct",
+      }),
+      adapter = new FakeRuntimeAdapter();
+    let deliveries = 0;
+    adapter.deliver = async () => {
+      deliveries++;
+      throw new Error("must not deliver");
+    };
+    const scheduler = new DeliveryScheduler(store, adapter, "attached-readiness");
+    await scheduler.start();
+    await until(() => deliveryState(store, accepted.deliveryId)?.state === "failed-terminal");
+    expect(deliveries).toBe(0);
     await scheduler.stop();
     store.close();
   });

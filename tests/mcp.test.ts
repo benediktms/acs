@@ -31,6 +31,9 @@ describe("Codex MCP bridge", () => {
   test("publishes the delegated-work boundary in initialization instructions", () => {
     expect(mcpInstructions.length).toBeLessThanOrEqual(768);
     expect(mcpInstructions).toContain("workAuthority=delegated");
+    expect(mcpInstructions).toContain(
+      "workAuthority=local-bootstrap with purpose=managed-worker-readiness",
+    );
     expect(mcpInstructions).toContain("permits autonomous execution only");
     expect(mcpInstructions).toContain("normal runtime local authorization");
     expect(mcpInstructions).toContain("acs_task_acknowledge");

@@ -21,7 +21,12 @@ import {
   type RuntimeSessionSnapshot,
 } from "../contracts/runtime-adapter";
 
-const capabilities = {
+type MutableCapabilities = {
+  -readonly [
+    Key in keyof RuntimeAdapter["descriptor"]["capabilities"]
+  ]: RuntimeAdapter["descriptor"]["capabilities"][Key];
+};
+const capabilities: MutableCapabilities = {
   listSessions: true,
   observeSessionState: true,
   observeExecutions: true,
@@ -32,16 +37,19 @@ const capabilities = {
   createManagedSession: false,
   callerAttestationSchemes: [],
   supportedPartKinds: ["text", "uri", "data"],
-} satisfies RuntimeAdapter["descriptor"]["capabilities"];
+};
 
 export class FakeRuntimeAdapter implements RuntimeAdapter {
-  readonly descriptor = {
+  private capabilities: MutableCapabilities = { ...capabilities };
+  managedCreateResult?: Awaited<ReturnType<NonNullable<RuntimeAdapter["createManagedSession"]>>>;
+  managedCreateCalls = 0;
+  readonly descriptor: RuntimeAdapter["descriptor"] = {
     adapterApiVersion: RUNTIME_ADAPTER_API_VERSION,
     adapterId: "codex.app-server",
     harnessId: "codex",
     implementationVersion: "1",
-    capabilities,
-  } satisfies RuntimeAdapter["descriptor"];
+    capabilities: this.capabilities,
+  };
 
   async start(_context: RuntimeAdapterContext) {}
   async stop(_context: RuntimeAdapterStopContext) {}
@@ -65,6 +73,18 @@ export class FakeRuntimeAdapter implements RuntimeAdapter {
       observedAt: new Date().toISOString(),
       attributes: {},
     };
+  }
+  async createManagedSession() {
+    this.managedCreateCalls++;
+    return (
+      this.managedCreateResult ?? { outcome: "rejected" as const, code: "unavailable" as const }
+    );
+  }
+  enableManagedCreation() {
+    this.capabilities.createManagedSession = true;
+  }
+  disableManagedCreation() {
+    this.capabilities.createManagedSession = false;
   }
   async *observe(signal: AbortSignal): AsyncIterable<RuntimeEvent> {
     yield { type: "adapter.connection", state: "online" };

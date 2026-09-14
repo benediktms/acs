@@ -1643,4 +1643,22 @@ describe("durable acceptance", () => {
     ).toThrow("TASK_NOT_ASSIGNED");
     store.close();
   });
+  test("reserves managed creation prerequisites until the runtime outcome is known", () => {
+    const store = fixture({ maxQueuedDeliveryIntents: 1 }),
+      agent = store.createAgent("reserved-worker"),
+      principal = authenticated(store),
+      claim = store.createClaim(agent.id, principal.id);
+    expect(store.reserveManagedCreation(agent.id)).toMatchObject({ id: agent.id });
+    expect(() => store.reserveManagedCreation(agent.id)).toThrow("BINDING_CONFLICT");
+    expect(() => store.bind(agent.id, "manual-thread", { revokeExisting: true })).toThrow(
+      "BINDING_CONFLICT",
+    );
+    expect(() => store.claim(claim.claimCode, "claim-thread")).toThrow("BINDING_CONFLICT");
+    expect(() => store.updateAgent(agent.id, { enabled: false })).toThrow("BINDING_CONFLICT");
+    expect(() => store.deleteAgent(agent.id)).toThrow("BINDING_CONFLICT");
+    expect(() => store.validateDeliveryCapacity(agent.id)).toThrow("ACS_OVERLOADED");
+    store.releaseManagedCreation(agent.id);
+    expect(store.bind(agent.id, "managed-thread")).toMatchObject({ agentId: agent.id });
+    store.close();
+  });
 });

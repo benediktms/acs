@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type {
@@ -100,6 +100,7 @@ const partSchema = z.discriminatedUnion("kind", [
     grantPeerPreemption: z.boolean().optional(),
     allowPeerPreemption: z.boolean().optional(),
     installationId: z.string().optional(),
+    cwd: z.string().optional(),
     question: z.string().optional(),
     reason: z.string().optional(),
     revokeExisting: z.boolean().optional(),
@@ -143,12 +144,23 @@ const partSchema = z.discriminatedUnion("kind", [
   });
 type Params = z.infer<typeof paramsSchema>;
 type Rpc = { jsonrpc: "2.0"; id: string | number; method: string; params: Params };
+class ControlError extends Error {
+  constructor(
+    message: string,
+    readonly details: ControlErrorData["details"],
+    readonly correlationId: string,
+  ) {
+    super(message);
+  }
+}
 const ok = (id: Rpc["id"], result: unknown) => Response.json({ jsonrpc: "2.0", id, result });
 const fail = (id: Rpc["id"] | null, error: unknown) =>
   Response.json(
     (() => {
       const message = error instanceof Error ? error.message : String(error),
-        code = controlErrorCode(message.split(":").at(0) ?? "UNKNOWN");
+        code = controlErrorCode(message.split(":").at(0) ?? "UNKNOWN"),
+        details = error instanceof ControlError ? error.details : undefined,
+        correlationId = error instanceof ControlError ? error.correlationId : crypto.randomUUID();
       return {
         jsonrpc: "2.0",
         id,
@@ -158,7 +170,8 @@ const fail = (id: Rpc["id"] | null, error: unknown) =>
           data: {
             code,
             retryable: ["RUNTIME_UNAVAILABLE", "OVERLOADED"].includes(code),
-            correlationId: crypto.randomUUID(),
+            correlationId,
+            ...(details ? { details } : {}),
           },
         },
       };
@@ -216,6 +229,7 @@ export function controlHandler(
           resourceType: string,
           resourceId?: string,
           details: Record<string, unknown> = {},
+          correlationId = String(rpc.id),
         ) =>
           store.audit(
             principal.id,
@@ -225,7 +239,7 @@ export function controlHandler(
             {
               ...details,
             },
-            String(rpc.id),
+            correlationId,
           ),
         attest = (evidence: Params["evidence"]) =>
           attestEvidence(store, adapters, callerAttestors, evidence);
@@ -679,6 +693,162 @@ export function controlHandler(
           store.observeSession(snapshot);
           return ok(rpc.id, { session: snapshot });
         }
+        case "runtimes.sessions.createManaged": {
+          admin(principal.kind);
+          const cwd = required(p.cwd, "cwd");
+          if (!isDirectory(cwd))
+            throw new Error("VALIDATION_FAILED: cwd must be an existing absolute directory");
+          const agent = store.agent(required(p.agent, "agent"));
+          if (!agent) throw new Error("AGENT_NOT_FOUND");
+          if (!agent.enabled) throw new Error("AGENT_DISABLED");
+          if (
+            store
+              .query<BindingRow, [`agt_${string}`]>(
+                "SELECT * FROM runtime_bindings WHERE agent_id=? AND status='active'",
+              )
+              .get(agent.id)
+          )
+            throw new Error("BINDING_CONFLICT: agent already has an active binding");
+          const installation = runtimeInstallation(store, adapters, p.installationId);
+          const adapter = adapterFor(installation.id);
+          if (!adapter) throw new Error("RUNTIME_UNAVAILABLE");
+          if (
+            !adapter.createManagedSession ||
+            !adapter.descriptor.capabilities.createManagedSession
+          )
+            throw new Error("UNSUPPORTED_CAPABILITY");
+          const readinessParts: StoredPart[] = [
+            {
+              content: {
+                $case: "text",
+                value:
+                  "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.",
+              },
+              filename: "",
+              mediaType: "text/plain",
+            },
+          ];
+          try {
+            store.validateMessageParts(readinessParts);
+          } catch (error) {
+            if (error instanceof Error && error.message === "ACS_MESSAGE_TOO_LARGE")
+              throw new Error(
+                "VALIDATION_FAILED: managed readiness message exceeds configured limits",
+                { cause: error },
+              );
+            throw error;
+          }
+          try {
+            store.reserveManagedCreation(agent.id);
+          } catch (error) {
+            if (error instanceof Error && error.message === "ACS_OVERLOADED")
+              throw new Error("OVERLOADED", { cause: error });
+            throw error;
+          }
+          try {
+            const created = await adapter.createManagedSession({
+              installationId: installation.id,
+              cwd,
+            });
+            const ambiguous = (details: Record<string, unknown>, message: string): never => {
+              const correlationId = crypto.randomUUID(),
+                evidence = { installationId: installation.id, ...details };
+              try {
+                audit(
+                  "runtime.managed-create.ambiguous",
+                  "runtime",
+                  installation.id,
+                  evidence,
+                  correlationId,
+                );
+              } catch {}
+              throw new ControlError(`RUNTIME_AMBIGUOUS: ${message}`, evidence, correlationId);
+            };
+            if (created.outcome === "creation-unknown") {
+              return ambiguous(
+                created.threadId ? { threadId: created.threadId } : {},
+                "managed creation may have succeeded; do not retry blindly",
+              );
+            }
+            if (created.outcome !== "created")
+              throw new Error(
+                created.code === "incompatible"
+                  ? "RUNTIME_INCOMPATIBLE"
+                  : created.code === "invalid"
+                    ? "VALIDATION_FAILED"
+                    : "RUNTIME_UNAVAILABLE",
+              );
+            if (created.session.installationId !== installation.id)
+              return ambiguous(
+                {
+                  selectedInstallationId: installation.id,
+                  returnedInstallationId: created.session.installationId,
+                  threadId: created.session.opaqueId,
+                },
+                "created session belongs to another installation",
+              );
+            if (typeof created.session.opaqueId !== "string" || !created.session.opaqueId)
+              return ambiguous(
+                { selectedInstallationId: installation.id, session: created.session },
+                "created session has no valid opaque ID",
+              );
+            let binding;
+            let initialization: { taskId: string; deliveryId: string };
+            try {
+              store.releaseManagedCreation(agent.id);
+              ({ binding, initialization } = store.write(() => {
+                const receipt = store.bindManaged(agent.id, created.session.opaqueId, {
+                  installationId: installation.id,
+                });
+                const acceptance = store.accept(
+                  agent.id,
+                  principal.id,
+                  {
+                    messageId: `managed-readiness:${receipt.id}:${receipt.epoch}`,
+                    contextId: "",
+                    taskId: "",
+                    role: 1,
+                    parts: readinessParts,
+                    metadata: {
+                      "urn:agent-communications:managed-worker-readiness:v1": {
+                        bindingId: receipt.id,
+                        bindingEpoch: receipt.epoch,
+                      },
+                    },
+                    extensions: [],
+                    referenceTaskIds: [],
+                  },
+                  { mode: "direct", priority: "normal", replyExpected: true },
+                );
+                audit("runtime.managed-create", "binding", receipt.id, {
+                  installationId: installation.id,
+                  threadId: created.session.opaqueId,
+                  taskId: acceptance.task.id,
+                  deliveryId: acceptance.deliveryId,
+                });
+                return {
+                  binding: receipt,
+                  initialization: { taskId: acceptance.task.id, deliveryId: acceptance.deliveryId },
+                };
+              }));
+            } catch {
+              return ambiguous(
+                { threadId: created.session.opaqueId },
+                "thread was created but its ownership receipt could not be committed; do not retry blindly",
+              );
+            }
+            void adapter
+              .inspectSession(created.session)
+              .then((snapshot) => store.observeSession(snapshot))
+              .catch(() => {});
+            return ok(rpc.id, {
+              binding: bindingDto(binding, store),
+              initialization: { ...initialization, state: "submitted" },
+            });
+          } finally {
+            store.releaseManagedCreation(agent.id);
+          }
+        }
         case "bridge.attestCaller": {
           const a = await attest(p.evidence);
           return ok(rpc.id, publicAttestation(a));
@@ -926,6 +1096,15 @@ export function controlHandler(
   };
 }
 
+export class ControlCallError extends Error {
+  constructor(
+    message: string,
+    readonly data: ControlErrorData,
+  ) {
+    super(message);
+  }
+}
+
 export async function controlCall(
   socketPath: string,
   tokenPath: string,
@@ -985,9 +1164,12 @@ export async function controlCall(
       try {
         const rpc: unknown = JSON.parse(response.subarray(split + 4).toString());
         if (!isRecord(rpc)) throw new Error("Invalid control response");
-        if (isRecord(rpc.error) && typeof rpc.error.message === "string")
-          reject(new Error(rpc.error.message));
-        else resolve(rpc.result);
+        if (isRecord(rpc.error) && typeof rpc.error.message === "string") {
+          const data = controlErrorData(rpc.error.data);
+          reject(
+            data ? new ControlCallError(rpc.error.message, data) : new Error(rpc.error.message),
+          );
+        } else resolve(rpc.result);
       } catch (error) {
         reject(error);
       }
@@ -1479,9 +1661,49 @@ function controlErrorCode(raw: string): ControlErrorData["code"] {
       return "INTERNAL";
   }
 }
+function controlErrorData(value: unknown): ControlErrorData | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.code !== "string" ||
+    !isControlErrorCode(value.code) ||
+    typeof value.retryable !== "boolean" ||
+    typeof value.correlationId !== "string" ||
+    (value.details !== undefined && !isJsonObject(value.details))
+  )
+    return undefined;
+  return {
+    code: value.code,
+    retryable: value.retryable,
+    correlationId: value.correlationId,
+    ...(value.details === undefined ? {} : { details: value.details }),
+  };
+}
+function isControlErrorCode(value: string): value is ControlErrorData["code"] {
+  return controlErrorCode(value) === value;
+}
+function isJsonObject(value: unknown): value is NonNullable<ControlErrorData["details"]> {
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+function isJsonValue(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    (Array.isArray(value) && value.every(isJsonValue)) ||
+    isJsonObject(value)
+  );
+}
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new Error(`VALIDATION_FAILED: missing ${name}`);
   return value;
+}
+function isDirectory(path: string) {
+  try {
+    return isAbsolute(path) && statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

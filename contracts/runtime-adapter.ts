@@ -222,6 +222,11 @@ export interface RuntimeDeliveryEnvelopeV1 {
     | {
         readonly principalKind: "external-a2a-client" | "service";
         readonly workAuthority: "untrusted";
+      }
+    | {
+        readonly principalKind: "local-user";
+        readonly workAuthority: "local-bootstrap";
+        readonly purpose: "managed-worker-readiness";
       };
 }
 

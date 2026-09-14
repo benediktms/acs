@@ -33,6 +33,7 @@ describe("Codex app-server transport", () => {
       threadNotLoaded = false,
       staleInterrupt = false,
       emptyActiveTurnId = false;
+    let threadStartResult: unknown = { thread: { id: "thread-created" } };
     const server = Bun.listen({
       unix: path,
       socket: {
@@ -97,6 +98,10 @@ describe("Codex app-server transport", () => {
             );
             return;
           }
+          if (request.method === "thread/start") {
+            socket.write(serverFrame({ id: request.id, result: threadStartResult }));
+            return;
+          }
           if (staleInterrupt && request.method === "turn/interrupt") {
             socket.write(
               serverFrame({
@@ -130,6 +135,31 @@ describe("Codex app-server transport", () => {
     expect(received).not.toContain("jsonrpc");
     expect(initialized.userAgent).toBe("fake");
     expect(initialized.codexHome).toBe("/tmp/codex");
+    await Bun.sleep(10);
+    expect(await client.startThread({ cwd: "/tmp/worker", ephemeral: false })).toEqual({
+      id: "thread-created",
+    });
+    for (const result of [
+      { thread: { id: "" } },
+      { thread: 42 },
+      { thread: [] },
+      { thread: null, id: "thread-created" },
+      { id: "thread-created" },
+      42,
+      [],
+    ]) {
+      threadStartResult = result;
+      await expect(
+        client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
+      ).rejects.toMatchObject({
+        failure: {
+          kind: "INVALID_RESPONSE",
+          requestFlushed: true,
+        },
+        message: "invalid app-server thread id",
+      });
+    }
+    threadStartResult = { thread: { id: "thread-created" } };
     expect(requests).toContainEqual(
       expect.objectContaining({
         method: "initialize",
@@ -210,14 +240,18 @@ describe("Codex app-server transport", () => {
     await expect(pending).rejects.toThrow(/operation was aborted/i);
     let flushed = 0;
     const writeAbort = new AbortController(),
-      write = client.request("thread/inject_items", {}, () => flushed++, writeAbort.signal);
+      write = client.startThread(
+        { cwd: "/tmp/worker", ephemeral: false },
+        () => flushed++,
+        writeAbort.signal,
+      );
     writeAbort.abort();
     await expect(write).rejects.toThrow("app-server request aborted after write");
     expect(flushed).toBe(1);
     client.close();
     let disconnectedFlushes = 0;
     await expect(
-      client.request("thread/inject_items", {}, () => disconnectedFlushes++),
+      client.startThread({ cwd: "/tmp/worker", ephemeral: false }, () => disconnectedFlushes++),
     ).rejects.toThrow("not connected");
     expect(disconnectedFlushes).toBe(0);
     server.stop();
