@@ -251,7 +251,7 @@ export function initFiles(target = paths()): string {
 export class Store {
   readonly db: Database;
   readonly secret: Buffer;
-  private readonly managedCreationReservations = new Set<AgentRow["id"]>();
+  private readonly managedCreationReservations = new Set<string>();
   readonly limits: {
     maxInlineContentBytes: number;
     maxParts: number;
