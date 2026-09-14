@@ -736,9 +736,8 @@ export function controlHandler(
           let initialization: { taskId: string; deliveryId: string };
           try {
             ({ binding, initialization } = store.write(() => {
-              const receipt = store.bind(agent.id, created.session.opaqueId, {
+              const receipt = store.bindManaged(agent.id, created.session.opaqueId, {
                 installationId: installation.id,
-                controlClass: "managed",
               });
               const acceptance = store.accept(
                 agent.id,
