@@ -804,7 +804,7 @@ describe("delivery scheduler", () => {
         .query<{ id: string }, []>("SELECT id FROM principals WHERE kind='local-user'")
         .get();
     if (!local) throw new Error("missing local principal");
-    const binding = store.bind(agent.id, "thread-readiness", { controlClass: "managed" }),
+    const binding = store.bindManaged(agent.id, "thread-readiness"),
       accepted = store.accept(agent.id, local.id, readinessMessage(binding.id, binding.epoch), {
         mode: "direct",
       }),
@@ -873,9 +873,7 @@ describe("delivery scheduler", () => {
           .query<{ id: string }, []>("SELECT id FROM principals WHERE kind='local-user'")
           .get();
       if (!local) throw new Error("missing local principal");
-      const binding = store.bind(agent.id, `thread-readiness-case-${index}`, {
-          controlClass: "managed",
-        }),
+      const binding = store.bindManaged(agent.id, `thread-readiness-case-${index}`),
         accepted = store.accept(agent.id, local.id, message(binding.id, binding.epoch), {
           mode: "direct",
         }),
