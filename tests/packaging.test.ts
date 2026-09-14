@@ -710,6 +710,7 @@ test("compiled managed-worker commands fence control receipts before native laun
       installationId: installation,
       controlClass: "managed",
       session: { installationId: installation, opaqueId: "thread-managed" },
+      runtimeEndpoint: { home: codexHome, socket },
     },
     initialization = {
       taskId: "tsk_readiness",
@@ -836,7 +837,9 @@ test("compiled managed-worker commands fence control receipts before native laun
     expect(existsSync(launched)).toBe(false);
 
     runtimes = [{ ...runtime, endpoint: { home: join(root, "other-home"), socket } }];
-    expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);
+    const drifted = await run("codex", "workers", "attach", "agent");
+    expect(drifted.exitCode).not.toBe(0);
+    expect(drifted.stderr).toContain("BINDING_CONFLICT");
     expect(existsSync(launched)).toBe(false);
     runtimes = [{ ...runtime, endpoint: { home: codexHome, socket: join(root, "other.sock") } }];
     expect((await run("codex", "workers", "attach", "agent")).exitCode).not.toBe(0);

@@ -204,6 +204,7 @@ const taskStates: Record<TaskState, number> = {
   "auth-required": 8,
 };
 const deliveryStatus = "urn:agent-communications:delivery-status:v1";
+const managedRuntimeEndpoint = "urn:agent-communications:managed-runtime-endpoint:v1";
 const taskActivityMetadata = "urn:agent-communications:task-activity:v1";
 const bindingActivityMetadata = "urn:agent-communications:binding-activity:v1";
 const taskActivityTtlMs = 30 * 60 * 1000;
@@ -818,7 +819,7 @@ export class Store {
         .run(transitionBinding(BindingState.Active, BindingState.Revoked), now, agent.id);
       this.db
         .query(
-          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,control_class,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO runtime_bindings(id,agent_id,installation_id,session_opaque_id,epoch,status,continuity_policy,delivery_policy_json,metadata_json,control_class,created_at_ms,activated_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           bindingId,
@@ -829,6 +830,9 @@ export class Store {
           activeState,
           options.continuityPolicy ?? "follow-pending",
           JSON.stringify(policy),
+          JSON.stringify(
+            options.runtimeEndpoint ? { [managedRuntimeEndpoint]: options.runtimeEndpoint } : {},
+          ),
           controlClass,
           now,
           now,

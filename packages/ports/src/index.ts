@@ -176,6 +176,7 @@ export interface BindingOptions {
   }>;
   grantPeerPreemption?: boolean;
   installationId?: RuntimeInstallationId;
+  runtimeEndpoint?: { readonly home: string; readonly socket: string };
   revokeExisting?: boolean;
 }
 

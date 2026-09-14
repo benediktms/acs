@@ -8,6 +8,7 @@ import { Command, Option } from "commander";
 import { handleA2A } from "../../../packages/protocol-a2a/src/index";
 import {
   ControlCallError,
+  ControlTransportError,
   controlCall,
   controlHandler,
 } from "../../../packages/protocol-control/src/index";
@@ -508,8 +509,11 @@ async function main() {
           }),
         );
       } catch (error) {
-        if (error instanceof ControlCallError && error.data.code === "RUNTIME_AMBIGUOUS") {
-          const details = error.data.details,
+        if (
+          (error instanceof ControlCallError && error.data.code === "RUNTIME_AMBIGUOUS") ||
+          (error instanceof ControlTransportError && error.requestDispatched)
+        ) {
+          const details = error instanceof ControlCallError ? error.data.details : undefined,
             evidence = [
               typeof details?.installationId === "string"
                 ? `installation ${details.installationId}`
@@ -519,7 +523,7 @@ async function main() {
               .filter((value) => value !== undefined)
               .join(", ");
           console.error(
-            `Do not retry blindly; a managed thread may have been created${evidence ? ` (${evidence})` : ""}. Correlation ID: ${error.data.correlationId}.`,
+            `Do not retry blindly; a managed thread may have been created${evidence ? ` (${evidence})` : ""}${error instanceof ControlCallError ? `. Correlation ID: ${error.data.correlationId}.` : "."}`,
           );
         }
         throw error;
@@ -544,7 +548,7 @@ async function main() {
         installationId = required(binding.installationId, "installation ID");
       if (session.installationId !== installationId)
         throw new Error("BINDING_CONFLICT: managed binding session installation drifted");
-      const account = await managedBindingAccount(call, installationId);
+      const account = await managedBindingAccount(call, installationId, binding.runtimeEndpoint);
       if (!(await socketListening(account.socket)))
         throw new Error("RUNTIME_UNAVAILABLE: managed Codex app-server is unavailable");
       const threadId = required(session.opaqueId, "thread ID");
@@ -1194,9 +1198,18 @@ async function accountInstallationId(
 async function managedBindingAccount(
   call: (method: string, params?: unknown) => Promise<unknown>,
   installationId: unknown,
+  endpointSnapshot: unknown,
 ) {
   if (typeof installationId !== "string")
     throw new Error("VALIDATION_FAILED: invalid installation ID");
+  const endpoint = recordValue(endpointSnapshot),
+    account = settings.codex.accounts.find(
+      (candidate) =>
+        typeof endpoint.home === "string" &&
+        canonicalCodexHome(endpoint.home) === candidate.home &&
+        endpoint.socket === candidate.socket,
+    );
+  if (!account) throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
   let cursor: string | undefined;
   do {
     const page = recordValue(await call("runtimes.list", { limit: 100, cursor }));
@@ -1204,11 +1217,8 @@ async function managedBindingAccount(
       .map(recordValue)
       .find((candidate) => candidate.installationId === installationId);
     if (runtime) {
-      const account = settings.codex.accounts.find((candidate) =>
-        isConfiguredCodexRuntime(runtime, candidate.label, candidate.home, candidate.socket),
-      );
-      if (!account)
-        throw new Error("RUNTIME_UNAVAILABLE: managed binding installation is unavailable");
+      if (!isConfiguredCodexRuntime(runtime, account.label, account.home, account.socket))
+        throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
       if (account.home !== canonicalCodexHome(account.home))
         throw new Error("BINDING_CONFLICT: managed binding account configuration drifted");
       return account;

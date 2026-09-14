@@ -120,6 +120,7 @@ export interface RuntimeBindingDto {
     readonly interruptOnCancel: boolean;
     readonly allowPeerPreemption: boolean;
   };
+  readonly runtimeEndpoint?: { readonly home: string; readonly socket: string };
   readonly createdAt: string;
   readonly activatedAt?: string;
   readonly revokedAt?: string;

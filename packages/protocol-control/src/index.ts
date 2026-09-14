@@ -795,10 +795,23 @@ export function controlHandler(
             let binding;
             let initialization: { taskId: string; deliveryId: string };
             try {
+              const endpoint = jsonRecord(
+                required(
+                  store
+                    .query<{ endpoint_json: string }, [RuntimeInstallationId]>(
+                      "SELECT endpoint_json FROM runtime_installations WHERE id=?",
+                    )
+                    .get(installation.id),
+                  "runtime installation endpoint",
+                ).endpoint_json,
+              );
               store.releaseManagedCreation(agent.id);
               ({ binding, initialization } = store.write(() => {
                 const receipt = store.bindManaged(agent.id, created.session.opaqueId, {
                   installationId: installation.id,
+                  ...(typeof endpoint.home === "string" && typeof endpoint.socket === "string"
+                    ? { runtimeEndpoint: { home: endpoint.home, socket: endpoint.socket } }
+                    : {}),
                 });
                 const acceptance = store.accept(
                   agent.id,
@@ -1105,6 +1118,15 @@ export class ControlCallError extends Error {
   }
 }
 
+export class ControlTransportError extends Error {
+  constructor(
+    message: string,
+    readonly requestDispatched: boolean,
+  ) {
+    super(message);
+  }
+}
+
 export async function controlCall(
   socketPath: string,
   tokenPath: string,
@@ -1118,7 +1140,8 @@ export async function controlCall(
     let response = Buffer.alloc(0),
       expected = Infinity,
       done = false,
-      timedOut = false;
+      timedOut = false,
+      requestDispatched = false;
     Bun.connect({
       unix: socketPath,
       socket: {
@@ -1127,6 +1150,7 @@ export async function controlCall(
           socket.write(
             `POST / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nACS-Control-Version: 1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
           );
+          requestDispatched = true;
         },
         data(_socket, data) {
           response = Buffer.concat([response, Buffer.from(data)]);
@@ -1140,15 +1164,21 @@ export async function controlCall(
         close() {
           if (timedOut) return;
           if (response.length) finish();
-          else rejectOnce(new Error("Control connection closed without a response"));
+          else
+            rejectOnce(
+              new ControlTransportError(
+                "Control connection closed without a response",
+                requestDispatched,
+              ),
+            );
         },
         error(_socket, error) {
-          rejectOnce(error);
+          rejectOnce(new ControlTransportError(error.message, requestDispatched));
         },
         timeout(socket) {
           timedOut = true;
           socket.terminate();
-          rejectOnce(new Error("Control call timed out"));
+          rejectOnce(new ControlTransportError("Control call timed out", requestDispatched));
         },
       },
     }).catch(rejectOnce);
@@ -1546,6 +1576,9 @@ function bindingDto(
   store: ControlStoragePort,
 ) {
   const row = "agent_id" in binding ? binding : required(store.binding(binding.id), "binding");
+  const endpoint = jsonRecord(row.metadata_json)[
+    "urn:agent-communications:managed-runtime-endpoint:v1"
+  ];
   return {
     id: row.id,
     agentId: row.agent_id,
@@ -1557,6 +1590,7 @@ function bindingDto(
     controlClass: row.control_class,
     continuityPolicy: row.continuity_policy,
     deliveryPolicy: jsonRecord(row.delivery_policy_json),
+    ...(endpoint ? { runtimeEndpoint: endpoint } : {}),
     createdAt: new Date(row.created_at_ms).toISOString(),
     activatedAt: row.activated_at_ms ? new Date(row.activated_at_ms).toISOString() : undefined,
     revokedAt: row.revoked_at_ms ? new Date(row.revoked_at_ms).toISOString() : undefined,

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import {
   ControlCallError,
+  ControlTransportError,
   controlCall,
   controlHandler,
 } from "../packages/protocol-control/src/index";
@@ -642,9 +643,14 @@ describe("control protocol", () => {
     writeFileSync(token, "test-token");
     try {
       const started = performance.now();
-      await expect(controlCall(socket, token, "system.shutdown")).rejects.toThrow(
-        "Control connection closed without a response",
+      const error = await controlCall(socket, token, "system.shutdown").catch(
+        (caught: unknown) => caught,
       );
+      expect(error).toBeInstanceOf(ControlTransportError);
+      expect(error).toMatchObject({
+        message: "Control connection closed without a response",
+        requestDispatched: true,
+      });
       expect(performance.now() - started).toBeLessThan(2_000);
     } finally {
       listener.stop();
