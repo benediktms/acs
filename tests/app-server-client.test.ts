@@ -139,7 +139,15 @@ describe("Codex app-server transport", () => {
     expect(await client.startThread({ cwd: "/tmp/worker", ephemeral: false })).toEqual({
       id: "thread-created",
     });
-    for (const result of [{ thread: { id: "" } }, { thread: 42 }, { thread: [] }, 42, []]) {
+    for (const result of [
+      { thread: { id: "" } },
+      { thread: 42 },
+      { thread: [] },
+      { thread: null, id: "thread-created" },
+      { id: "thread-created" },
+      42,
+      [],
+    ]) {
       threadStartResult = result;
       await expect(
         client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
