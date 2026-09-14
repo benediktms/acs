@@ -239,6 +239,7 @@ export interface A2AStoragePort {
 
 export interface ControlStoragePort extends SqlPort {
   write<T>(operation: () => T): T;
+  validateMessageParts(parts: readonly StoredPart[]): void;
   accept(
     agentId: string,
     principalId: string,

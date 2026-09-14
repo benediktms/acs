@@ -352,6 +352,56 @@ describe("control protocol", () => {
     ).toBe(0);
     store.close();
   });
+  test("preflights managed readiness parts before creating a runtime session", async () => {
+    for (const limits of [{ maxTextPartBytes: 1 }, { maxInlineContentBytes: 1 }]) {
+      const root = mkdtempSync(join(tmpdir(), "acs-control-managed-preflight-"));
+      roots.push(root);
+      const paths: Paths = {
+        data: join(root, "acs.db"),
+        runtime: join(root, "control.sock"),
+        token: join(root, "control.token"),
+        bridgeToken: join(root, "bridge.token"),
+        secret: join(root, "secret.key"),
+      };
+      const store = new Store(paths, limits),
+        installation = store.db
+          .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+          .get();
+      if (!installation) throw new Error("missing installation");
+      store.createAgent("managed");
+      const adapter = new FakeRuntimeAdapter();
+      adapter.enableManagedCreation();
+      const handler = controlHandler(
+        store,
+        new Date().toISOString(),
+        () => {},
+        new Map([[installation.id, adapter]]),
+      );
+      const response = await (
+        await handler(
+          new Request("http://localhost", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+              "ACS-Control-Version": "1",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "runtimes.sessions.createManaged",
+              params: { agent: "managed", cwd: root, installationId: installation.id },
+            }),
+          }),
+        )
+      ).json();
+      expect(response).toMatchObject({
+        error: { data: { code: "VALIDATION_FAILED", retryable: false } },
+      });
+      expect(adapter.managedCreateCalls).toBe(0);
+      store.close();
+    }
+  });
   test("bounds a control call when a Unix listener never responds", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-timeout-")),
       socket = join(root, "control.sock"),

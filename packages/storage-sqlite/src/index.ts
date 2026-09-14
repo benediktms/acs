@@ -1470,6 +1470,20 @@ export class Store {
       this.acceptTask(agentId, principalId, message, options, requestHash),
     );
   }
+  validateMessageParts(parts: readonly StoredPart[]): void {
+    if (parts.length > this.limits.maxParts) throw new Error("ACS_MESSAGE_TOO_LARGE");
+    let bytes = 0;
+    for (const part of parts) {
+      if (!part.content || part.content.$case === "raw") throw new Error("ACS_UNSUPPORTED_CONTENT");
+      if (
+        part.content.$case === "text" &&
+        Buffer.byteLength(part.content.value) > this.limits.maxTextPartBytes
+      )
+        throw new Error("ACS_MESSAGE_TOO_LARGE");
+      bytes += Buffer.byteLength(JSON.stringify(part));
+    }
+    if (bytes > this.limits.maxInlineContentBytes) throw new Error("ACS_MESSAGE_TOO_LARGE");
+  }
   private acceptTask(
     agentId: string,
     principalId: string,
@@ -1482,18 +1496,7 @@ export class Store {
     if (!target.enabled) throw new Error("ACS_AGENT_DISABLED");
     if (!message.messageId || !message.parts.length)
       throw new Error("VALIDATION_FAILED: messageId and parts are required");
-    if (message.parts.length > this.limits.maxParts) throw new Error("ACS_MESSAGE_TOO_LARGE");
-    let bytes = 0;
-    for (const part of message.parts) {
-      if (!part.content || part.content.$case === "raw") throw new Error("ACS_UNSUPPORTED_CONTENT");
-      if (
-        part.content.$case === "text" &&
-        Buffer.byteLength(part.content.value) > this.limits.maxTextPartBytes
-      )
-        throw new Error("ACS_MESSAGE_TOO_LARGE");
-      bytes += Buffer.byteLength(JSON.stringify(part));
-    }
-    if (bytes > this.limits.maxInlineContentBytes) throw new Error("ACS_MESSAGE_TOO_LARGE");
+    this.validateMessageParts(message.parts);
     const scope = `${principalId}:${agentId}`,
       requestHash = canonicalRequestHash ?? this.payloadHash({ message, options });
     return this.write(() => {

@@ -32,8 +32,8 @@ describe("Codex app-server transport", () => {
       batchTurn = false,
       threadNotLoaded = false,
       staleInterrupt = false,
-      emptyActiveTurnId = false,
-      threadStartId: unknown = "thread-created";
+      emptyActiveTurnId = false;
+    let threadStartResult: unknown = { thread: { id: "thread-created" } };
     const server = Bun.listen({
       unix: path,
       socket: {
@@ -99,9 +99,7 @@ describe("Codex app-server transport", () => {
             return;
           }
           if (request.method === "thread/start") {
-            socket.write(
-              serverFrame({ id: request.id, result: { thread: { id: threadStartId } } }),
-            );
+            socket.write(serverFrame({ id: request.id, result: threadStartResult }));
             return;
           }
           if (staleInterrupt && request.method === "turn/interrupt") {
@@ -141,18 +139,8 @@ describe("Codex app-server transport", () => {
     expect(await client.startThread({ cwd: "/tmp/worker", ephemeral: false })).toEqual({
       id: "thread-created",
     });
-    threadStartId = "";
-    await expect(
-      client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
-    ).rejects.toMatchObject({
-      failure: {
-        kind: "INVALID_RESPONSE",
-        requestFlushed: true,
-      },
-      message: "invalid app-server thread id",
-    });
-    for (const thread of [42, []]) {
-      threadStartId = thread;
+    for (const result of [{ thread: { id: "" } }, { thread: 42 }, { thread: [] }, 42, []]) {
+      threadStartResult = result;
       await expect(
         client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
       ).rejects.toMatchObject({
@@ -163,7 +151,7 @@ describe("Codex app-server transport", () => {
         message: "invalid app-server thread id",
       });
     }
-    threadStartId = "thread-created";
+    threadStartResult = { thread: { id: "thread-created" } };
     expect(requests).toContainEqual(
       expect.objectContaining({
         method: "initialize",

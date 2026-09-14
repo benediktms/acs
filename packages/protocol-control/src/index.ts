@@ -716,6 +716,27 @@ export function controlHandler(
             !adapter.descriptor.capabilities.createManagedSession
           )
             throw new Error("UNSUPPORTED_CAPABILITY");
+          const readinessParts: StoredPart[] = [
+            {
+              content: {
+                $case: "text",
+                value:
+                  "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.",
+              },
+              filename: "",
+              mediaType: "text/plain",
+            },
+          ];
+          try {
+            store.validateMessageParts(readinessParts);
+          } catch (error) {
+            if (error instanceof Error && error.message === "ACS_MESSAGE_TOO_LARGE")
+              throw new Error(
+                "VALIDATION_FAILED: managed readiness message exceeds configured limits",
+                { cause: error },
+              );
+            throw error;
+          }
           const created = await adapter.createManagedSession({
             installationId: installation.id,
             cwd,
@@ -772,17 +793,7 @@ export function controlHandler(
                   contextId: "",
                   taskId: "",
                   role: 1,
-                  parts: [
-                    {
-                      content: {
-                        $case: "text",
-                        value:
-                          "Initialize for readiness: call acs_identity and follow the existing registration guidance if needed, then call acs_agents_list once to inspect the agents currently visible to you. Do not contact them or persist a peer snapshot. Complete this task normally.",
-                      },
-                      filename: "",
-                      mediaType: "text/plain",
-                    },
-                  ],
+                  parts: readinessParts,
                   metadata: {
                     "urn:agent-communications:managed-worker-readiness:v1": {
                       bindingId: receipt.id,

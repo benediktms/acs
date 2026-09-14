@@ -135,8 +135,9 @@ export class CodexAppServerClient {
     markRequestFlushed?: () => void,
     signal?: AbortSignal,
   ) {
-    const response = record(await this.request("thread/start", params, markRequestFlushed, signal)),
-      thread = response.thread ?? response,
+    const result = await this.request("thread/start", params, markRequestFlushed, signal),
+      response = isRecord(result) ? result : undefined,
+      thread = response?.thread ?? response,
       id = isRecord(thread) ? thread.id : undefined;
     if (typeof id !== "string" || !id)
       throw new CodexAppServerError("invalid app-server thread id", {

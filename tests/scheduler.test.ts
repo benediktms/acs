@@ -823,6 +823,7 @@ describe("delivery scheduler", () => {
     await scheduler.start();
     await until(() => deliveryState(store, accepted.deliveryId)?.state === "accepted");
     expect(delivered?.envelope).toMatchObject({
+      agentNotice: "AGENT MESSAGE from Local user — managed worker readiness bootstrap.",
       from: { agentId: "local-user", name: "Local user" },
       provenance: {
         principalKind: "local-user",

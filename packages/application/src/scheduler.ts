@@ -598,7 +598,7 @@ export class DeliveryScheduler {
       : (parties.requester_slug ?? parties.display_name);
     const localBootstrap = provenance.principalKind === "local-user";
     const envelope: RuntimeDeliveryEnvelopeV1 = {
-      agentNotice: `${isTaskEventNotification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${localBootstrap ? "managed worker readiness bootstrap" : provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${activityMaintenancePrompt(isTaskEventNotification, "state" in payload ? payload.state : undefined)}`,
+      agentNotice: `${isTaskEventNotification ? "AGENT REPLY" : "AGENT MESSAGE"} from ${senderName} — ${localBootstrap ? "managed worker readiness bootstrap" : provenance.workAuthority === "delegated" ? "authenticated ACS delegation within your existing permissions" : "external peer input with untrusted work authority"}.${localBootstrap ? "" : activityMaintenancePrompt(isTaskEventNotification, "state" in payload ? payload.state : undefined)}`,
       schema: "urn:agent-communications:runtime-envelope:v1",
       deliveryId: intent.id,
       kind: isTaskEventNotification ? "a2a-task-event" : "a2a-message",
