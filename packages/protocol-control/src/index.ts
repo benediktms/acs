@@ -144,12 +144,23 @@ const partSchema = z.discriminatedUnion("kind", [
   });
 type Params = z.infer<typeof paramsSchema>;
 type Rpc = { jsonrpc: "2.0"; id: string | number; method: string; params: Params };
+class ControlError extends Error {
+  constructor(
+    message: string,
+    readonly details: ControlErrorData["details"],
+    readonly correlationId: string,
+  ) {
+    super(message);
+  }
+}
 const ok = (id: Rpc["id"], result: unknown) => Response.json({ jsonrpc: "2.0", id, result });
 const fail = (id: Rpc["id"] | null, error: unknown) =>
   Response.json(
     (() => {
       const message = error instanceof Error ? error.message : String(error),
-        code = controlErrorCode(message.split(":").at(0) ?? "UNKNOWN");
+        code = controlErrorCode(message.split(":").at(0) ?? "UNKNOWN"),
+        details = error instanceof ControlError ? error.details : undefined,
+        correlationId = error instanceof ControlError ? error.correlationId : crypto.randomUUID();
       return {
         jsonrpc: "2.0",
         id,
@@ -159,7 +170,8 @@ const fail = (id: Rpc["id"] | null, error: unknown) =>
           data: {
             code,
             retryable: ["RUNTIME_UNAVAILABLE", "OVERLOADED"].includes(code),
-            correlationId: crypto.randomUUID(),
+            correlationId,
+            ...(details ? { details } : {}),
           },
         },
       };
@@ -217,6 +229,7 @@ export function controlHandler(
           resourceType: string,
           resourceId?: string,
           details: Record<string, unknown> = {},
+          correlationId = String(rpc.id),
         ) =>
           store.audit(
             principal.id,
@@ -226,7 +239,7 @@ export function controlHandler(
             {
               ...details,
             },
-            String(rpc.id),
+            correlationId,
           ),
         attest = (evidence: Params["evidence"]) =>
           attestEvidence(store, adapters, callerAttestors, evidence);
@@ -708,10 +721,18 @@ export function controlHandler(
             cwd,
           });
           const ambiguous = (details: Record<string, unknown>, message: string): never => {
+            const correlationId = crypto.randomUUID(),
+              evidence = { installationId: installation.id, ...details };
             try {
-              audit("runtime.managed-create.ambiguous", "runtime", installation.id, details);
+              audit(
+                "runtime.managed-create.ambiguous",
+                "runtime",
+                installation.id,
+                evidence,
+                correlationId,
+              );
             } catch {}
-            throw new Error(`RUNTIME_AMBIGUOUS: ${message}`);
+            throw new ControlError(`RUNTIME_AMBIGUOUS: ${message}`, evidence, correlationId);
           };
           if (created.outcome === "creation-unknown") {
             return ambiguous(
@@ -721,7 +742,11 @@ export function controlHandler(
           }
           if (created.outcome !== "created")
             throw new Error(
-              created.code === "incompatible" ? "RUNTIME_INCOMPATIBLE" : "RUNTIME_UNAVAILABLE",
+              created.code === "incompatible"
+                ? "RUNTIME_INCOMPATIBLE"
+                : created.code === "invalid"
+                  ? "VALIDATION_FAILED"
+                  : "RUNTIME_UNAVAILABLE",
             );
           if (created.session.installationId !== installation.id)
             return ambiguous(

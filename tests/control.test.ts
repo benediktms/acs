@@ -220,6 +220,11 @@ describe("control protocol", () => {
         await call({ agent: "incompatible", cwd: root, installationId: installation.id })
       ).json(),
     ).toMatchObject({ error: { data: { code: "RUNTIME_INCOMPATIBLE" } } });
+    store.createAgent("invalid");
+    adapter.managedCreateResult = { outcome: "rejected", code: "invalid" };
+    expect(
+      await (await call({ agent: "invalid", cwd: root, installationId: installation.id })).json(),
+    ).toMatchObject({ error: { data: { code: "VALIDATION_FAILED", retryable: false } } });
     store.createAgent("foreign");
     adapter.managedCreateResult = {
       outcome: "created",
@@ -242,6 +247,7 @@ describe("control protocol", () => {
       .get();
     if (!foreignAudit) throw new Error("missing foreign-route audit");
     expect(JSON.parse(foreignAudit.details_json)).toEqual({
+      installationId: installation.id,
       selectedInstallationId: installation.id,
       returnedInstallationId: "ins_foreign",
       threadId: "thread-foreign",
@@ -251,7 +257,7 @@ describe("control protocol", () => {
       outcome: "created",
       session: { installationId: installation.id, opaqueId: "thread-audit-failure" },
     };
-    spyOn(store, "audit").mockImplementation(() => {
+    const audit = spyOn(store, "audit").mockImplementation(() => {
       throw new Error("audit unavailable");
     });
     expect(
@@ -266,6 +272,7 @@ describe("control protocol", () => {
         )
         .get()?.n,
     ).toBe(0);
+    audit.mockRestore();
     expect(
       store.db
         .query<{ n: number }, []>(
@@ -293,20 +300,49 @@ describe("control protocol", () => {
           "SELECT count(*) n FROM audit_events WHERE action='runtime.managed-create.ambiguous'",
         )
         .get()?.n,
-    ).toBe(2);
+    ).toBe(3);
     store.createAgent("bind-failure");
     adapter.managedCreateResult = {
       outcome: "created",
       session: { installationId: installation.id, opaqueId: "thread-unbound" },
     };
-    spyOn(store, "bind").mockImplementation(() => {
+    const bindManaged = spyOn(store, "bindManaged").mockImplementation(() => {
       throw new Error("storage unavailable");
     });
+    const bindFailure = await (
+      await call({ agent: "bind-failure", cwd: root, installationId: installation.id })
+    ).json();
+    expect(bindFailure).toMatchObject({
+      error: {
+        data: {
+          code: "RUNTIME_AMBIGUOUS",
+          retryable: false,
+          details: { installationId: installation.id, threadId: "thread-unbound" },
+        },
+      },
+    });
+    bindManaged.mockRestore();
+    const bindFailureData = record(record(bindFailure).error).data;
+    const ambiguityAudit = store.db
+      .query<{ details_json: string; correlation_id: string }, []>(
+        "SELECT details_json,correlation_id FROM audit_events WHERE action='runtime.managed-create.ambiguous' AND details_json LIKE '%thread-unbound%' LIMIT 1",
+      )
+      .get();
+    if (!ambiguityAudit) throw new Error("missing bind-failure ambiguity audit");
+    expect(JSON.parse(ambiguityAudit.details_json)).toMatchObject({
+      installationId: installation.id,
+      threadId: "thread-unbound",
+    });
+    const correlationId = record(bindFailureData).correlationId;
+    if (typeof correlationId !== "string") throw new Error("missing ambiguity correlation ID");
+    expect(ambiguityAudit.correlation_id).toBe(correlationId);
     expect(
-      await (
-        await call({ agent: "bind-failure", cwd: root, installationId: installation.id })
-      ).json(),
-    ).toMatchObject({ error: { data: { code: "RUNTIME_AMBIGUOUS" } } });
+      store.db
+        .query<{ n: number }, []>(
+          "SELECT count(*) n FROM a2a_tasks WHERE target_agent_id=(SELECT id FROM agents WHERE slug='bind-failure')",
+        )
+        .get()?.n,
+    ).toBe(0);
     expect(
       store.db
         .query<{ n: number }, []>(

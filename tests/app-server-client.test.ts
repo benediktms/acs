@@ -33,7 +33,7 @@ describe("Codex app-server transport", () => {
       threadNotLoaded = false,
       staleInterrupt = false,
       emptyActiveTurnId = false,
-      threadStartId = "thread-created";
+      threadStartId: unknown = "thread-created";
     const server = Bun.listen({
       unix: path,
       socket: {
@@ -151,6 +151,18 @@ describe("Codex app-server transport", () => {
       },
       message: "invalid app-server thread id",
     });
+    for (const thread of [42, []]) {
+      threadStartId = thread;
+      await expect(
+        client.startThread({ cwd: "/tmp/worker", ephemeral: false }),
+      ).rejects.toMatchObject({
+        failure: {
+          kind: "INVALID_RESPONSE",
+          requestFlushed: true,
+        },
+        message: "invalid app-server thread id",
+      });
+    }
     threadStartId = "thread-created";
     expect(requests).toContainEqual(
       expect.objectContaining({
