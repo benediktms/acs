@@ -175,6 +175,7 @@ type Fixture = {
   setSource(source: unknown): void;
   setStatus(status: string): void;
   setResumeStatus(status: string): void;
+  setTurnHistory(status: string, text: string): void;
   notify(method: string, params: unknown): void;
   notifyBeforeReply(method: string, notification: { method: string; params: unknown }): void;
   close(): void;
@@ -860,10 +861,12 @@ test("Codex adapter replays terminal completion received before execution regist
     method: "turn/completed",
     params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
   });
+  fixture.setTurnHistory("completed", "hydrated final");
   expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
   expect((await iterator.next()).value).toMatchObject({
     type: "execution.completed",
     execution: { opaqueId: "turn-1" },
+    finalParts: [{ kind: "text", text: "hydrated final" }],
   });
   expect(
     await Promise.race([iterator.next().then(() => "event"), Bun.sleep(25).then(() => "none")]),
@@ -997,6 +1000,7 @@ async function codexFixture(
     source: unknown = "test",
     status = "idle",
     resumeStatus = "idle";
+  let turnHistory: { status: string; text: string } | undefined;
   let sendNotification: ((method: string, params: unknown) => void) | undefined,
     sendRequest: ((method: string, params: unknown) => void) | undefined,
     disconnect: (() => void) | undefined;
@@ -1105,6 +1109,7 @@ async function codexFixture(
                                 loadedOnly,
                                 canAcceptDirectInput,
                                 presence,
+                                turnHistory,
                               ),
                     }),
                   ),
@@ -1185,6 +1190,9 @@ async function codexFixture(
     setResumeStatus(value) {
       resumeStatus = value;
     },
+    setTurnHistory(status, text) {
+      turnHistory = { status, text };
+    },
     notify(method, params) {
       if (!sendNotification) throw new Error("emulator is not connected");
       sendNotification(method, params);
@@ -1236,6 +1244,7 @@ function response(
   loadedOnly = false,
   canAcceptDirectInput = true,
   presence: "present" | "absent" | "unknown" = "present",
+  turnHistory?: { status: string; text: string },
 ) {
   if (method === "initialize") return { userAgent, codexHome: "/tmp/codex" };
   if (method === "thread/loaded/list")
@@ -1264,6 +1273,7 @@ function response(
         historyDelivery,
         canAcceptDirectInput,
         presence,
+        turnHistory,
       ),
     };
   }
@@ -1283,6 +1293,7 @@ function thread(
   historyDelivery?: string,
   canAcceptDirectInput = true,
   interactiveSubscriberPresence: "present" | "absent" | "unknown" = "present",
+  turnHistory?: { status: string; text: string },
 ) {
   return {
     id,
@@ -1297,29 +1308,37 @@ function thread(
     status: status.startsWith("waitingOn")
       ? { type: "active", activeFlags: [status] }
       : { type: status },
-    turns: historyDelivery
+    turns: turnHistory
       ? [
           {
-            id: "turn-history",
-            status: "completed",
-            items: [
-              {
-                type: "functionCallOutput",
-                name: "receive_agent_message",
-                namespace: "acs",
-                output: JSON.stringify({
-                  deliveryId: historyDelivery,
-                  payloadHash: "payload-hash",
-                }),
-              },
-            ],
+            id: "turn-1",
+            status: turnHistory.status,
+            items: [{ type: "agentMessage", text: turnHistory.text }],
           },
         ]
-      : status === "active"
-        ? [{ id: "turn-active", status: "inProgress", items: [] }]
-        : status === "interrupted"
-          ? [{ id: "turn-1", status: "interrupted", items: [] }]
-          : [],
+      : historyDelivery
+        ? [
+            {
+              id: "turn-history",
+              status: "completed",
+              items: [
+                {
+                  type: "functionCallOutput",
+                  name: "receive_agent_message",
+                  namespace: "acs",
+                  output: JSON.stringify({
+                    deliveryId: historyDelivery,
+                    payloadHash: "payload-hash",
+                  }),
+                },
+              ],
+            },
+          ]
+        : status === "active"
+          ? [{ id: "turn-active", status: "inProgress", items: [] }]
+          : status === "interrupted"
+            ? [{ id: "turn-1", status: "interrupted", items: [] }]
+            : [],
   };
 }
 

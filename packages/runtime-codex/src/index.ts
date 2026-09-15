@@ -119,6 +119,7 @@ type TrackedExecution = {
   finalParts: NeutralPart[];
 };
 type DeliveryReference = Pick<RuntimeReconcileRequest, "deliveryId" | "payloadHash" | "target">;
+type PendingCompletion = { status: string; expiresAt: number };
 
 export class CodexRuntimeAdapter implements RuntimeAdapter {
   readonly descriptor: RuntimeAdapterDescriptor = {
@@ -135,7 +136,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private events: RuntimeEvent[] = [];
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
-  private pendingCompletions = new Map<string, unknown>();
+  private pendingCompletions = new Map<string, PendingCompletion>();
   private observingAcceptedExecutions = new Set<string>();
   private completedExecutions = new Set<string>();
   private interruptedExecutions = new Set<string>();
@@ -778,11 +779,6 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     };
     const key = executionKey(request.target.session.opaqueId, turnId);
     this.executions.set(key, execution);
-    const completion = this.pendingCompletions.get(key);
-    if (completion) {
-      this.pendingCompletions.delete(key);
-      this.handleNotification("turn/completed", completion);
-    }
     return execution;
   }
   private snapshot(thread: CodexThreadDto): RuntimeSessionSnapshot {
@@ -941,8 +937,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (!execution) {
         const key = executionKey(event.threadId, event.turn.id);
         if (!this.completedExecutions.has(key)) {
-          this.pendingCompletions.set(key, event);
-          // ponytail: bound in-process replay; use durable pending events if 1,024 unregistered turns is insufficient.
+          const pending = { status: event.turn.status, expiresAt: Date.now() + 5_000 };
+          this.pendingCompletions.set(key, pending);
+          setTimeout(() => {
+            if (this.pendingCompletions.get(key) === pending) this.pendingCompletions.delete(key);
+          }, 5_000).unref();
+          // ponytail: short in-process registration race window; use durable correlation if 1,024 turns or five seconds is insufficient.
           if (this.pendingCompletions.size > 1024) {
             const oldest = this.pendingCompletions.keys().next().value;
             if (oldest) this.pendingCompletions.delete(oldest);
