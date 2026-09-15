@@ -71,6 +71,13 @@ const agentSchema = z.looseObject({
         expiresAt: z.string(),
       })
       .optional(),
+    workspace: z
+      .looseObject({
+        cwd: z.string(),
+        gitRepository: z.string().optional(),
+        gitBranch: z.string().optional(),
+      })
+      .optional(),
     skills: z.array(
       z.looseObject({
         id: z.string(),
@@ -749,6 +756,15 @@ export function agentView(agent: z.infer<typeof agentSchema>) {
       description: skill.description,
       tags: skill.tags ?? [],
     })),
+    ...(agent.workspace
+      ? {
+          workspace: {
+            cwd: agent.workspace.cwd,
+            gitRepository: agent.workspace.gitRepository,
+            gitBranch: agent.workspace.gitBranch,
+          },
+        }
+      : {}),
     currentActivity: agent.currentActivity && {
       summary: agent.currentActivity.summary,
       cwd: agent.currentActivity.cwd,

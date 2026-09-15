@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define how authenticated ACS clients discover an agent's stable expertise and safely observe its current ACS-assigned activity.
+Define how authenticated ACS clients discover an agent's stable expertise, current runtime workspace, and current ACS-assigned activity.
 
 ## Requirements
 
@@ -19,6 +19,30 @@ ACS SHALL return each logical agent's description and configured skills through 
 
 - **WHEN** an authenticated caller filters the agent list by a configured skill identifier, name, description, or tag
 - **THEN** ACS returns matching logical agents without requiring A2A Agent Card retrieval
+
+### Requirement: Authenticated discovery exposes the last observed runtime workspace
+
+ACS SHALL include an optional `workspace` in authenticated control-protocol and MCP agent list/get results when the current binding has last reported an absolute runtime working directory. The workspace SHALL include that `cwd`; when fresh Git inspection succeeds, it SHALL additionally include `gitRepository`, defined as the repository directory from Git's absolute common directory (the parent directory for a normal `.git` directory), and the attached `gitBranch`. Workspace discovery SHALL be independent of `currentActivity` eligibility and derived agent state. Git inspection failure or detached HEAD SHALL omit the affected Git fields without omitting `cwd`.
+
+#### Scenario: Unknown agent retains its workspace
+
+- **WHEN** a bound agent's runtime observation has an unknown state but includes an absolute working directory
+- **THEN** authenticated list and get results include its workspace
+
+#### Scenario: Runtime workspace has no attached Git branch
+
+- **WHEN** a bound runtime reports a non-Git working directory or a Git detached HEAD
+- **THEN** authenticated discovery includes its `cwd` and omits unavailable Git fields
+
+#### Scenario: Runtime workspace is a Git worktree
+
+- **WHEN** a bound runtime reports an absolute working directory in an attached Git worktree
+- **THEN** authenticated discovery includes its `cwd`, its common repository directory name as `gitRepository`, and its branch as `gitBranch`
+
+#### Scenario: Linked worktrees share a repository name
+
+- **WHEN** two runtime workspaces are linked worktrees for one Git repository
+- **THEN** authenticated discovery reports the same `gitRepository` for both workspaces
 
 ### Requirement: Bound agents maintain activity for local work
 

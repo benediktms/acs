@@ -88,6 +88,11 @@ export interface LogicalAgentDto {
     readonly interactivePresence: "present" | "absent" | "unknown";
     readonly observedAt?: string;
   };
+  readonly workspace?: {
+    readonly cwd: string;
+    readonly gitRepository?: string;
+    readonly gitBranch?: string;
+  };
   readonly currentActivity?: {
     readonly summary?: string;
     readonly cwd?: string;

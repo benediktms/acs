@@ -20,7 +20,7 @@ import {
 } from "../../domain/src/index";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import type {
   BindingId,
   RuntimeInstallationId,
@@ -207,6 +207,7 @@ const deliveryStatus = "urn:agent-communications:delivery-status:v1";
 const managedRuntimeEndpoint = "urn:agent-communications:managed-runtime-endpoint:v1";
 const taskActivityMetadata = "urn:agent-communications:task-activity:v1";
 const bindingActivityMetadata = "urn:agent-communications:binding-activity:v1";
+const runtimeWorkspaceMetadata = "urn:agent-communications:runtime-workspace:v1";
 const taskActivityTtlMs = 30 * 60 * 1000;
 const taskEventTypes: Record<TaskState, string> = {
   submitted: "task-created",
@@ -909,15 +910,20 @@ export class Store {
       if (!binding) return;
       const state = deriveAgentState({ ...snapshot, controlClass: binding.control_class });
       if (binding.last_observed_at_ms && observedAt < binding.last_observed_at_ms) return;
+      const metadata = bindingMetadata(binding.metadata_json),
+        cwd = snapshot.attributes.cwdHint;
+      if (cwd && isAbsolute(cwd)) metadata[runtimeWorkspaceMetadata] = { cwd };
+      else delete metadata[runtimeWorkspaceMetadata];
       this.db
         .query(
-          "UPDATE runtime_bindings SET last_observed_runtime_state=?,last_observed_blocking_reason=?,last_observed_interactive_presence=?,last_observed_at_ms=? WHERE id=?",
+          "UPDATE runtime_bindings SET last_observed_runtime_state=?,last_observed_blocking_reason=?,last_observed_interactive_presence=?,last_observed_at_ms=?,metadata_json=? WHERE id=?",
         )
         .run(
           snapshot.runtimeState,
           snapshot.blockingReason,
           snapshot.interactivePresence,
           observedAt,
+          JSON.stringify(metadata),
           binding.id,
         );
       this.db

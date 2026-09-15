@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Message, Role, TaskState as A2ATaskState } from "@a2a-js/sdk";
 import {
   ControlCallError,
@@ -2065,6 +2065,105 @@ describe("control protocol", () => {
     expect(store.currentActivity(agent.id)).toBeUndefined();
     store.close();
   });
+  test("discovers last observed workspaces independently of activity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acs-control-workspace-"));
+    roots.push(root);
+    const paths: Paths = {
+      data: join(root, "acs.db"),
+      runtime: join(root, "control.sock"),
+      token: join(root, "control.token"),
+      bridgeToken: join(root, "bridge.token"),
+      secret: join(root, "secret.key"),
+    };
+    const store = new Store(paths),
+      installation = store.db
+        .query<{ id: `ins_${string}` }, []>("SELECT id FROM runtime_installations LIMIT 1")
+        .get();
+    if (!installation) throw new Error("missing installation");
+    const nonGit = mkdtempSync(join(tmpdir(), "acs-control-workspace-non-git-")),
+      attached = mkdtempSync(join(tmpdir(), "acs-control-workspace-attached-")),
+      linked = join(root, "linked-worktree"),
+      detached = mkdtempSync(join(tmpdir(), "acs-control-workspace-detached-"));
+    roots.push(nonGit, attached, detached);
+    git("init", "--initial-branch=feature/workspace", attached);
+    git("-C", attached, "config", "user.email", "test@example.com");
+    git("-C", attached, "config", "user.name", "Test");
+    writeFileSync(join(attached, "README.md"), "test\n");
+    git("-C", attached, "add", "README.md");
+    git("-C", attached, "-c", "commit.gpgSign=false", "commit", "-m", "test");
+    git("-C", attached, "worktree", "add", "-b", "feature/linked", linked);
+    git("init", "--initial-branch=feature/detached", detached);
+    git("-C", detached, "config", "user.email", "test@example.com");
+    git("-C", detached, "config", "user.name", "Test");
+    writeFileSync(join(detached, "README.md"), "test\n");
+    git("-C", detached, "add", "README.md");
+    git("-C", detached, "-c", "commit.gpgSign=false", "commit", "-m", "test");
+    git("-C", detached, "checkout", "--detach");
+    for (const [slug, cwd] of [
+      ["unknown-workspace", nonGit],
+      ["attached-workspace", attached],
+      ["linked-workspace", linked],
+      ["detached-workspace", detached],
+    ] as const) {
+      const agent = store.createAgent(slug),
+        binding = store.bind(agent.id, `thread-${slug}`);
+      store.observeSession({
+        session: { installationId: installation.id, opaqueId: `thread-${slug}` },
+        runtimeState: "idle",
+        blockingReason: "none",
+        interactivePresence: "present",
+        observedAt: new Date().toISOString(),
+        attributes: { cwdHint: cwd },
+      });
+      if (slug === "unknown-workspace")
+        store.db
+          .query(
+            "UPDATE runtime_bindings SET last_observed_runtime_state='unknown',last_observed_interactive_presence='unknown' WHERE id=?",
+          )
+          .run(binding.id);
+    }
+    const handler = controlHandler(store, new Date().toISOString(), () => {}),
+      call = async (method: string, params: unknown) =>
+        handler(
+          new Request("http://localhost", {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${readFileSync(paths.token, "utf8")}`,
+              "ACS-Control-Version": "1",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ jsonrpc: "2.0", id: "workspace", method, params }),
+          }),
+        );
+    const workspacePage = record(record(await (await call("agents.list", {})).json()).result),
+      items = workspacePage.items;
+    if (!Array.isArray(items)) throw new Error("expected agent items");
+    const workspace = (slug: string) => record(items.find((item) => item.slug === slug)).workspace;
+    expect(workspace("unknown-workspace")).toEqual({ cwd: nonGit });
+    expect(workspace("attached-workspace")).toEqual({
+      cwd: attached,
+      gitRepository: basename(attached),
+      gitBranch: "feature/workspace",
+    });
+    expect(workspace("linked-workspace")).toEqual({
+      cwd: linked,
+      gitRepository: basename(attached),
+      gitBranch: "feature/linked",
+    });
+    expect(workspace("detached-workspace")).toEqual({
+      cwd: detached,
+      gitRepository: basename(detached),
+    });
+    expect(
+      record(record(await (await call("agents.get", { agent: "unknown-workspace" })).json()).result)
+        .agent,
+    ).toMatchObject({
+      state: "unknown",
+      workspace: { cwd: nonGit },
+    });
+    store.close();
+  });
+
   test("filters stable keyset pages for control-plane lists", async () => {
     const root = mkdtempSync(join(tmpdir(), "acs-control-pages-"));
     roots.push(root);

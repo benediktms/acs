@@ -119,6 +119,11 @@ export interface AcsMcpToolMap {
           readonly description?: string;
           readonly tags: readonly string[];
         }[];
+        readonly workspace?: {
+          readonly cwd: string;
+          readonly gitRepository?: string;
+          readonly gitBranch?: string;
+        };
         readonly currentActivity?: {
           readonly summary?: string;
           readonly cwd?: string;
@@ -150,6 +155,11 @@ export interface AcsMcpToolMap {
         readonly description?: string;
         readonly tags: readonly string[];
       }[];
+      readonly workspace?: {
+        readonly cwd: string;
+        readonly gitRepository?: string;
+        readonly gitBranch?: string;
+      };
       readonly currentActivity?: {
         readonly summary?: string;
         readonly cwd?: string;

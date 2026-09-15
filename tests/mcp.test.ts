@@ -63,6 +63,11 @@ describe("Codex MCP bridge", () => {
           tags: ["data", "reports"],
         },
       ],
+      workspace: {
+        cwd: "/Users/worker/reports",
+        gitRepository: "reports",
+        gitBranch: "feature/reports",
+      },
       currentActivity: {
         state: "working",
         summary: "Review reports",
@@ -87,6 +92,11 @@ describe("Codex MCP bridge", () => {
           tags: ["data", "reports"],
         },
       ],
+      workspace: {
+        cwd: "/Users/worker/reports",
+        gitRepository: "reports",
+        gitBranch: "feature/reports",
+      },
       currentActivity: {
         summary: "Review reports",
         cwd: "/Users/worker/reports",

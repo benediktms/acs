@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute } from "node:path";
 import type {
   AgentRow,
   BindingRow,
@@ -1465,7 +1465,8 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
             ? new Date(binding.last_observed_at_ms).toISOString()
             : undefined,
         }
-      : undefined;
+      : undefined,
+    workspace = binding ? workspaceDto(binding.metadata_json) : undefined;
   return {
     id: agent.id,
     slug: agent.slug,
@@ -1476,6 +1477,7 @@ function agentDto(store: ControlStoragePort, agent: AgentRow) {
       runtimeObservation && binding
         ? deriveAgentState({ ...runtimeObservation, controlClass: binding.control_class })
         : "unknown",
+    ...(workspace ? { workspace } : {}),
     runtimeObservation,
     binding: binding
       ? {
@@ -1769,6 +1771,34 @@ function activityWorkspace(cwd: string | undefined) {
     return { cwd, ...(gitBranch ? { gitBranch } : {}) };
   } catch {
     throw new Error("RUNTIME_UNAVAILABLE: current runtime workspace unavailable");
+  }
+}
+function workspaceDto(metadata: string) {
+  try {
+    const value: unknown = JSON.parse(metadata);
+    if (!isRecord(value)) return undefined;
+    const workspace = value["urn:agent-communications:runtime-workspace:v1"];
+    if (!isRecord(workspace) || typeof workspace.cwd !== "string" || !isAbsolute(workspace.cwd))
+      return undefined;
+    const options = { env: { ...process.env, LC_ALL: "C" } },
+      commonDir = Bun.spawnSync(
+        ["git", "-C", workspace.cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        options,
+      );
+    if (!commonDir.success) return { cwd: workspace.cwd };
+    const git = Bun.spawnSync(["git", "-C", workspace.cwd, "branch", "--show-current"], options),
+      gitDirectory = commonDir.stdout.toString().trim(),
+      gitRepository = basename(
+        basename(gitDirectory) === ".git" ? dirname(gitDirectory) : gitDirectory,
+      ),
+      gitBranch = git.success ? git.stdout.toString().trim() : "";
+    return {
+      cwd: workspace.cwd,
+      ...(gitRepository ? { gitRepository } : {}),
+      ...(gitBranch ? { gitBranch } : {}),
+    };
+  } catch {
+    return undefined;
   }
 }
 function runtimeSessionCursor(value: unknown) {
