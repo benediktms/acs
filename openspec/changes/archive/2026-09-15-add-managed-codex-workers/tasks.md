@@ -52,7 +52,7 @@
 ## 7. Documentation and Operator Certification
 
 - [x] 7.1 Add or revise `docs/codex-managed-workers.md` to document readiness as asynchronous submitted state, exact bootstrap prompt/tool boundary, retained receipts, and fail-closed unsupported behavior; verify each support claim maps to a contract, focused test, or pinned evidence row.
-- [ ] 7.2 Run the isolated operator matrix for Ctrl+D, `/exit`, `/quit`, Ctrl+C, terminal close, approval/user-input reattachment, two native clients plus the ACS observer, and restart/reconnect without using an existing ACS service or user session; record Codex version, topology, installation, exact action, observed RPCs, terminal status, and completion count, and mark any unproven prompt or multi-client behavior fail-closed rather than supported.
+- [x] 7.2 Run the isolated operator matrix for Ctrl+D, `/exit`, `/quit`, Ctrl+C, terminal close, approval/user-input reattachment, two native clients plus the ACS observer, and restart/reconnect without using an existing ACS service or user session; record Codex version, topology, installation, exact action, observed RPCs, terminal status, and completion count, and mark any unproven prompt or multi-client behavior fail-closed rather than supported.
 
 ## 8. Focused Validation and Handoff
 

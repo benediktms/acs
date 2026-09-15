@@ -39,5 +39,25 @@ receipt with terminal `session-not-found`; ACS does not retry, recreate, adopt, 
 the readiness completion seeds the rollout, a graceful restart on the same home and socket lets one
 managed attempt resume that exact session and complete one second delivery without duplication. An
 attached control does not resume. Do not generalize this evidence to other Codex versions or restart
-topologies. Lost-create reconciliation, approval restoration, and multiple-client/TUI behavior remain
-unsupported pending task 7.2.
+topologies. Lost-create reconciliation and approval/user-input reattachment remain unsupported. The
+isolated runtime-evidence matrix below records its tested boundary. Unsupported rows are deliberately
+not product claims.
+
+## Operator certification matrix
+
+Recorded 2026-09-15 against `codex-cli 0.154.0` at
+`/Users/benedikt.schnatterbeck/.local/bin/codex`. The native proof uses a temporary `CODEX_HOME`,
+temporary ACS home, temporary Unix app-server/control sockets, a local credential-free mock model,
+one ACS observer, and no LaunchAgent, existing ACS service, user session, or account configuration.
+
+| Action | Exact action and observed RPCs | Terminal status | Completion count | Result |
+| --- | --- | --- | --- | --- |
+| Managed readiness | `ACS_REAL_CODEX=1 mise exec -- bun test tests/real-codex.test.ts`; `runtimes.sessions.createManaged`, `system.initialize`, `runtimes.list`, `bridge.identity`, `agents.list`, `bridge.attestCaller`, `executor.task.acknowledge`, `executor.task.complete` | No native TUI attached; model turn completed | 1 readiness execution | Certified for this topology |
+| Restart/reconnect | Gracefully stop and restart the temporary same-home/socket app-server; observer sees `thread/resume` once for the managed delivery, while attached control makes no resume/input call | No native TUI attached; follow-up model turn completed | 1 follow-up execution; 2 total | Certified for this topology |
+| Ctrl+D | Native TUI `thread/resume` followed by `thread/unsubscribe`; no `turn/interrupt` | Native client exited after empty-composer Ctrl+D; observer remained connected and thread stayed idle | 1 completed seed turn; no additional turn | Certified for this topology |
+| `/exit` | 2 native TUI `thread/resume` then `thread/unsubscribe` cycles; no `turn/interrupt` | Both native clients exited; observer remained connected and thread stayed idle | 1 completed seed turn; no additional turn | Certified for this topology |
+| `/quit` | Native TUI `thread/resume` followed by `thread/unsubscribe`; no `turn/interrupt` | Native client exited; observer remained connected and thread stayed idle | 1 completed seed turn; no additional turn | Certified for this topology |
+| Ctrl+C during work | Native TUI `turn/start` then `turn/interrupt`; held mock request observed abort; no operator detach command | Observer reported the original active turn `interrupted`; native client remained attached | 1 completed seed turn; 1 interrupted active turn | Certified for this topology |
+| Terminal transport close | Native TUI reached `thread/resume`; no subsequent `thread/unsubscribe` or `turn/interrupt` before the client process exited | Reported terminal close; client later absent while observer and app-server remained alive and thread stayed idle | 1 completed seed turn; no additional turn | Certified only for this topology |
+| Approval/user-input reattachment | The isolated mock cannot issue or trace genuine app-server `item/tool/requestUserInput` or `*/requestApproval` frames | Unproven | Unproven | Unsupported; worker stays visibly blocked |
+| Two native clients plus ACS observer | 2 native `initialize`/`thread/resume` clients and one observer on one thread; one client unsubscribed, then the remaining client received one shared-thread response before temporary-backend teardown | Observer recorded 3 completed shared-thread turns (seed plus one turn before and one after detach); no duplicate root execution | 3 completed shared-thread turns | Certified only for concurrent update fanout and one-client detachment before teardown; prompt routing remains unsupported |
