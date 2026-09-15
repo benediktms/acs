@@ -176,6 +176,7 @@ type Fixture = {
   setStatus(status: string): void;
   setResumeStatus(status: string): void;
   notify(method: string, params: unknown): void;
+  notifyBeforeReply(method: string, notification: { method: string; params: unknown }): void;
   close(): void;
 };
 
@@ -849,6 +850,29 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
 
 runtimeAdapterConformance("Codex", () => codexFixture());
 
+test("Codex adapter replays terminal completion received before execution registration", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  fixture.notifyBeforeReply("turn/start", {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
+  });
+  expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    execution: { opaqueId: "turn-1" },
+  });
+  expect(
+    await Promise.race([iterator.next().then(() => "event"), Bun.sleep(25).then(() => "none")]),
+  ).toBe("none");
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
 test("Codex runtime adapter enables direct delivery for supported runtimes", async () => {
   for (const version of SUPPORTED_CODEX_VERSIONS) {
     const fixture = await codexFixture(`codex-cli ${version}`),
@@ -918,6 +942,7 @@ async function codexFixture(
     >(),
     calls = new Map<string, number>(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
+  const notificationsBeforeReply = new Map<string, { method: string; params: unknown }>();
   let fence = true,
     canAcceptDirectInput = true,
     presence: "present" | "absent" | "unknown" = "present",
@@ -1039,7 +1064,12 @@ async function codexFixture(
                     }),
                   ),
                 ),
+              notification = notificationsBeforeReply.get(method),
               hold = holds.get(method);
+            if (notification) {
+              notificationsBeforeReply.delete(method);
+              sendNotification?.(notification.method, notification.params);
+            }
             if (hold) {
               holds.delete(method);
               void hold.promise.then(reply);
@@ -1113,6 +1143,9 @@ async function codexFixture(
     notify(method, params) {
       if (!sendNotification) throw new Error("emulator is not connected");
       sendNotification(method, params);
+    },
+    notifyBeforeReply(method, notification) {
+      notificationsBeforeReply.set(method, notification);
     },
     close() {
       server.stop();

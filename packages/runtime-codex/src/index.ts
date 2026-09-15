@@ -135,6 +135,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private events: RuntimeEvent[] = [];
   private waiters: Array<() => void> = [];
   private executions = new Map<string, TrackedExecution>();
+  private pendingCompletions = new Map<string, unknown>();
   private observingAcceptedExecutions = new Set<string>();
   private completedExecutions = new Set<string>();
   private interruptedExecutions = new Set<string>();
@@ -776,7 +777,13 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       deliveries: new Map([[request.deliveryId, request.payloadHash]]),
       finalParts: [],
     };
-    this.executions.set(executionKey(request.target.session.opaqueId, turnId), execution);
+    const key = executionKey(request.target.session.opaqueId, turnId);
+    this.executions.set(key, execution);
+    const completion = this.pendingCompletions.get(key);
+    if (completion) {
+      this.pendingCompletions.delete(key);
+      this.handleNotification("turn/completed", completion);
+    }
     return execution;
   }
   private snapshot(thread: CodexThreadDto): RuntimeSessionSnapshot {
@@ -905,7 +912,19 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         execution = this.executions.get(executionKey(event.threadId, event.turn.id));
       if (event.turn.status === "interrupted")
         this.interruptedExecutions.add(executionKey(event.threadId, event.turn.id));
-      if (execution) {
+      if (!execution) {
+        const key = executionKey(event.threadId, event.turn.id);
+        if (!this.completedExecutions.has(key) && !this.pendingCompletions.has(key)) {
+          this.pendingCompletions.set(key, event);
+          // ponytail: bound in-process replay; use durable pending events if 1,024 unregistered turns is insufficient.
+          if (this.pendingCompletions.size > 1024) {
+            const oldest = this.pendingCompletions.keys().next().value;
+            if (oldest) this.pendingCompletions.delete(oldest);
+          }
+        }
+        return;
+      }
+      {
         const outcome =
           event.turn.status === "completed"
             ? "completed"
