@@ -175,7 +175,9 @@ type Fixture = {
   setSource(source: unknown): void;
   setStatus(status: string): void;
   setResumeStatus(status: string): void;
+  setTurnHistory(status: string, text: string): void;
   notify(method: string, params: unknown): void;
+  notifyBeforeReply(method: string, notification: { method: string; params: unknown }): void;
   close(): void;
 };
 
@@ -849,6 +851,93 @@ function runtimeAdapterConformance(name: string, create: () => Promise<Fixture>)
 
 runtimeAdapterConformance("Codex", () => codexFixture());
 
+test("Codex adapter replays terminal completion received before execution registration", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  fixture.notifyBeforeReply("turn/start", {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } },
+  });
+  fixture.setTurnHistory("completed", "hydrated final");
+  expect(await fixture.adapter.deliver(delivery())).toMatchObject({ outcome: "accepted" });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    execution: { opaqueId: "turn-1" },
+    finalParts: [{ kind: "text", text: "hydrated final" }],
+  });
+  expect(
+    await Promise.race([iterator.next().then(() => "event"), Bun.sleep(25).then(() => "none")]),
+  ).toBe("none");
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex adapter prefers a tracked completion after a provisional interruption", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "interrupted" },
+  });
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "completed",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex adapter confirms a tracked interruption from current history", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  fixture.setStatus("interrupted");
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "interrupted" },
+  });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "interrupted",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex adapter confirms a recovered interruption from history without a notification", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  fixture.setTurnHistory("interrupted", "");
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "interrupted",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
 test("Codex runtime adapter enables direct delivery for supported runtimes", async () => {
   for (const version of SUPPORTED_CODEX_VERSIONS) {
     const fixture = await codexFixture(`codex-cli ${version}`),
@@ -918,6 +1007,7 @@ async function codexFixture(
     >(),
     calls = new Map<string, number>(),
     holds = new Map<string, { promise: Promise<void>; release: () => void }>();
+  const notificationsBeforeReply = new Map<string, { method: string; params: unknown }>();
   let fence = true,
     canAcceptDirectInput = true,
     presence: "present" | "absent" | "unknown" = "present",
@@ -927,6 +1017,7 @@ async function codexFixture(
     source: unknown = "test",
     status = "idle",
     resumeStatus = "idle";
+  let turnHistory: { status: string; text: string } | undefined;
   let sendNotification: ((method: string, params: unknown) => void) | undefined,
     sendRequest: ((method: string, params: unknown) => void) | undefined,
     disconnect: (() => void) | undefined;
@@ -1035,11 +1126,17 @@ async function codexFixture(
                                 loadedOnly,
                                 canAcceptDirectInput,
                                 presence,
+                                turnHistory,
                               ),
                     }),
                   ),
                 ),
+              notification = notificationsBeforeReply.get(method),
               hold = holds.get(method);
+            if (notification) {
+              notificationsBeforeReply.delete(method);
+              sendNotification?.(notification.method, notification.params);
+            }
             if (hold) {
               holds.delete(method);
               void hold.promise.then(reply);
@@ -1110,9 +1207,15 @@ async function codexFixture(
     setResumeStatus(value) {
       resumeStatus = value;
     },
+    setTurnHistory(turnStatus, text) {
+      turnHistory = { status: turnStatus, text };
+    },
     notify(method, params) {
       if (!sendNotification) throw new Error("emulator is not connected");
       sendNotification(method, params);
+    },
+    notifyBeforeReply(method, notification) {
+      notificationsBeforeReply.set(method, notification);
     },
     close() {
       server.stop();
@@ -1158,6 +1261,7 @@ function response(
   loadedOnly = false,
   canAcceptDirectInput = true,
   presence: "present" | "absent" | "unknown" = "present",
+  turnHistory?: { status: string; text: string },
 ) {
   if (method === "initialize") return { userAgent, codexHome: "/tmp/codex" };
   if (method === "thread/loaded/list")
@@ -1186,6 +1290,7 @@ function response(
         historyDelivery,
         canAcceptDirectInput,
         presence,
+        turnHistory,
       ),
     };
   }
@@ -1205,6 +1310,7 @@ function thread(
   historyDelivery?: string,
   canAcceptDirectInput = true,
   interactiveSubscriberPresence: "present" | "absent" | "unknown" = "present",
+  turnHistory?: { status: string; text: string },
 ) {
   return {
     id,
@@ -1219,27 +1325,37 @@ function thread(
     status: status.startsWith("waitingOn")
       ? { type: "active", activeFlags: [status] }
       : { type: status },
-    turns: historyDelivery
+    turns: turnHistory
       ? [
           {
-            id: "turn-history",
-            status: "completed",
-            items: [
-              {
-                type: "functionCallOutput",
-                name: "receive_agent_message",
-                namespace: "acs",
-                output: JSON.stringify({
-                  deliveryId: historyDelivery,
-                  payloadHash: "payload-hash",
-                }),
-              },
-            ],
+            id: "turn-1",
+            status: turnHistory.status,
+            items: [{ type: "agentMessage", text: turnHistory.text }],
           },
         ]
-      : status === "active"
-        ? [{ id: "turn-active", status: "inProgress", items: [] }]
-        : [],
+      : historyDelivery
+        ? [
+            {
+              id: "turn-history",
+              status: "completed",
+              items: [
+                {
+                  type: "functionCallOutput",
+                  name: "receive_agent_message",
+                  namespace: "acs",
+                  output: JSON.stringify({
+                    deliveryId: historyDelivery,
+                    payloadHash: "payload-hash",
+                  }),
+                },
+              ],
+            },
+          ]
+        : status === "active"
+          ? [{ id: "turn-active", status: "inProgress", items: [] }]
+          : status === "interrupted"
+            ? [{ id: "turn-1", status: "interrupted", items: [] }]
+            : [],
   };
 }
 
