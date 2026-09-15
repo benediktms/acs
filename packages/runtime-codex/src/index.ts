@@ -140,6 +140,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private observingAcceptedExecutions = new Set<string>();
   private completedExecutions = new Set<string>();
   private interruptedExecutions = new Set<string>();
+  private interruptedReadRetries = new Set<string>();
   private observations = new Map<
     string,
     Pick<RuntimeSessionSnapshot, "runtimeState" | "blockingReason" | "interactivePresence">
@@ -748,8 +749,14 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
           execution.finalParts = [{ kind: "text", text: item.text, mediaType: "text/markdown" }];
       }
       if (["completed", "interrupted", "failed"].includes(turn.status)) {
-        if (turn.status === "interrupted" && !interruptedBeforeRead) retry = true;
-        else this.finalizeExecution(request.target.session.opaqueId, turn, execution);
+        if (
+          turn.status === "interrupted" &&
+          !interruptedBeforeRead &&
+          !this.interruptedReadRetries.has(key)
+        ) {
+          this.interruptedReadRetries.add(key);
+          retry = true;
+        } else this.finalizeExecution(request.target.session.opaqueId, turn, execution);
       } else retry = true;
     } catch {
       this.requireContext().logger.warn("runtime.observation-deferred", {
@@ -847,6 +854,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     });
     this.completedExecutions.add(key);
     this.pendingCompletions.delete(key);
+    this.interruptedReadRetries.delete(key);
     // ponytail: bound in-process dedupe; use durable completion keys if 1,024 recent turns is insufficient.
     if (this.completedExecutions.size > 1024) {
       const oldest = this.completedExecutions.values().next().value;

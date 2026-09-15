@@ -921,6 +921,23 @@ test("Codex adapter confirms a tracked interruption from current history", async
   fixture.close();
 });
 
+test("Codex adapter confirms a recovered interruption from history without a notification", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  fixture.setTurnHistory("interrupted", "");
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "interrupted",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
 test("Codex runtime adapter enables direct delivery for supported runtimes", async () => {
   for (const version of SUPPORTED_CODEX_VERSIONS) {
     const fixture = await codexFixture(`codex-cli ${version}`),
