@@ -873,6 +873,51 @@ test("Codex adapter replays terminal completion received before execution regist
   fixture.close();
 });
 
+test("Codex adapter prefers a tracked completion after a provisional interruption", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "interrupted" },
+  });
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed" },
+  });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "completed",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
+test("Codex adapter confirms a tracked interruption from current history", async () => {
+  const fixture = await codexFixture(),
+    abort = new AbortController(),
+    iterator = fixture.adapter.observe(abort.signal)[Symbol.asyncIterator]();
+  await fixture.adapter.start(fixture.context);
+  await iterator.next();
+  await fixture.adapter.deliver(delivery());
+  fixture.setStatus("interrupted");
+  fixture.notify("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "interrupted" },
+  });
+  expect((await iterator.next()).value).toMatchObject({
+    type: "execution.completed",
+    outcome: "interrupted",
+  });
+  abort.abort();
+  await fixture.adapter.stop({ reason: "shutdown" });
+  fixture.close();
+});
+
 test("Codex runtime adapter enables direct delivery for supported runtimes", async () => {
   for (const version of SUPPORTED_CODEX_VERSIONS) {
     const fixture = await codexFixture(`codex-cli ${version}`),
@@ -1272,7 +1317,9 @@ function thread(
         ]
       : status === "active"
         ? [{ id: "turn-active", status: "inProgress", items: [] }]
-        : [],
+        : status === "interrupted"
+          ? [{ id: "turn-1", status: "interrupted", items: [] }]
+          : [],
   };
 }
 

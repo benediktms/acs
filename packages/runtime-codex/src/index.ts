@@ -730,6 +730,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         await this.requireClient().resumeThread(request.target.session.opaqueId, signal);
         resumed = true;
       }
+      const interruptedBeforeRead = this.interruptedExecutions.has(key);
       const turn = await this.requireClient().readExecution(
         request.target.session.opaqueId,
         turnId,
@@ -745,12 +746,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         if (item.type === "agentMessage" && typeof item.text === "string")
           execution.finalParts = [{ kind: "text", text: item.text, mediaType: "text/markdown" }];
       }
-      if (["completed", "interrupted", "failed"].includes(turn.status))
-        this.handleNotification("turn/completed", {
-          threadId: request.target.session.opaqueId,
-          turn,
-        });
-      else retry = true;
+      if (["completed", "interrupted", "failed"].includes(turn.status)) {
+        if (turn.status === "interrupted" && !interruptedBeforeRead) retry = true;
+        else this.finalizeExecution(request.target.session.opaqueId, turn, execution);
+      } else retry = true;
     } catch {
       this.requireContext().logger.warn("runtime.observation-deferred", {
         deliveryId: request.deliveryId,
@@ -831,6 +830,33 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
   private wake() {
     for (const waiter of this.waiters.splice(0)) waiter();
+  }
+  private finalizeExecution(
+    threadId: string,
+    turn: { id: string; status: string },
+    execution: TrackedExecution,
+  ) {
+    const key = executionKey(threadId, turn.id);
+    if (this.completedExecutions.has(key)) return;
+    this.emit({
+      type: "execution.completed",
+      execution: { opaqueId: turn.id, session: execution.session },
+      outcome:
+        turn.status === "completed"
+          ? "completed"
+          : turn.status === "interrupted"
+            ? "interrupted"
+            : "failed",
+      finalParts: execution.finalParts,
+    });
+    this.completedExecutions.add(key);
+    this.pendingCompletions.delete(key);
+    // ponytail: bound in-process dedupe; use durable completion keys if 1,024 recent turns is insufficient.
+    if (this.completedExecutions.size > 1024) {
+      const oldest = this.completedExecutions.values().next().value;
+      if (oldest) this.completedExecutions.delete(oldest);
+    }
+    this.executions.delete(key);
   }
   private handleNotification(method: string, params: unknown) {
     if (method === "thread/status/changed" && isThreadStatusChanged(params)) {
@@ -914,7 +940,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         this.interruptedExecutions.add(executionKey(event.threadId, event.turn.id));
       if (!execution) {
         const key = executionKey(event.threadId, event.turn.id);
-        if (!this.completedExecutions.has(key) && !this.pendingCompletions.has(key)) {
+        if (!this.completedExecutions.has(key)) {
           this.pendingCompletions.set(key, event);
           // ponytail: bound in-process replay; use durable pending events if 1,024 unregistered turns is insufficient.
           if (this.pendingCompletions.size > 1024) {
@@ -924,28 +950,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         }
         return;
       }
-      {
-        const outcome =
-          event.turn.status === "completed"
-            ? "completed"
-            : event.turn.status === "interrupted"
-              ? "interrupted"
-              : "failed";
-        this.emit({
-          type: "execution.completed",
-          execution: { opaqueId: event.turn.id, session: execution.session },
-          outcome,
-          finalParts: execution.finalParts,
-        });
-        const key = executionKey(event.threadId, event.turn.id);
-        this.completedExecutions.add(key);
-        // ponytail: bound in-process dedupe; use durable completion keys if 1,024 recent turns is insufficient.
-        if (this.completedExecutions.size > 1024) {
-          const oldest = this.completedExecutions.values().next().value;
-          if (oldest) this.completedExecutions.delete(oldest);
-        }
-        this.executions.delete(key);
-      }
+      if (event.turn.status !== "interrupted")
+        this.finalizeExecution(event.threadId, event.turn, execution);
     }
   }
   private handleRequest(requestId: string, method: string, params: unknown) {
