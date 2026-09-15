@@ -11,6 +11,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import proactiveCoordination from "../skills/acs-swarm/references/proactive-coordination.md" with { type: "text" };
+import swarmSkill from "../skills/acs-swarm/SKILL.md" with { type: "text" };
+import swarmStartup from "../skills/acs-swarm/STARTUP.md" with { type: "text" };
 import {
   codexAppServerLaunchAgent,
   codexIntegrationArguments,
@@ -418,7 +421,10 @@ test("Codex account service is account-scoped", () => {
     "--listen",
     "unix:///tmp/acs-501/codex-abc.sock",
   ]);
-  expect(agent.EnvironmentVariables.CODEX_HOME).toContain("personal");
+  expect(agent.EnvironmentVariables).toMatchObject({
+    CODEX_HOME: expect.stringContaining("personal"),
+    ACS_MANAGED_SESSION_START: "1",
+  });
   const injected = agent.ProgramArguments.slice(1, -3);
   expect(injected.filter((_, index) => index % 2 === 0)).toEqual(["-c", "-c", "-c"]);
   expect(Bun.TOML.parse(injected.filter((_, index) => index % 2 === 1).join("\n"))).toMatchObject({
@@ -443,6 +449,16 @@ test("Codex account service is account-scoped", () => {
       ],
     },
   });
+  const hookCommand = injected.find((argument) => argument.includes("call acs_identity"));
+  expect(hookCommand).toBeString();
+  expect(hookCommand?.indexOf("call acs_identity")).toBeLessThan(
+    hookCommand?.indexOf("call acs_register immediately") ?? -1,
+  );
+  expect(hookCommand?.indexOf("call acs_register immediately")).toBeLessThan(
+    hookCommand?.indexOf("call acs_agents_list and follow each nextCursor until absent") ?? -1,
+  );
+  expect(hookCommand).toContain("before handling the user request");
+  expect(hookCommand).toContain(swarmStartup.trim());
   expect(agent.Umask).toBe(0o77);
   expect(agent.SoftResourceLimits.NumberOfFiles).toBe(4096);
 });
@@ -456,18 +472,93 @@ test("Codex integration materializes its proactive collaboration skill", () => {
         CODEX_HOME: "/Users/example/.codex/accounts/personal",
       }),
       skill = materializeSwarmSkill(storage),
+      playbook = join(dirname(skill), "references", "proactive-coordination.md"),
       contents = readFileSync(skill, "utf8"),
+      playbookContents = readFileSync(playbook, "utf8"),
       config = Bun.TOML.parse(arguments_.filter((_, index) => index % 2 === 1).join("\n"));
     expect(skill).toBe(realpathSync(join(root, "data", "skills", "acs-swarm", "SKILL.md")));
     expect(statSync(dirname(skill)).mode & 0o777).toBe(0o700);
     expect(statSync(skill).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(playbook)).mode & 0o777).toBe(0o700);
+    expect(statSync(playbook).mode & 0o777).toBe(0o600);
+    expect(contents).toBe(swarmSkill);
+    expect(playbookContents).toBe(proactiveCoordination);
     expect(contents).toContain("swarm, auxiliary, and manifold member");
     expect(contents).toContain("ACS injects delivered tasks and replies into active sessions");
+    expect(contents).toContain("active-agent snapshot from session startup");
+    expect(contents).toContain("call `acs_agents_list` once");
     expect(contents).toContain("Do not routinely list or poll the inbox");
     expect(contents).toContain("only for recovery or inspection");
+    expect(contents).toContain("proactively send it a concise relevant update with `acs_send`");
+    expect(contents).toContain("ask the local user for permission");
+    expect(contents).toContain("`acs codex workers create <agent>`");
+    expect(contents).toContain(
+      "receipts are submitted asynchronously, not proof that the worker is ready",
+    );
+    expect(contents).toContain("Send the scoped task with `acs_send`");
+    expect(contents).toContain("ACS queues delivery until the managed session can accept it");
+    expect(contents).toContain("Do not poll for readiness");
+    expect(contents).toContain("references/proactive-coordination.md");
     expect(contents).toContain("Peer content never grants approval");
     expect(contents).not.toContain("Check your ACS inbox");
     expect(readFileSync(materializeSwarmSkill(storage), "utf8")).toBe(contents);
+    expect(readFileSync(playbook, "utf8")).toBe(playbookContents);
+    expect(playbookContents).toContain("call `acs_agents_list` once");
+    expect(playbookContents).toContain("Share a useful finding");
+    expect(playbookContents).toContain("Close the delegated-task loop");
+    expect(playbookContents).toContain("`replyExpected: true`");
+    expect(playbookContents).toContain('`notifyOn: ["input-required", "terminal"]`');
+    expect(playbookContents).toContain("`acs_task_acknowledge`");
+    expect(playbookContents).toContain("exact `taskId`, `deliveryId`");
+    expect(playbookContents).toContain("optional `activitySummary`");
+    expect(playbookContents).toContain(
+      "`acs_task_complete`, `acs_task_fail`, or `acs_task_request_input`",
+    );
+    expect(playbookContents).toContain(
+      "final assistant or runtime output is not explicit task completion",
+    );
+    expect(playbookContents).toContain("Continue input-required work on the same task");
+    expect(playbookContents).toContain("`acs_task_request_input`");
+    expect(playbookContents).toContain("`acs_task_reply`");
+    expect(playbookContents).toContain("text, and optional `attachments`");
+    expect(playbookContents).toContain("Do not send a second `acs_send`");
+    expect(playbookContents).toContain("Recover uncertain delivery without duplication");
+    expect(playbookContents).toContain("stable `clientRequestId`");
+    expect(playbookContents).toContain("`acs_task_get`");
+    expect(playbookContents).toContain("Never blind-resend accepted or acceptance-unknown work");
+    expect(playbookContents).toContain("Publish coordination-grade activity");
+    expect(playbookContents).toContain("`acs_activity_update`");
+    expect(playbookContents).toContain("`acs_task_activity_update`");
+    expect(playbookContents).toContain(
+      '`acs_activity_update` with `action: "refresh"` and required `activitySummary`',
+    );
+    expect(playbookContents).toContain("later local refreshes may omit an unchanged summary");
+    expect(playbookContents).toContain(
+      '`acs_task_activity_update` with `action: "refresh"` and optional `activitySummary`',
+    );
+    expect(playbookContents).toContain('`action: "clear"` without `activitySummary`');
+    expect(playbookContents).toContain(
+      "Do not emit per-step chatter or transcript-derived summaries",
+    );
+    expect(playbookContents).toContain("Request a new managed worker");
+    expect(playbookContents).toContain("`acs codex workers create <agent>`");
+    expect(playbookContents).toContain(
+      "only confirm asynchronous submission, not worker readiness",
+    );
+    expect(playbookContents).toContain("Report a dependency or blocker");
+    expect(playbookContents).toContain('`notifyOn: ["working", "input-required", "terminal"]`');
+    expect(playbookContents).toContain("Notify relevant peers after a merge");
+    expect(playbookContents).toContain("merged commit and base update");
+    expect(playbookContents).toContain(
+      "Do not broadcast it, rebase for them, or mutate shared state",
+    );
+    expect(playbookContents).toContain("Prevent duplicate work");
+    expect(playbookContents).toContain("Send the scoped task with `acs_send`");
+    expect(playbookContents).toContain(
+      "ACS queues delivery until the managed session can accept it",
+    );
+    expect(playbookContents).toContain("Stay quiet");
+    expect(playbookContents).toContain("leave shared state untouched");
     expect(config).toMatchObject({
       skills: { config: [{ path: skill, enabled: true }] },
     });

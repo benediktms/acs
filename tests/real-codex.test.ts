@@ -47,6 +47,18 @@ test.skipIf(process.env.ACS_REAL_CODEX !== "1")(
       client = new CodexAppServerClient(socket),
       adapter = new CodexRuntimeAdapter(socket, 128, undefined, [dirname(dirname(skill))]);
     try {
+      const integration = codexIntegrationArguments([process.execPath], {
+          ACS_STORAGE_PATH: storage,
+          CODEX_HOME: root,
+        }),
+        hook = integration.find((argument) => argument.includes("call acs_identity"));
+      expect(hook).toBeString();
+      expect(hook?.indexOf("call acs_identity")).toBeLessThan(
+        hook?.indexOf("call acs_register immediately") ?? -1,
+      );
+      expect(hook?.indexOf("call acs_register immediately")).toBeLessThan(
+        hook?.indexOf("call acs_agents_list and follow each nextCursor until absent") ?? -1,
+      );
       await until(() => existsSync(socket), "Codex app-server socket");
       await adapter.start({
         installationId: "ins_native",
