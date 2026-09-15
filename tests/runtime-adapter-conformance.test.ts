@@ -1190,8 +1190,8 @@ async function codexFixture(
     setResumeStatus(value) {
       resumeStatus = value;
     },
-    setTurnHistory(status, text) {
-      turnHistory = { status, text };
+    setTurnHistory(turnStatus, text) {
+      turnHistory = { status: turnStatus, text };
     },
     notify(method, params) {
       if (!sendNotification) throw new Error("emulator is not connected");
