@@ -62,7 +62,8 @@ The ACS executable SHALL expose its existing command tree through consistent roo
 ### Requirement: Persistent macOS service
 
 On macOS, `acs init` SHALL install a login service named `local.acs.daemon`, log
-to `~/Library/Logs/acs.log`, register the Codex MCP bridge using the same runtime
+to daily files in `~/Library/Logs/acs/`, retaining seven days and the most
+recent 10 MiB of each daily file, register the Codex MCP bridge using the same runtime
 paths, and install one `local.acs.codex-app-server.<label>` LaunchAgent for every
 configured Codex account. Each app-server service SHALL run with `CODEX_HOME` set
 to its configured canonical home, `Umask` 077, `KeepAlive`, `RunAtLoad`, and a

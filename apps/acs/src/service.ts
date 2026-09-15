@@ -10,6 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { daemonLogDirectory } from "./daemon-log";
 import proactiveCoordination from "../../../skills/acs-swarm/references/proactive-coordination.md" with { type: "text" };
 import swarmSkill from "../../../skills/acs-swarm/SKILL.md" with { type: "text" };
 import swarmStartup from "../../../skills/acs-swarm/STARTUP.md" with { type: "text" };
@@ -88,11 +89,7 @@ export function persistentEnvironment(environment: Record<string, string>, cwd =
   return normalized;
 }
 
-export function launchAgent(options: {
-  command: string[];
-  environment: Record<string, string>;
-  log: string;
-}) {
+export function launchAgent(options: { command: string[]; environment: Record<string, string> }) {
   return {
     Label: "local.acs.daemon",
     ProgramArguments: [...options.command, "daemon", "run"],
@@ -100,8 +97,8 @@ export function launchAgent(options: {
     KeepAlive: true,
     ThrottleInterval: 10,
     EnvironmentVariables: options.environment,
-    StandardOutPath: options.log,
-    StandardErrorPath: options.log,
+    StandardOutPath: "/dev/null",
+    StandardErrorPath: "/dev/null",
   };
 }
 
@@ -315,18 +312,19 @@ export async function installService(options: {
 }) {
   const control = options.launchctl ?? launchctl,
     path = `${options.home}/Library/LaunchAgents/local.acs.daemon.plist`,
-    log = `${options.home}/Library/Logs/acs.log`,
+    logDirectory = daemonLogDirectory(options.home),
     domain = `gui/${options.uid}`,
     target = `${domain}/local.acs.daemon`,
     plist = Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"], {
-      stdin: Buffer.from(JSON.stringify(launchAgent({ ...options, log }))),
+      stdin: Buffer.from(JSON.stringify(launchAgent(options))),
     });
   if (!plist.success) throw new Error(plist.stderr.toString());
   const content = plist.stdout.toString(),
     changed = !existsSync(path) || readFileSync(path, "utf8") !== content,
     loaded = control(["print", target]).success;
   mkdirSync(dirname(path), { recursive: true });
-  mkdirSync(dirname(log), { recursive: true });
+  mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+  chmodSync(logDirectory, 0o700);
   const legacyTarget = `${domain}/local.asc.daemon`;
   if (control(["print", legacyTarget]).success) requireSuccess(control(["bootout", legacyTarget]));
   rmSync(`${options.home}/Library/LaunchAgents/local.asc.daemon.plist`, { force: true });

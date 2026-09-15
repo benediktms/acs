@@ -65,11 +65,12 @@ test("login service preserves executable arguments and the bridge socket environ
   const agent = launchAgent({
     command: ["/Applications/ACS & Tools/acs"],
     environment: { ACS_CONTROL_SOCKET: "/private/tmp/acs/control.sock" },
-    log: "/Users/example/Library/Logs/acs.log",
   });
   expect(agent.ProgramArguments).toEqual(["/Applications/ACS & Tools/acs", "daemon", "run"]);
   expect(agent.EnvironmentVariables.ACS_CONTROL_SOCKET).toBe("/private/tmp/acs/control.sock");
   expect(agent.KeepAlive).toBe(true);
+  expect(agent.StandardOutPath).toBe("/dev/null");
+  expect(agent.StandardErrorPath).toBe("/dev/null");
   expect(agent.RunAtLoad).toBe(true);
   if (process.platform === "darwin") {
     const encoded = Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"], {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
+import { createDaemonLogWriter, daemonLogDirectory } from "./daemon-log";
 import { createInterface } from "node:readline/promises";
 import { createConnection } from "node:net";
 import { Database } from "bun:sqlite";
@@ -60,7 +61,8 @@ const args = Bun.argv.slice(2);
 let config: ReturnType<typeof paths>,
   settings: ReturnType<typeof loadConfig>,
   listen: ReturnType<typeof parseListen>,
-  port: number;
+  port: number,
+  daemonLogger: ReturnType<typeof createDaemonLogWriter> | undefined;
 
 async function main() {
   const program = new Command()
@@ -739,7 +741,7 @@ async function waitForDaemon(control: DaemonControlPaths = config) {
     if (Date.now() >= deadline) break;
     await Bun.sleep(100);
   }
-  throw new Error("ACS service did not become ready; check ~/Library/Logs/acs.log");
+  throw new Error("ACS service did not become ready; check ~/Library/Logs/acs/");
 }
 
 async function waitForDaemonStop(control: DaemonControlPaths = config) {
@@ -749,7 +751,7 @@ async function waitForDaemonStop(control: DaemonControlPaths = config) {
     if (Date.now() >= deadline) break;
     await Bun.sleep(100);
   }
-  throw new Error("ACS daemon did not stop; check ~/Library/Logs/acs.log");
+  throw new Error("ACS daemon did not stop; check ~/Library/Logs/acs/");
 }
 
 async function daemonLifecycle(command: string) {
@@ -930,11 +932,13 @@ async function daemon() {
           maxRequestBytes: settings.security.maxRequestBytes,
           signalDelivery: () => schedulers.forEach((scheduler) => scheduler.signal()),
           hostname: listen.hostname,
-          reportInternalError: ({ error, correlationId }) =>
+          reportInternalError: ({ error, correlationId, request: requestContext }) =>
             log("error", "a2a.internal_error", String(process.pid), {
               correlationId,
               code: error instanceof Error ? error.message.split(":")[0] : "UNKNOWN",
               message: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+              request: requestContext,
             }),
         }),
       error: (error) => sanitizedError(error, String(process.pid)),
@@ -1121,7 +1125,11 @@ function isLockContention(error: unknown) {
 }
 
 function sanitizedError(error: Error, instanceId: string) {
-  log("error", "daemon.error", instanceId, { code: error.message.split(":")[0] });
+  log("error", "daemon.error", instanceId, {
+    code: error.message.split(":")[0],
+    message: error.message,
+    stack: error.stack,
+  });
   return Response.json({ error: "internal" }, { status: 500 });
 }
 function log(
@@ -1139,13 +1147,15 @@ function log(
     event,
     ...attributes,
   };
-  console.error(
+  const output =
     settings.daemon.logFormat === "json"
       ? JSON.stringify(record)
       : Object.entries(record)
           .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-          .join(" "),
-  );
+          .join(" ");
+  daemonLogger ??= createDaemonLogWriter(daemonLogDirectory(required(process.env.HOME, "HOME")));
+  daemonLogger(output);
+  console.error(output);
 }
 function resolutionOption(options: ResolutionOptions) {
   const resolutions = [
@@ -1368,6 +1378,14 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 await main().catch((error) => {
+  const record = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    severity: "error",
+    event: "daemon.fatal",
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+  if (process.env.HOME) createDaemonLogWriter(daemonLogDirectory(process.env.HOME))(record);
   console.error(error instanceof Error ? error.message : error);
   if (process.exitCode !== 2) process.exitCode = 1;
 });

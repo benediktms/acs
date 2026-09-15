@@ -151,7 +151,18 @@ describe("A2A JSON-RPC", () => {
       { token } = store.createToken(),
       accept = store.accept,
       failure = new Error("SQLITE_IOERR: /private/secret/acs.db");
-    let reported: { error: unknown; correlationId: string } | undefined;
+    let reported:
+      | {
+          error: unknown;
+          correlationId: string;
+          request: {
+            agent: string;
+            principal: string;
+            method: string;
+            rpcId: string | number | null;
+          };
+        }
+      | undefined;
     store.accept = () => {
       throw failure;
     };
@@ -184,6 +195,11 @@ describe("A2A JSON-RPC", () => {
     expect(context).toMatchObject({ code: "ACS_STORAGE_UNAVAILABLE", retryable: true });
     expect(reported?.error).toBe(failure);
     expect(reported?.correlationId).toBe(context?.correlationId);
+    expect(reported?.request).toMatchObject({
+      agent: "storage-error",
+      method: "SendMessage",
+      rpcId: "storage-error",
+    });
     expect(store.agent(agent.id)?.slug).toBe("storage-error");
     store.close();
   });
