@@ -384,7 +384,7 @@ The materialized ACS collaboration guidance SHALL direct agents to discover usef
 
 #### Scenario: Existing peer would benefit from a finding
 
-- **WHEN** an agent is already communicating with another agent and discovers information likely to help that agent's assigned work
+- **WHEN** an agent identifies an active peer whose assigned work can materially use a finding
 - **THEN** the guidance instructs it to send the peer a concise relevant finding proactively
 - **AND** it avoids duplicate messages and unrelated coordination noise
 

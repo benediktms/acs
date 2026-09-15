@@ -489,7 +489,13 @@ test("Codex integration materializes its proactive collaboration skill", () => {
     expect(contents).toContain("call `acs_agents_list` once");
     expect(contents).toContain("Do not routinely list or poll the inbox");
     expect(contents).toContain("only for recovery or inspection");
-    expect(contents).toContain("proactively send it a concise relevant update with `acs_send`");
+    expect(contents).toContain(
+      "active-agent snapshot shows a peer who can act on a finding or own distinct work",
+    );
+    expect(contents).toContain(
+      "proactively send one concise relevant message with `acs_send`",
+    );
+    expect(contents).not.toContain("already communicating with an agent");
     expect(contents).toContain("ask the local user for permission");
     expect(contents).toContain("`acs codex workers create <agent>`");
     expect(contents).toContain(
