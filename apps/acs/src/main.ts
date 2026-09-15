@@ -58,6 +58,7 @@ import {
 
 const MCP_ATTESTATION_VERIFIED_CODEX_VERSIONS = Object.freeze(["0.153.2", "0.153.4"]);
 const args = Bun.argv.slice(2);
+const daemonRun = args[0] === "daemon" && args[1] === "run";
 let config: ReturnType<typeof paths>,
   settings: ReturnType<typeof loadConfig>,
   listen: ReturnType<typeof parseListen>,
@@ -1153,9 +1154,12 @@ function log(
       : Object.entries(record)
           .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
           .join(" ");
-  daemonLogger ??= createDaemonLogWriter(daemonLogDirectory(required(process.env.HOME, "HOME")));
-  daemonLogger(output);
-  console.error(output);
+  const home = process.env.HOME;
+  if (home) {
+    daemonLogger ??= createDaemonLogWriter(daemonLogDirectory(home));
+    daemonLogger(output);
+  }
+  if (!process.env.ACS_LAUNCHD_LOG) console.error(output);
 }
 function resolutionOption(options: ResolutionOptions) {
   const resolutions = [
@@ -1385,7 +1389,8 @@ await main().catch((error) => {
     message: error instanceof Error ? error.message : String(error),
     stack: error instanceof Error ? error.stack : undefined,
   });
-  if (process.env.HOME) createDaemonLogWriter(daemonLogDirectory(process.env.HOME))(record);
+  if (daemonRun && process.env.HOME)
+    createDaemonLogWriter(daemonLogDirectory(process.env.HOME))(record);
   console.error(error instanceof Error ? error.message : error);
   if (process.exitCode !== 2) process.exitCode = 1;
 });

@@ -10,7 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { daemonLogDirectory } from "./daemon-log";
+import { daemonLaunchdLogPath, daemonLogDirectory } from "./daemon-log";
 import proactiveCoordination from "../../../skills/acs-swarm/references/proactive-coordination.md" with { type: "text" };
 import swarmSkill from "../../../skills/acs-swarm/SKILL.md" with { type: "text" };
 import swarmStartup from "../../../skills/acs-swarm/STARTUP.md" with { type: "text" };
@@ -89,14 +89,34 @@ export function persistentEnvironment(environment: Record<string, string>, cwd =
   return normalized;
 }
 
-export function launchAgent(options: { command: string[]; environment: Record<string, string> }) {
+export function launchAgent(options: {
+  command: string[];
+  environment: Record<string, string>;
+  log: string;
+}) {
+  const capture = `diagnostic="$ACS_LAUNCHD_LOG"
+temporary="$diagnostic.tmp"
+if [ -f "$diagnostic" ]; then
+  /usr/bin/tail -c 524288 "$diagnostic" > "$temporary" && /bin/mv "$temporary" "$diagnostic"
+fi
+"$@" 2>&1 | /usr/bin/tail -c 524288 >> "$diagnostic"`,
+    environment: Record<string, string> = { ...options.environment, ACS_LAUNCHD_LOG: options.log };
   return {
     Label: "local.acs.daemon",
-    ProgramArguments: [...options.command, "daemon", "run"],
+    ProgramArguments: [
+      "/bin/sh",
+      "-c",
+      capture,
+      "acs-launcher",
+      ...options.command,
+      "daemon",
+      "run",
+    ],
     RunAtLoad: true,
     KeepAlive: true,
     ThrottleInterval: 10,
-    EnvironmentVariables: options.environment,
+    Umask: 0o77,
+    EnvironmentVariables: environment,
     StandardOutPath: "/dev/null",
     StandardErrorPath: "/dev/null",
   };
@@ -313,10 +333,11 @@ export async function installService(options: {
   const control = options.launchctl ?? launchctl,
     path = `${options.home}/Library/LaunchAgents/local.acs.daemon.plist`,
     logDirectory = daemonLogDirectory(options.home),
+    log = daemonLaunchdLogPath(options.home),
     domain = `gui/${options.uid}`,
     target = `${domain}/local.acs.daemon`,
     plist = Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"], {
-      stdin: Buffer.from(JSON.stringify(launchAgent(options))),
+      stdin: Buffer.from(JSON.stringify(launchAgent({ ...options, log }))),
     });
   if (!plist.success) throw new Error(plist.stderr.toString());
   const content = plist.stdout.toString(),

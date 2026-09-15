@@ -14,7 +14,9 @@ bun run build
 On macOS, `init` installs and starts a `launchd` user service.
 The service starts at login
 and restarts if it exits; daily logs are in `~/Library/Logs/acs/` (seven days,
-10 MiB per day). Re-running `init`
+10 MiB per day), with the last 1 MiB of raw launchd output in `launchd.log` for
+failures before ACS logging starts. Foreground daemons without `HOME` log to
+stderr only. Re-running `init`
 updates the services and retires the legacy `local.asc.daemon` service. Start a new `swarm` session to load the MCP tools.
 Use `acs init --no-service` for file initialization only (for example in tests).
 The LaunchAgent runs `acs daemon run` in the foreground. Use `acs daemon start`

@@ -65,10 +65,21 @@ test("login service preserves executable arguments and the bridge socket environ
   const agent = launchAgent({
     command: ["/Applications/ACS & Tools/acs"],
     environment: { ACS_CONTROL_SOCKET: "/private/tmp/acs/control.sock" },
+    log: "/Users/example/Library/Logs/acs/launchd.log",
   });
-  expect(agent.ProgramArguments).toEqual(["/Applications/ACS & Tools/acs", "daemon", "run"]);
+  expect(agent.ProgramArguments.slice(0, 2)).toEqual(["/bin/sh", "-c"]);
+  expect(agent.ProgramArguments.slice(-3)).toEqual([
+    "/Applications/ACS & Tools/acs",
+    "daemon",
+    "run",
+  ]);
+  expect(agent.ProgramArguments[2]).toContain('/usr/bin/tail -c 524288 >> "$diagnostic"');
   expect(agent.EnvironmentVariables.ACS_CONTROL_SOCKET).toBe("/private/tmp/acs/control.sock");
   expect(agent.KeepAlive).toBe(true);
+  expect(agent.Umask).toBe(0o77);
+  expect(agent.EnvironmentVariables.ACS_LAUNCHD_LOG).toBe(
+    "/Users/example/Library/Logs/acs/launchd.log",
+  );
   expect(agent.StandardOutPath).toBe("/dev/null");
   expect(agent.StandardErrorPath).toBe("/dev/null");
   expect(agent.RunAtLoad).toBe(true);
@@ -82,6 +93,28 @@ test("login service preserves executable arguments and the bridge socket environ
     });
     expect(decoded.exitCode).toBe(0);
     expect(JSON.parse(decoded.stdout.toString())).toEqual(agent);
+  }
+});
+
+test("login service retains bounded diagnostics from before daemon startup", () => {
+  const directory = mkdtempSync(join(tmpdir(), "acs-launchd-log-")),
+    log = join(directory, "launchd.log"),
+    agent = launchAgent({
+      command: ["/bin/sh", "-c", "/usr/bin/yes y | /usr/bin/head -c 600000"],
+      environment: {},
+      log,
+    });
+  try {
+    writeFileSync(log, "x".repeat(600000));
+    const result = Bun.spawnSync(agent.ProgramArguments, {
+      env: { ...process.env, ...agent.EnvironmentVariables },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(statSync(log).size).toBe(1024 * 1024);
+    expect(readFileSync(log, "utf8")).toStartWith("x");
+    expect(readFileSync(log, "utf8")).toEndWith("y\n");
+  } finally {
+    rmSync(directory, { recursive: true });
   }
 });
 
