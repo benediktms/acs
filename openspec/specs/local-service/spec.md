@@ -62,15 +62,19 @@ The ACS executable SHALL expose its existing command tree through consistent roo
 ### Requirement: Persistent macOS service
 
 On macOS, `acs init` SHALL install a login service named `local.acs.daemon`, log
-to `~/Library/Logs/acs.log`, register the Codex MCP bridge using the same runtime
+to daily files in `~/Library/Logs/acs/`, retaining seven days and the most
+recent 10 MiB of complete records in each daily file. Oversized records SHALL be
+stored as bounded, parseable summaries. The service SHALL retain the last 1 MiB
+of raw process output for failures before ACS logging starts. Foreground daemons
+without `HOME` SHALL continue with stderr-only logging. ACS SHALL register the Codex MCP bridge using the same runtime
 paths, and install one `local.acs.codex-app-server.<label>` LaunchAgent for every
 configured Codex account. Each app-server service SHALL run with `CODEX_HOME` set
 to its configured canonical home, `Umask` 077, `KeepAlive`, `RunAtLoad`, and a
 4096 soft file-descriptor limit. Persisted path overrides SHALL be absolute.
 `--no-service` SHALL initialize files without installing the service or MCP
 registration. Initialization SHALL not restart a healthy unchanged app-server.
-The LaunchAgent's `ProgramArguments` SHALL invoke `acs daemon run`; that command
-is the foreground daemon. `acs daemon start` SHALL bootstrap an installed,
+The LaunchAgent's `ProgramArguments` SHALL invoke `acs daemon run` through its
+bounded diagnostic capture; that command is the foreground daemon. `acs daemon start` SHALL bootstrap an installed,
 unloaded LaunchAgent and wait for authenticated control readiness without
 restarting an already loaded healthy service. `acs daemon stop` SHALL boot out the
 supervisor before a bounded shutdown wait, using authenticated shutdown only for

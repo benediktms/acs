@@ -46,7 +46,12 @@ import { telemetry } from "../../observability/src/index";
 
 const extension = "urn:agent-communications:delivery:v1",
   deliveryStatus = "urn:agent-communications:delivery-status:v1";
-export type A2AInternalErrorReporter = (details: { error: unknown; correlationId: string }) => void;
+export type A2AInternalErrorReporter = (details: {
+  error: unknown;
+  correlationId: string;
+  request: { agent: string; principal: string; method: string; rpcId: string | number | null };
+}) => void;
+type A2AInternalError = Omit<Parameters<A2AInternalErrorReporter>[0], "request">;
 export interface A2AOptions {
   maxRequestBytes?: number;
   signalDelivery?: () => void;
@@ -136,7 +141,13 @@ class Handler implements A2ARequestHandler {
     private port: number,
     private signalDelivery: () => void,
     private hostname: string,
-    private traceContext?: RuntimeTraceContext,
+    private traceContext: RuntimeTraceContext | undefined,
+    private request: {
+      agent: string;
+      principal: string;
+      method: string;
+      rpcId: string | number | null;
+    },
     private reportInternalError: A2AInternalErrorReporter = () => {},
   ) {}
   async getAgentCard() {
@@ -307,7 +318,10 @@ class Handler implements A2ARequestHandler {
   applicationError(error: unknown) {
     return applicationError(error, (details) => {
       this.internalErrorCorrelationId = details.correlationId;
-      this.reportInternalError(details);
+      this.reportInternalError({
+        ...details,
+        request: this.request,
+      });
     });
   }
   get errorCorrelationId() {
@@ -388,7 +402,10 @@ function isNotifyState(value: unknown): value is DeliveryPreference["notifyOn"][
     ].includes(value)
   );
 }
-function applicationError(error: unknown, reportInternalError: A2AInternalErrorReporter) {
+function applicationError(
+  error: unknown,
+  reportInternalError: (details: A2AInternalError) => void,
+) {
   if (error instanceof JsonRpcTransportError) return error;
   const message = error instanceof Error ? error.message : String(error),
     raw = message.split(":").at(0) ?? "UNKNOWN";
@@ -588,6 +605,12 @@ async function handleA2ARoute(
       signalDelivery,
       hostname,
       incomingTraceContext(request.headers),
+      {
+        agent: slug,
+        principal: principal.id,
+        method: typeof method === "string" ? method : "unknown",
+        rpcId,
+      },
       reportInternalError,
     ),
     result = await new JsonRpcTransportHandler(handler).handle(body, context);
