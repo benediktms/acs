@@ -6,7 +6,7 @@
 | [#65](https://github.com/benediktms/acs/issues/65) | `managed-workers/create-control`       | 2.2, 2.3, 3.1, 3.2, 3.3, 3.4, 4.3 | #64          | pending   |
 | [#66](https://github.com/benediktms/acs/issues/66) | `managed-workers/background-delivery`  | 2.4, 2.5, 4.1, 4.2                | #64, #65     | pending   |
 | [#67](https://github.com/benediktms/acs/issues/67) | `managed-workers/operator-cli`         | 5.1, 5.2, 5.3, 5.4, 5.5, 7.1      | #65, #66     | pending   |
-| [#68](https://github.com/benediktms/acs/issues/68) | `managed-workers/native-certification` | 6.1, 6.2, 6.3, 7.2, 8.1, 8.2      | #64–#67      | pending   |
+| [#68](https://github.com/benediktms/acs/issues/68) | `managed-workers/native-certification` | 6.1, 6.2, 6.3, 7.2, 8.1, 8.2      | #64–#67      | validated |
 
 ## 1. Durable Ownership and State
 
