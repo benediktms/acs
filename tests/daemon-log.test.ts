@@ -79,8 +79,10 @@ test("falls back without throwing when the log directory is unavailable", () => 
 test("persists fatal records only for daemon run", () => {
   const home = mkdtempSync(join(tmpdir(), "acs-daemon-fatal-")),
     main = join(import.meta.dir, "../apps/acs/src/main.ts"),
-    environment = { ...process.env, HOME: home, ACS_CONFIG_PATH: join(home, "missing.toml") };
+    config = join(home, "invalid.toml"),
+    environment = { ...process.env, HOME: home, ACS_CONFIG_PATH: config };
   try {
+    writeFileSync(config, "invalid = [");
     expect(Bun.spawnSync([process.execPath, main, "unknown"], { env: environment }).exitCode).toBe(
       1,
     );
