@@ -10,6 +10,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { daemonLaunchdLogPath, daemonLogDirectory } from "./daemon-log";
 import proactiveCoordination from "../../../skills/acs-swarm/references/proactive-coordination.md" with { type: "text" };
 import swarmSkill from "../../../skills/acs-swarm/SKILL.md" with { type: "text" };
 import swarmStartup from "../../../skills/acs-swarm/STARTUP.md" with { type: "text" };
@@ -93,15 +94,31 @@ export function launchAgent(options: {
   environment: Record<string, string>;
   log: string;
 }) {
+  const capture = `diagnostic="$ACS_LAUNCHD_LOG"
+temporary="$diagnostic.tmp"
+if [ -f "$diagnostic" ]; then
+  /usr/bin/tail -c 524288 "$diagnostic" > "$temporary" && /bin/mv "$temporary" "$diagnostic"
+fi
+"$@" 2>&1 | /usr/bin/tail -c 524288 >> "$diagnostic"`,
+    environment: Record<string, string> = { ...options.environment, ACS_LAUNCHD_LOG: options.log };
   return {
     Label: "local.acs.daemon",
-    ProgramArguments: [...options.command, "daemon", "run"],
+    ProgramArguments: [
+      "/bin/sh",
+      "-c",
+      capture,
+      "acs-launcher",
+      ...options.command,
+      "daemon",
+      "run",
+    ],
     RunAtLoad: true,
     KeepAlive: true,
     ThrottleInterval: 10,
-    EnvironmentVariables: options.environment,
-    StandardOutPath: options.log,
-    StandardErrorPath: options.log,
+    Umask: 0o77,
+    EnvironmentVariables: environment,
+    StandardOutPath: "/dev/null",
+    StandardErrorPath: "/dev/null",
   };
 }
 
@@ -315,7 +332,8 @@ export async function installService(options: {
 }) {
   const control = options.launchctl ?? launchctl,
     path = `${options.home}/Library/LaunchAgents/local.acs.daemon.plist`,
-    log = `${options.home}/Library/Logs/acs.log`,
+    logDirectory = daemonLogDirectory(options.home),
+    log = daemonLaunchdLogPath(options.home),
     domain = `gui/${options.uid}`,
     target = `${domain}/local.acs.daemon`,
     plist = Bun.spawnSync(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"], {
@@ -326,7 +344,8 @@ export async function installService(options: {
     changed = !existsSync(path) || readFileSync(path, "utf8") !== content,
     loaded = control(["print", target]).success;
   mkdirSync(dirname(path), { recursive: true });
-  mkdirSync(dirname(log), { recursive: true });
+  mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+  chmodSync(logDirectory, 0o700);
   const legacyTarget = `${domain}/local.asc.daemon`;
   if (control(["print", legacyTarget]).success) requireSuccess(control(["bootout", legacyTarget]));
   rmSync(`${options.home}/Library/LaunchAgents/local.asc.daemon.plist`, { force: true });
